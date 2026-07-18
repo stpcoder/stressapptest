@@ -7,10 +7,6 @@
 - cache를 끄지 않은 상태에서 LPDDR traffic이 어떻게 증가하는가
 - 읽은 데이터가 맞는지 언제, 어떤 방법으로 검사하는가
 
-<sub><em>Object: 프로그램의 상태와 동작을 함께 보유하는 C++ class instance입니다.</em></sub><br>
-<sub><em>Queue: worker가 사용할 SAT block의 상태를 관리하고 동시 접근을 제어하는 자료구조입니다.</em></sub><br>
-<sub><em>Checksum: 데이터에서 계산한 요약값을 기대값과 비교하여 변형 여부를 검사하는 값입니다.</em></sub>
-
 ## 가장 먼저 알아둘 내용
 
 - 기본 설정에서는 실행 가능한 논리 CPU 수만큼 `CopyThread`를 만듭니다.
@@ -19,6 +15,9 @@
 - 기본 copy loop는 source read, checksum 계산, destination write를 함께 수행합니다.
 - stressapptest는 cache를 끄지 않습니다. 큰 메모리 영역을 여러 core가 반복해서 처리하여 cache miss와 write-back을 늘립니다.
 - destination에 쓴 데이터는 보통 그 block이 나중에 source로 선택될 때 검사됩니다.
+
+<sub><em>Queue: worker가 사용할 SAT block의 상태를 관리하고, 여러 worker가 같은 block을 동시에 사용하지 않도록 제어하는 구조입니다.</em></sub><br>
+<sub><em>Checksum: 읽은 데이터에서 계산한 값을 기대값과 비교하여 데이터가 바뀌었는지 확인하는 값입니다.</em></sub>
 
 ## 빠르게 읽는 순서
 
