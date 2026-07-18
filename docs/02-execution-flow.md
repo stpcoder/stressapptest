@@ -1,34 +1,34 @@
-# 시작부터 종료까지 실행 순서
+# 실행 순서 한눈에 보기
 
-## 전체 timeline
+## 전체 실행 순서
 
 ```text
-argument parse
+명령행 옵션 읽기
    ↓
 OS/CPU 정보 초기화
    ↓
-memory 크기 결정 및 mmap
+메모리 크기 결정 및 mmap
    ↓
-pattern variant와 expected checksum 생성
+pattern과 기대 checksum 생성
    ↓
-1 MiB block metadata/queue 생성
+1 MiB block 정보와 queue 생성
    ↓
-8개 FillThread로 전체 memory write       ┐
+8개 FillThread로 전체 메모리 쓰기        ┐
    ↓                                      │ -s 이전
-physical 진단/tag 및 valid/empty 분류     ┘
+physical address 진단과 block 상태 분류  ┘
    ↓
-실행 worker spawn
+worker 생성
    ↓
--s countdown 동안 copy/check/invert/I/O
+설정한 시간 동안 copy/check/invert/I/O 실행
    ↓
-worker stop/join
+worker 정지 및 종료 대기
    ↓
-8개 CheckThread로 전체 valid block 검사  ← -s 이후
+8개 CheckThread로 전체 valid block 검사  ← 실행 시간 종료 후
    ↓
-통계/오류 출력 및 memory 해제
+통계와 오류 출력 후 메모리 해제
 ```
 
-## 1. Argument parse
+## 1. 명령행 옵션 읽기
 
 `Sat::ParseArgs()`가 option을 순서대로 읽는다 (`src/sat.cc:794`). GNU `getopt`를 쓰지 않고 문자열 비교 macro를 사용한다.
 
@@ -75,7 +75,7 @@ pages_ = size_ / page_length_;
 
 `-M`이 0이면 `FindFreeMemSize()`가 total physical memory 비율을 기준으로 target을 정한다. available memory는 log 출력에 사용되며 target 산정의 주 기준에는 포함되지 않는다. Android 실행에서는 `-M`을 명시하여 할당량을 제한한다.
 
-## 3. Virtual memory 확보
+## 3. Virtual memory 할당
 
 일반 Android/Linux 경로는 다음 `mmap()`이다.
 
@@ -91,7 +91,7 @@ mmap(NULL, length,
 <sub><em>Anonymous mmap: file backing 없이 process virtual address range를 확보하는 Linux memory mapping 방식입니다.</em></sub><br>
 <sub><em>First touch: 예약된 virtual page에 최초로 접근하여 kernel의 physical backing page 할당을 유도하는 동작입니다.</em></sub>
 
-## 4. Pattern 초기화
+## 4. Pattern 준비
 
 15개 pattern family 각각에 대해:
 
@@ -102,7 +102,7 @@ variant를 만든다. 총 slot은 15 × 8 = 120개다. weight 0인 variant objec
 
 각 variant는 첫 4 KiB에 대한 expected modified-Adler checksum을 미리 계산한다.
 
-## 5. 전체 memory fill
+## 5. 전체 메모리에 pattern 쓰기
 
 처음에는 모든 `page_entry.pattern`이 null이므로 empty다. 기본 8개의 FillThread가 block을 하나씩 가져와:
 
@@ -113,7 +113,7 @@ variant를 만든다. 총 slot은 15 × 8 = 120개다. weight 0인 variant objec
 
 이 단계는 모든 test memory를 실제로 touch하며 write-heavy traffic을 만든다. `-s` timer가 시작되기 전이다.
 
-## 6. Physical 진단과 valid/empty 비율 설정
+## 6. Physical address 진단과 block 상태 설정
 
 모든 block을 한 번 채운 다음 다시 각 block을 가져와:
 
@@ -127,7 +127,7 @@ variant를 만든다. 총 slot은 15 × 8 = 120개다. weight 0인 variant objec
 <sub><em>Valid block: 기대 pattern metadata를 보유하며 source 또는 검증 대상으로 사용할 수 있는 SAT block입니다.</em></sub><br>
 <sub><em>Empty block: destination write 대상으로 사용할 수 있도록 pattern metadata가 해제된 SAT block입니다.</em></sub>
 
-## 7. Timed worker 실행
+## 7. 설정한 시간 동안 worker 실행
 
 `Sat::Run()`이 worker를 만들고 `pthread_create()`한 뒤에 `-s` countdown을 시작한다 (`src/sat.cc:1884`).
 
@@ -156,13 +156,13 @@ sched_yield()
 
 을 수행한다.
 
-## 8. Pause/resume power step
+## 8. 일시 정지와 재시작
 
 기본 `--pause_delay 600 --pause_duration 15`다. 해당 시간이 되면 `power_spike_status`에 속한 worker를 pause했다가 동시에 resume한다.
 
 `power_spike_status` 그룹에는 주로 CopyThread, FileThread, DiskThread 및 CPU frequency monitor가 포함된다. `continuous_status` 그룹의 worker는 해당 pause 대상에서 제외된다. 600초 미만의 test에서는 기본 pause 시점에 도달하지 않는다.
 
-## 9. 종료와 final check
+## 9. 종료 후 전체 검사
 
 timer 만료, signal, excessive error 조건이 발생하면 worker를 stop/join한다. 그 다음 기본 8개의 CheckThread가 valid block을 모두 꺼내 checksum/slow compare하고 empty로 바꾼다.
 
@@ -174,7 +174,7 @@ timer 만료, signal, excessive error 조건이 발생하면 worker를 stop/join
 
 발견될 수 있다.
 
-## 10. Process exit code
+## 10. Process 종료 코드
 
 - 내부 fatal status 또는 data error가 하나라도 있으면 exit 1
 - 오류가 없으면 exit 0

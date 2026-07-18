@@ -1,8 +1,8 @@
-# 소스 코드 지도
+# 소스 코드 찾아보기
 
-이 표는 기준 commit `73b9df2`에서 분석을 다시 시작할 때 사용할 entry point다.
+이 표는 기준 commit `73b9df2`에서 원하는 동작의 코드를 빠르게 찾을 수 있도록 파일과 시작 위치를 정리한 것입니다.
 
-## Program lifecycle
+## 프로그램 실행 순서
 
 | 위치 | 내용 |
 |---|---|
@@ -15,7 +15,7 @@
 | `src/sat.cc:1533` | worker join 및 final check |
 | `src/sat.cc:1646` | logical bandwidth 통계 |
 
-## Memory allocation 및 address
+## 메모리 할당과 주소
 
 | 위치 | 내용 |
 |---|---|
@@ -27,7 +27,7 @@
 | `src/os.cc:313` | generic region 분류 |
 | `src/sat.cc:323` | `--do_page_map` 4 KiB bitmap |
 
-## Block과 queue
+## 메모리 block과 queue
 
 | 위치 | 내용 |
 |---|---|
@@ -40,7 +40,7 @@
 | `src/finelock_queue.cc:416` | PutEmpty/PutValid |
 | `src/queue.cc:69` | coarse queue random pop |
 
-## Pattern
+## 데이터 pattern
 
 | 위치 | 내용 |
 |---|---|
@@ -51,7 +51,7 @@
 | `src/pattern.cc:404` | weighted random pattern 선택 |
 | `src/pattern.h:59` | logical width의 word 반복 구현 |
 
-## Memory worker
+## 메모리 worker
 
 | 위치 | 내용 |
 |---|---|
@@ -63,7 +63,7 @@
 | `src/worker.cc:1320` | downward RMW 및 flush hint |
 | `src/worker.cc:1345` | upward RMW 및 flush hint |
 
-## Copy/check/error
+## Copy와 오류 검사
 
 | 위치 | 내용 |
 |---|---|
@@ -78,7 +78,7 @@
 | `src/os.cc:263` | runtime Flush gate |
 | `src/os.h:147` | architecture별 FastFlush |
 
-## Worker creation
+## Worker 생성
 
 | 위치 | 내용 |
 |---|---|
@@ -93,7 +93,7 @@
 | `src/worker.cc:347` | pthread creation |
 | `src/worker.cc:405` | available CPU mask |
 
-## I/O 및 system worker
+## I/O와 system worker
 
 | 위치 | 내용 |
 |---|---|
@@ -114,7 +114,7 @@
 | `src/worker.cc:3397` | public CLI에서 미사용인 MemoryRegionThread |
 | `src/worker.cc:3558` | x86 CPU frequency thread |
 
-## Factory 및 generic 한계
+## Platform별 구현 선택과 generic 경로의 한계
 
 | 위치 | 내용 |
 |---|---|
@@ -125,7 +125,7 @@
 | `src/os.cc:194` | ARM64 vector feature 가정 |
 | `src/os.h:273` | AArch64 `CNTVCT_EL0` timestamp |
 
-## 분석 시 권장 call chain
+## 기능별로 따라갈 함수 순서
 
 > **파일:** `src/main.cc`, `src/sat.cc`, `src/worker.cc` · **기준:** `73b9df2`
 

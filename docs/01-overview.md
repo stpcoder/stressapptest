@@ -1,25 +1,25 @@
-# 프로그램 개요와 전체 구성
+# stressapptest는 어떻게 동작하는가
 
-## 목적
+## 이 도구가 하는 일
 
-stressapptest는 userspace에서 memory 및 I/O transaction을 생성하고, 부하가 실행되는 동안 이동 데이터가 예상 pattern을 유지하는지 검증하는 correctness-under-load test다.
+stressapptest는 여러 worker가 메모리와 I/O를 반복해서 읽고 쓰도록 만든 뒤, 데이터가 원래 pattern과 같은지 확인하는 프로그램입니다. 속도만 측정하는 benchmark보다 부하가 걸린 상태에서도 데이터가 정확한지 확인하는 데 초점이 있습니다.
 
 <sub><em>Transaction: worker가 block을 획득한 시점부터 read·write·verify 후 queue에 반환할 때까지의 처리 단위입니다.</em></sub><br>
 <sub><em>Pattern: memory block에 기록되는 반복 데이터 배열과 해당 배열의 기대 checksum 정보를 의미합니다.</em></sub>
 
-목적별 처리 우선순위는 다음과 같다.
+일반적인 bandwidth benchmark와 목적을 비교하면 다음과 같습니다.
 
 | 도구 유형 | 우선 처리 항목 |
 |---|---|
 | bandwidth benchmark | 단위 시간당 데이터 전송량 측정 |
 | stressapptest | 부하 실행 중 source data의 무결성 검증 |
 
-stressapptest의 처리 시간에는 checksum 계산, queue lock, random block 선택 및 scheduler yield가 포함된다. SAT throughput은 이 소프트웨어 처리 비용을 포함한 논리적 전송률로 정의된다.
+stressapptest의 처리 시간에는 checksum 계산, queue 잠금, block 선택, scheduler yield가 포함됩니다. 따라서 SAT throughput은 순수한 LPDDR bandwidth가 아니라 프로그램이 처리한 논리적 전송률입니다.
 
 <sub><em>Throughput: worker가 단위 시간에 처리했다고 계산한 논리적 데이터 양입니다.</em></sub><br>
 <sub><em>Scheduler yield: 실행 중인 thread가 CPU 실행 기회를 scheduler에 자발적으로 반환하는 동작입니다.</em></sub>
 
-## 상위 object 구성
+## 전체 구성
 
 ```text
 main()
@@ -42,7 +42,7 @@ main()
 
 `main()`의 순서는 `ParseArgs → Initialize → Run → PrintResults → Cleanup`이다 (`src/main.cc:20`).
 
-## 소스 코드로 확인하는 lifecycle
+## 코드에서 확인하는 실행 순서
 
 > **파일:** `src/main.cc` · **함수:** `main()` · **기준:** `73b9df2`
 
@@ -78,7 +78,7 @@ workers_map_.insert(make_pair(kMemoryType, memory_vector));
 
 **해석:** `-m N`은 `CopyThread` object N개를 생성합니다. 기본값은 환경 검사 단계에서 online CPU 수로 결정됩니다. File, network, check, invert, disk 및 CPU worker는 각각의 option count에 따라 별도 vector에 생성됩니다.
 
-## 핵심 데이터 흐름
+## 메모리 부하가 만들어지는 흐름
 
 ```text
                     random Pattern 선택
@@ -98,7 +98,7 @@ CopyThread는 valid source와 empty destination을 각각 하나씩 잠근다. C
 
 따라서 데이터 pattern은 memory pool 안에서 위치를 계속 바꾼다.
 
-## 중요한 크기 단위
+## 서로 다른 메모리 크기 단위
 
 | 단위 | 기본값/예 | 의미 |
 |---|---:|---|
@@ -110,7 +110,7 @@ CopyThread는 valid source와 empty destination을 각각 하나씩 잠근다. C
 
 1 MiB block 하나는 64 B cache line 16,384개, 4 KiB checksum slice 256개로 구성된다.
 
-## 기본 thread 구성
+## 기본 worker 구성
 
 기본 설정의 phase별 thread는 다음과 같다.
 
@@ -124,7 +124,7 @@ CopyThread는 valid source와 empty destination을 각각 하나씩 잠근다. C
 
 초기 fill과 final verify는 `-s` countdown의 측정 범위 밖에서 수행된다. 전체 process 실행 시간은 초기 fill 시간, `-s` 실행 시간 및 final verify 시간의 합으로 결정된다.
 
-## CPU 수와 affinity
+## CPU 수와 worker 배치
 
 `OsLayer::Initialize()`는 `_SC_NPROCESSORS_ONLN`을 읽고, `-m`이 없으면 그 수를 CopyThread 수로 사용한다 (`src/os.cc:108`, `src/sat.cc:148`).
 
@@ -139,7 +139,7 @@ Android에서는 다음을 구분해야 한다.
 
 worker와 CPU의 일대일 대응 여부는 online CPU 수, 허용 CPU mask, worker 수 및 scheduler 상태에 따라 결정된다.
 
-## Memory stress 구성 요소
+## 메모리 부하를 만드는 요소
 
 | 구성 요소 | 실행 효과 |
 |---|---|

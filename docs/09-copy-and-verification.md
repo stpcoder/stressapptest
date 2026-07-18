@@ -1,6 +1,8 @@
-# copy, checksum, 오류 검증
+# 메모리를 copy하고 오류를 찾는 과정
 
-## `CRC`라는 이름의 실제 의미
+기본 copy loop는 source를 읽으면서 checksum을 계산하고 같은 loop에서 destination에 씁니다. source checksum이 기대값과 다르면 다시 자세히 비교하고, destination은 나중에 source로 선택될 때 검사합니다.
+
+## 검증에 사용하는 checksum
 
 소스 함수명 `CrcCopyPage`와 `CrcCheckPage`의 checksum 구현은 `src/adler32memcpy.cc`에 정의된 modified Adler 방식이다. CRC polynomial 연산은 사용하지 않는다.
 
@@ -16,7 +18,7 @@ b1, b2: a 누적값의 누적
 <sub><em>Modified Adler checksum: 네 개의 누산기로 32-bit data word와 누적합을 계산하는 stressapptest의 고속 검증값입니다.</em></sub><br>
 <sub><em>Collision: 서로 다른 데이터가 동일한 checksum 결과를 생성하는 경우입니다.</em></sub>
 
-## Expected checksum 생성
+## 기대 checksum 만들기
 
 Pattern variant가 초기화될 때 첫 4 KiB pattern의 checksum을 계산해 `Pattern::crc_`에 저장한다.
 
@@ -52,7 +54,7 @@ crc_->Set(a1, a2, b1, b2);
 
 SAT block 기본 1 MiB는 4 KiB slice 256개다. Pattern이 주기적으로 반복되므로 각 slice를 같은 expected checksum과 비교한다.
 
-## 기본 copy의 정확한 read/write 순서
+## Copy 중 실제 read/write 순서
 
 `CrcCopyPage(destination, source)`는 4 KiB마다 `AdlerMemcpyC()`를 호출한다.
 
@@ -100,7 +102,7 @@ dstpe->lastcpu = sched_getcpu();
 - destination store 검증은 이후 source 선택 또는 final check에서 수행
 - source corruption이 destination으로 복사될 수 있으므로 mismatch 복구 경로가 존재
 
-## Destination write는 언제 검증되는가?
+## Destination에 쓴 데이터는 언제 검사하는가?
 
 destination write 오류는 다음 시점 중 하나에서 검출될 수 있다.
 
@@ -111,7 +113,7 @@ destination write 오류는 다음 시점 중 하나에서 검출될 수 있다.
 
 따라서 오류 발생 시각과 log 검출 시각이 다를 수 있다.
 
-## Checksum mismatch 후 slow compare
+## Checksum이 다를 때 다시 확인하는 방법
 
 checksum이 다르면 `CheckRegion()`이 해당 4 KiB를 64-bit word 단위로 다시 읽는다.
 
@@ -123,7 +125,7 @@ actual != expected 비교
 
 최대 128개의 error record를 우선 저장하고, 더 많은 mismatch가 있으면 page/block error 형태로 추가 처리한다.
 
-## Transient source read 오류 포착
+## 일시적인 source read 오류 찾기
 
 checksum mismatch 이후 slow reread에서 word mismatch가 확인되지 않는 경우에는 transient source read 오류 처리 경로가 실행된다.
 
@@ -137,7 +139,7 @@ checksum mismatch 이후 slow reread에서 word mismatch가 확인되지 않는 
 
 이 방식으로 일시적인 read-path corruption을 재현 가능한 memory contents로 바꾸어 상세 주소를 찾으려 한다.
 
-## 오류 reread와 수정
+## 오류 위치를 다시 읽고 수정하기
 
 `ProcessError()`는 다음 정보 field를 기록한다.
 
@@ -155,7 +157,7 @@ checksum mismatch 이후 slow reread에서 word mismatch가 확인되지 않는 
 
 generic ARM64에서는 reread 전 cache flush가 no-op일 수 있다. actual과 reread 비교에 따른 read/write error 분류에는 `has_clflush_` 상태와 `Flush()` 실행 여부를 함께 기록한다.
 
-## Tag mismatch
+## 다른 block의 데이터가 나타나는 오류
 
 `--tag_mode`에서는 각 64 B line 첫 8 B가 virtual-address-derived tag다. CheckRegion은 해당 위치의 expected value 계산에 현재 address tag를 사용하고 나머지 word에는 pattern 값을 사용한다.
 
@@ -186,7 +188,7 @@ address tag는 현재 destination 주소와 불일치
 
 `-F`는 transaction 중 source/destination checksum 검사를 비활성화하고 timed run 이후 final CheckThread 검사는 유지한다.
 
-## Error injection option
+## 오류 검증 기능을 시험하는 옵션
 
 - `--force_errors`: CopyThread가 낮은 확률로 source byte를 `0xba`로 변경하고 여러 error path도 자극
 - `--force_errors_like_crazy`: 위 기능을 켜고 run loop가 약 10초마다 valid block의 pattern metadata를 바꾸어 반복 오류 생성
@@ -202,7 +204,7 @@ address tag는 현재 destination 주소와 불일치
 
 현재 main loop의 종료 조건은 `errors > max_errorcount_`이다. `--max_errors N`을 지정하면 누적 오류 수가 N을 초과한 검사 시점에 종료 절차가 시작된다.
 
-## Bandwidth 통계 해석
+## 표시되는 bandwidth 해석
 
 worker는 처리 block 수와 block size를 곱해 논리적 byte를 계산한다.
 

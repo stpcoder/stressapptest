@@ -1,39 +1,53 @@
-# stressapptest 모바일 ARM64 한글 매뉴얼
+# stressapp 분석
 
-이 문서는 stressapptest의 object, queue, worker, pattern, checksum 및 ARM64 instruction을 소스 코드의 실행 순서에 따라 설명합니다. 분석 범위는 다음 항목으로 구성됩니다.
+이 문서는 Android ARM64 기기에서 stressapptest가 메모리에 어떤 부하를 만들고, 데이터 오류를 어떻게 찾는지 설명합니다. 실제 소스 코드를 따라가며 다음 네 가지를 확인합니다.
 
-- 메모리는 언제 할당되고 언제 실제 physical page가 생기는가?
-- 1 MiB block과 Linux page, cache line, LPDDR row는 어떻게 다른가?
-- worker는 언제 source를 읽고 destination을 쓰는가?
-- 어떤 시점에 오류를 발견하며 destination write는 즉시 검증되는가?
-- cache를 끄지 않고도 왜 LPDDR traffic이 증가하는가?
-- `-m`, `-c`, `-i`, `-C`, `-W`, `-F`는 traffic을 어떻게 바꾸는가?
-- virtual address, physical address, DRAM channel/bank/row mapping은 무엇이 다른가?
-- SAT bandwidth와 실제 DMC bandwidth가 왜 다를 수 있는가?
+- 테스트할 메모리를 어떻게 준비하고 block으로 나누는가
+- 각 worker가 언제 메모리를 읽고 쓰는가
+- cache를 끄지 않은 상태에서 LPDDR traffic이 어떻게 증가하는가
+- 읽은 데이터가 맞는지 언제, 어떤 방법으로 검사하는가
 
 <sub><em>Object: 프로그램의 상태와 동작을 함께 보유하는 C++ class instance입니다.</em></sub><br>
 <sub><em>Queue: worker가 사용할 SAT block의 상태를 관리하고 동시 접근을 제어하는 자료구조입니다.</em></sub><br>
 <sub><em>Checksum: 데이터에서 계산한 요약값을 기대값과 비교하여 변형 여부를 검사하는 값입니다.</em></sub>
 
-## 권장 읽기 순서
+## 가장 먼저 알아둘 내용
 
-기본 분석에는 다음 읽기 순서를 권장합니다.
+- 기본 설정에서는 실행 가능한 논리 CPU 수만큼 `CopyThread`를 만듭니다.
+- 테스트 메모리는 기본 1 MiB SAT block으로 나뉩니다.
+- worker는 공용 queue에서 block을 가져오며, 한 block 안의 주소는 순서대로 처리합니다.
+- 기본 copy loop는 source read, checksum 계산, destination write를 함께 수행합니다.
+- stressapptest는 cache를 끄지 않습니다. 큰 메모리 영역을 여러 core가 반복해서 처리하여 cache miss와 write-back을 늘립니다.
+- destination에 쓴 데이터는 보통 그 block이 나중에 source로 선택될 때 검사됩니다.
 
-1. [프로그램 개요와 전체 구성](01-overview.md)
-2. [시작부터 종료까지 실행 순서](02-execution-flow.md)
-3. [SAT block과 queue](05-block-and-queue.md)
-4. [메모리 worker](07-memory-workers.md)
-5. [copy와 검증](09-copy-and-verification.md)
-6. [cache와 ARM64](04-cache-and-arm64.md)
-7. [모든 옵션](10-all-options.md)
+## 빠르게 읽는 순서
 
-LPDDR 개발·분석 업무에는 [시험 recipe](12-test-recipes.md)와 [측정 방법](13-measurement.md)을 추가로 적용합니다.
+처음 읽을 때는 다음 다섯 장을 먼저 보면 전체 흐름을 이해할 수 있습니다.
 
-## 동작 요약
+1. [stressapptest는 어떻게 동작하는가](01-overview.md)
+2. [실행 순서 한눈에 보기](02-execution-flow.md)
+3. [메모리를 copy하고 오류를 찾는 과정](09-copy-and-verification.md)
+4. [cache를 거쳐 LPDDR 부하가 만들어지는 과정](04-cache-and-arm64.md)
+5. [목적별 테스트 명령](12-test-recipes.md)
 
-> stressapptest는 anonymous virtual memory를 기본 1 MiB SAT block으로 분할하고, 여러 worker가 pseudo-random으로 선택한 block에 순차 read·checksum·write를 수행한다. working set이 cache capacity를 초과하면 refill과 dirty eviction이 반복적으로 발생한다.
+세부 구현을 찾을 때는 [소스 코드 찾아보기](15-source-map.md), 어려운 용어는 [용어 설명](16-glossary.md)을 사용합니다.
 
-## 문서 표기 원칙
+## 전체 동작
+
+```text
+메모리 할당
+  → 1 MiB block으로 분할
+  → pattern 기록
+  → worker 실행
+  → source 읽기와 checksum 계산
+  → destination 쓰기
+  → block을 queue에 반환
+  → 다음 선택 때 다시 읽어 오류 검사
+```
+
+worker가 처리하는 메모리 영역이 cache보다 크면 cache miss가 늘어납니다. 수정된 cache line이 밀려날 때 write-back이 발생하고, 이 과정이 반복되면서 LPDDR read/write traffic이 만들어집니다.
+
+## 문서에서 구분하는 메모리 단위
 
 - `SAT block`: stressapptest가 관리하는 논리적 block. 기본 1 MiB.
 - `Linux page`: MMU translation 단위. 기기 설정에 따라 4/16/64 KiB 등이 가능.
@@ -43,7 +57,7 @@ LPDDR 개발·분석 업무에는 [시험 recipe](12-test-recipes.md)와 [측정
 - 코드 위치는 현재 기준 commit의 `파일:줄`로 적습니다.
 - “일반적으로”라고 적은 microarchitecture 동작은 ARM architecture가 허용하는 대표 동작이며, 특정 SoC 구현을 보장하지 않습니다.
 
-## 소스 코드 스니펫 읽는 방법
+## 코드 스니펫 읽는 방법
 
 각 장의 핵심 설명에는 실제 repository에서 발췌한 코드가 포함됩니다. 코드 블록 바로 위에는 다음 정보를 표시합니다.
 
@@ -53,7 +67,7 @@ LPDDR 개발·분석 업무에는 [시험 recipe](12-test-recipes.md)와 [측정
 | **함수/구간** | 분석을 시작할 symbol 또는 상수 정의 구간 |
 | **기준** | [upstream commit `73b9df2`](https://github.com/stressapptest/stressapptest/tree/73b9df227e89cd52b09852056843610722b7b7ae) |
 
-코드 블록은 동작을 설명하기 위해 필요한 연속 구간만 발췌합니다. `...`가 있는 경우 중간 구현이 생략되었음을 의미합니다. 코드 아래의 **해석**은 해당 스니펫에서 직접 확인되는 사실과 모바일 SoC 관점의 의미를 구분하여 기술합니다.
+코드 블록에는 설명에 필요한 부분만 넣었습니다. `...`는 중간 코드가 생략되었다는 뜻입니다. 코드 아래의 **해석**에서 해당 코드가 실제로 하는 일을 설명합니다.
 
 > **소스 기준 예시**
 > **파일:** `src/main.cc` · **함수:** `main()` · **기준:** `73b9df2`

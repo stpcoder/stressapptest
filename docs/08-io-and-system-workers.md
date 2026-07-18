@@ -1,10 +1,12 @@
-# I/O·CPU·coherency worker 동작
+# I/O·CPU worker별 동작
+
+이 장에서는 메모리 copy 외에 파일, network, block device, CPU 계산, cache coherency에 부하를 주는 worker를 설명합니다. 각 worker는 지정한 옵션이 있을 때만 추가됩니다.
 
 ## FileThread (`-f`)
 
 `-f path` 하나마다 FileThread 하나를 만든다. 기본 `disk_pages_`는 8이므로 기본 block 1 MiB 기준 한 pass에서 8 MiB를 파일로 write한 뒤 8 MiB를 read한다.
 
-### open policy
+### 파일을 여는 방식
 
 ```text
 O_RDWR | O_CREAT | O_SYNC | O_DIRECT
@@ -29,7 +31,7 @@ if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
 <sub><em>O_DIRECT: filesystem page cache 사용을 최소화하도록 kernel에 요청하는 file open flag입니다.</em></sub><br>
 <sub><em>Page cache: Linux kernel이 file 데이터를 RAM에 보관하여 file I/O를 처리하는 cache 계층입니다.</em></sub>
 
-### 한 pass
+### 한 번의 처리 순서
 
 ```text
 valid SAT block 8개 획득
@@ -96,13 +98,13 @@ result = result && sat_->PutEmpty(&src);
 
 **해석:** valid block을 peer로 전송하고 peer가 반사한 1 MiB를 empty destination에 수신합니다. strict mode는 송신 전 source와 수신 후 destination을 각각 검사합니다.
 
-### Listener side
+### 받는 쪽
 
 `--listen`은 `0.0.0.0:19996`에 bind/listen하고 connection마다 NetworkSlaveThread를 만든다.
 
 Slave는 512 B aligned local buffer에 1 SAT block을 recv한 뒤 같은 bytes를 sender에게 다시 send한다. 별도 pattern verification은 sender가 수행한다.
 
-### Sender side
+### 보내는 쪽
 
 `-n ipaddr` 하나마다 NetworkThread 하나를 만든다. 시작 후 15초 기다렸다가 연결한다.
 
@@ -138,7 +140,7 @@ if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
 
 <sub><em>Asynchronous I/O: I/O 요청 제출과 완료 수집을 분리하여 여러 요청을 동시에 계류시키는 방식입니다.</em></sub>
 
-### 기본은 non-destructive
+### 기본 동작은 데이터를 보존함
 
 `--destructive`를 주지 않으면 write phase가 disable되고 random location을 read만 한다. 이 경우 기존 disk data는 SAT pattern과 비교하지 않는다.
 
@@ -146,7 +148,7 @@ if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
 
 > 휴대폰의 실제 block device에 `--destructive`를 사용하면 filesystem, userdata, boot partition을 복구 불가능하게 손상시킬 수 있다.
 
-### 주요 parameter
+### 주요 설정값
 
 - sector/alignment: 512 B
 - read block 기본: 512 B

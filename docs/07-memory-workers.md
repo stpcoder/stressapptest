@@ -1,6 +1,8 @@
-# 메모리 worker 동작
+# 메모리 worker별 동작
 
-## 공통 WorkerThread 구조
+메모리 worker는 모두 같은 queue를 사용하지만 수행하는 작업은 다릅니다. `FillThread`는 초기 데이터를 쓰고, `CopyThread`는 읽기·검사·쓰기를 수행하며, `CheckThread`는 데이터를 검사합니다.
+
+## 모든 worker의 공통 구조
 
 모든 worker는 `WorkerThread`를 상속하며 다음 상태를 가진다 (`src/worker.h:204`).
 
@@ -316,7 +318,7 @@ public `Sat::InitializeThreads()`에는 이 class의 생성 코드가 없으며 
 
 일반 실행에서 `--paddr_base`가 이 worker를 자동으로 활성화하지 않는다.
 
-## Traffic 관점 비교
+## Worker별 메모리 접근 비교
 
 | Worker/mode | test data read | test data write | 즉시 checksum | 주요 목적 |
 |---|---:|---:|---:|---|

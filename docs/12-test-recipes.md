@@ -1,6 +1,8 @@
-# LPDDR 분석용 시험 recipe
+# 목적별 테스트 명령
 
-## 실험 설계 원칙
+이 장에서는 read/check 중심, 기본 copy, RMW, CPU 결합 부하처럼 확인할 목적에 따라 실행 명령을 나눠 설명합니다. 한 번에 한 조건만 바꾸면 traffic 변화의 원인을 비교하기 쉽습니다.
+
+## 테스트 조건을 바꾸는 순서
 
 한 번에 option을 여러 개 바꾸면 traffic 원인을 분리하기 어렵다. 다음 순서로 한 축씩 바꾼다.
 
@@ -13,7 +15,7 @@
 
 각 run은 시작 온도, governor, background workload, screen 상태, charger/전원 조건을 같게 맞춘다.
 
-## Recipe를 소스 경로에 대응시키는 기준
+## 각 명령이 사용하는 코드 경로
 
 > **파일:** `src/worker.cc` · **함수:** `CopyThread::Work()` · **기준:** `73b9df2`
 
@@ -211,7 +213,7 @@ stressapptest -M 512 -s 120 -m 4 \
 
 이 mode는 CPU memory copy와 UFS/filesystem/DMA traffic을 동시에 만든다. 순수 LPDDR 분석과 storage-path 분석 결과를 구분한다.
 
-## 권장 실험 matrix
+## 비교할 테스트 조합
 
 | Case | 명령 핵심 | 주된 관찰 |
 |---|---|---|
@@ -226,7 +228,7 @@ stressapptest -M 512 -s 120 -m 4 \
 
 각 case에서 최소 3회 반복하고 cold/hot 결과를 분리한다.
 
-## 순수 write-only가 필요한 경우
+## Write-only traffic이 필요한 경우
 
 현재 public option에는 지속적인 pure write-only memory worker가 없다.
 

@@ -1,54 +1,41 @@
-# stressapptest 모바일 ARM64 한글 분석판
+# stressapp 분석
 
-이 저장소는 [stressapptest 공식 저장소](https://github.com/stressapptest/stressapptest)를 기반으로, Android/mobile ARM64 환경에서 코드를 읽고 시험을 설계할 수 있도록 한글 분석 매뉴얼과 standalone NDK 빌드 도구를 추가한 개인 fork입니다.
+이 저장소는 [stressapptest 공식 저장소](https://github.com/stressapptest/stressapptest)를 Android ARM64 환경에서 분석하고 실행할 수 있도록 정리한 개인 fork입니다. 한글 설명서와 standalone NDK 빌드 도구를 함께 제공합니다.
 
 > 기준 소스: upstream commit `73b9df227e89cd52b09852056843610722b7b7ae` (`v1.0.11-2-g73b9df2`)
-> 문서 목적: stressapptest의 데이터 구성, worker 실행 순서, read/write/verify 시점, cache·system memory·LPDDR traffic 전달 경로를 소스 코드 기준으로 설명합니다.
+> 문서 목적: stressapptest가 메모리를 읽고 쓰는 순서, 오류를 검사하는 방법, cache를 거쳐 LPDDR 부하가 만들어지는 과정을 소스 코드 기준으로 설명합니다.
 
-## 온라인 한글 GitBook
+## 문서 바로 보기
 
-> **배포 문서:** [stressapptest 모바일 ARM64 한글 매뉴얼](https://stressapptest-mobile-arm64.gitbook.io/stressapptest-mobile-arm64-docs/)
+> **GitBook:** [stressapp 분석](https://stressapptest-mobile-arm64.gitbook.io/stressapptest-mobile-arm64-docs/)
 
-GitBook에는 장별 navigation, 현재 페이지 목차, 검색, syntax-highlighted source code snippet 및 mobile layout이 적용됩니다. `master` branch와 Git Sync되어 repository의 `docs/` 변경이 배포 문서에 반영됩니다.
+GitBook에서는 메뉴, 페이지 목차, 검색, 코드 강조 표시를 사용할 수 있습니다. `master` branch와 연결되어 있어 `docs/`의 변경 내용이 배포 문서에 반영됩니다.
 
-## 핵심 구현 요약
+## 먼저 알아둘 내용
 
-- 기본값에서는 online logical CPU 수만큼 `CopyThread`를 만듭니다. `-m N`으로 바꿀 수 있습니다.
-- 테스트 메모리는 기본 1 MiB SAT block으로 나뉩니다. Linux page 크기와 LPDDR row 위치는 각각 kernel page configuration과 DMC address mapping으로 결정됩니다.
-- worker는 고정 주소 영역을 소유하지 않고 공용 queue에서 random valid/empty block을 얻습니다. 한 block 안에서는 순차적으로 접근합니다.
-- 기본 copy는 source read, modified-Adler checksum, destination write를 한 번의 loop에서 수행합니다.
-- Android anonymous memory에는 normal cacheable memory attribute가 적용됩니다. 모든 load/store는 MMU와 cache hierarchy를 통해 system memory 경로로 전달됩니다.
-- 큰 working set, 여러 core의 동시 stream, random 1 MiB block 이동으로 cache miss와 dirty eviction을 반복시켜 system memory traffic을 만듭니다.
-- `-W`의 ARM64 `ld1/st1`은 normal cached access로 실행됩니다. x86 non-temporal store 특성은 x86 build에만 적용됩니다.
-- `CRC`라는 이름을 쓰지만 실제 검증 함수는 네 누산기를 사용하는 modified Adler checksum입니다.
-- virtual-to-physical 변환 결과는 system physical address입니다. LPDDR channel/bank/row 좌표에는 vendor DMC address mapping을 추가로 적용합니다.
-- SAT 출력 bandwidth는 논리적 copy byte입니다. 실제 LPDDR byte/command는 DMC·NoC·SLC PMU로 확인해야 합니다.
+- 기본 설정에서는 실행 가능한 논리 CPU 수만큼 `CopyThread`를 만듭니다. `-m N`으로 개수를 바꿀 수 있습니다.
+- 테스트 메모리는 기본 1 MiB 크기의 SAT block으로 나뉩니다. worker는 공용 queue에서 읽을 block과 쓸 block을 가져옵니다.
+- 한 block 안에서는 주소를 순서대로 읽고 씁니다. 다음 block은 여러 block 가운데 임의로 선택합니다.
+- 기본 copy loop는 source read, checksum 계산, destination write를 함께 수행합니다.
+- stressapptest는 cache를 끄지 않습니다. 테스트 영역이 cache보다 크고 여러 core가 동시에 작업하면 cache miss와 write-back이 반복되어 LPDDR traffic이 증가합니다.
+- `CRC`라는 함수 이름을 사용하지만 실제 검증에는 modified Adler checksum을 사용합니다.
+- 프로그램에 표시되는 bandwidth는 worker가 처리한 논리적 byte입니다. 실제 LPDDR traffic은 DMC·NoC·SLC 계측값으로 확인해야 합니다.
 
 <sub><em>Worker: 특정 부하 또는 검증 루프를 수행하는 pthread 실행 단위입니다.</em></sub><br>
 <sub><em>Write-back: 수정된 cache line을 하위 cache 또는 system memory 방향으로 기록하는 동작입니다.</em></sub><br>
 <sub><em>Physical mapping: virtual address를 system physical address에 대응시키는 변환 관계입니다.</em></sub>
 
-## Repository 문서 목차
+## 문서 목차
 
-GitBook에 접근할 수 없는 환경에서는 [`docs/README.md`](docs/README.md)부터 Markdown 원문을 읽을 수 있습니다.
+처음 읽는다면 아래 순서가 가장 빠릅니다. GitBook에 접근할 수 없는 환경에서는 [`docs/README.md`](docs/README.md)에서 같은 내용을 확인할 수 있습니다.
 
-1. [문서 범위와 버전](docs/00-scope-and-version.md)
-2. [프로그램 개요와 전체 구성](docs/01-overview.md)
-3. [시작부터 종료까지 실행 순서](docs/02-execution-flow.md)
-4. [메모리 할당과 virtual/physical mapping](docs/03-memory-and-physical-mapping.md)
-5. [ARM64 cache policy와 실제 LPDDR traffic](docs/04-cache-and-arm64.md)
-6. [SAT block, page_entry, valid/empty queue](docs/05-block-and-queue.md)
-7. [데이터 pattern 전체 분석](docs/06-patterns.md)
-8. [메모리 worker 동작](docs/07-memory-workers.md)
-9. [I/O·CPU·coherency worker 동작](docs/08-io-and-system-workers.md)
-10. [copy, checksum, 오류 검증 경로](docs/09-copy-and-verification.md)
-11. [모든 명령행 옵션](docs/10-all-options.md)
-12. [Android ARM64 빌드와 실행](docs/11-android-build-and-run.md)
-13. [LPDDR 분석용 시험 recipe](docs/12-test-recipes.md)
-14. [PMU·traffic·결과 측정 방법](docs/13-measurement.md)
-15. [모바일 환경 한계와 주의사항](docs/14-limitations.md)
-16. [소스 코드 지도](docs/15-source-map.md)
-17. [초보자를 위한 용어집](docs/16-glossary.md)
+1. [stressapptest는 어떻게 동작하는가](docs/01-overview.md)
+2. [실행 순서 한눈에 보기](docs/02-execution-flow.md)
+3. [메모리를 copy하고 오류를 찾는 과정](docs/09-copy-and-verification.md)
+4. [cache를 거쳐 LPDDR 부하가 만들어지는 과정](docs/04-cache-and-arm64.md)
+5. [메모리 worker별 동작](docs/07-memory-workers.md)
+6. [목적별 테스트 명령](docs/12-test-recipes.md)
+7. [부하와 오류를 측정하는 방법](docs/13-measurement.md)
 
 GitBook Git Sync용 설정은 [`.gitbook.yaml`](.gitbook.yaml), 목차는 [`docs/SUMMARY.md`](docs/SUMMARY.md)에 있습니다.
 
