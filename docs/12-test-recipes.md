@@ -13,6 +13,23 @@
 
 각 run은 시작 온도, governor, background workload, screen 상태, charger/전원 조건을 같게 맞춘다.
 
+## Recipe를 소스 경로에 대응시키는 기준
+
+> **파일:** `src/worker.cc` · **함수:** `CopyThread::Work()` · **기준:** `73b9df2`
+
+```cpp
+if (sat_->warm()) {
+  CrcWarmCopyPage(&dst, &src);       // -W
+} else if (sat_->strict()) {
+  CrcCopyPage(&dst, &src);           // 기본
+} else {
+  memcpy(dst.addr, src.addr,
+         sat_->page_length());       // -F
+}
+```
+
+**해석:** recipe에서 `-W`는 ARM64 vector checksum copy, 기본 실행은 C checksum copy, `-F`는 libc `memcpy`를 선택합니다. 조건 순서상 `-W -F`를 함께 지정하면 `-W` 경로가 실행됩니다. 이 구분을 유지해야 CPU instruction mix와 DMC traffic 차이를 해석할 수 있습니다.
+
 아래 명령의 `512` MiB와 worker 수는 예시다. target RAM과 thermal 여유에 맞게 조정한다.
 
 ## 0. 초기 fill 관찰

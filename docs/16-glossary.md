@@ -1,5 +1,23 @@
 # 초보자를 위한 용어집
 
+## 용어와 실제 코드의 연결
+
+> **파일:** `src/sattypes.h`, `src/finelock_queue.h` · **구간:** 기본 단위와 block 상태 predicate · **기준:** `73b9df2`
+
+```cpp
+static const int kSatPageSize = (1024LL*1024LL);  // SAT block
+static const int kCacheLineSize = 64;             // 처리 간격 상수
+
+static bool page_is_valid(struct page_entry *pe) {
+  return pe->pattern != NULL;
+}
+static bool page_is_empty(struct page_entry *pe) {
+  return pe->pattern == NULL;
+}
+```
+
+**해석:** 이 매뉴얼의 `SAT block`, `cache line`, `valid`, `empty`는 위 구현에 직접 대응합니다. Linux page, physical address, LPDDR row는 별도의 OS·hardware 단위이며 `kSatPageSize`와 동일한 개념이 아닙니다.
+
 ## Address와 memory
 
 ### Virtual address, VA

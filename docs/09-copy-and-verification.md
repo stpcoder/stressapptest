@@ -20,6 +20,36 @@ b1, b2: a 누적값의 누적
 
 Pattern variant가 초기화될 때 첫 4 KiB pattern의 checksum을 계산해 `Pattern::crc_`에 저장한다.
 
+> **파일:** `src/pattern.cc` · **함수:** `Pattern::CalculateCrc()` · **기준:** `73b9df2`
+
+```cpp
+uint64 a1 = 1;
+uint64 a2 = 1;
+uint64 b1 = 0;
+uint64 b2 = 0;
+int blocksize = 4096;
+int i = 0;
+int count = blocksize / sizeof i;
+while (i < count) {
+  a1 += pattern(i);
+  b1 += a1;
+  i++;
+  a1 += pattern(i);
+  b1 += a1;
+  i++;
+
+  a2 += pattern(i);
+  b2 += a2;
+  i++;
+  a2 += pattern(i);
+  b2 += a2;
+  i++;
+}
+crc_->Set(a1, a2, b1, b2);
+```
+
+**해석:** 네 누산기는 pattern에서 생성한 4 KiB의 32-bit word를 순서대로 반영합니다. 이 값은 실제 memory를 읽은 결과가 아니며 각 Pattern object의 기대값입니다.
+
 SAT block 기본 1 MiB는 4 KiB slice 256개다. Pattern이 주기적으로 반복되므로 각 slice를 같은 expected checksum과 비교한다.
 
 ## 기본 copy의 정확한 read/write 순서
@@ -36,6 +66,33 @@ source word load
 ```
 
 4 KiB가 끝나면 계산한 source checksum을 expected pattern checksum과 비교한다.
+
+> **파일:** `src/worker.cc` · **함수:** `WorkerThread::CrcCopyPage()` · **기준:** `73b9df2`
+
+```cpp
+for (int currentblock = 0; currentblock < blocks; currentblock++) {
+  uint64 *targetmem = targetmembase + currentblock * blockwords;
+  uint64 *sourcemem = sourcemembase + currentblock * blockwords;
+
+  AdlerChecksum crc;
+  if (tag_mode_) {
+    AdlerAddrMemcpyC(targetmem, sourcemem, blocksize, &crc, srcpe);
+  } else {
+    AdlerMemcpyC(targetmem, sourcemem, blocksize, &crc);
+  }
+
+  if (!crc.Equals(*expectedcrc)) {
+    int errorcount = CheckRegion(sourcemem, srcpe->pattern,
+                                 srcpe->lastcpu, 4096,
+                                 currentblock * 4096, 0);
+    errors += errorcount;
+  }
+}
+dstpe->pattern = srcpe->pattern;
+dstpe->lastcpu = sched_getcpu();
+```
+
+**해석:** 1 MiB SAT block은 4 KiB slice 단위로 처리됩니다. `AdlerMemcpyC()`가 source load, checksum update, destination store를 한 loop에서 수행합니다. checksum mismatch가 발생하면 같은 source slice를 word 단위로 다시 비교합니다.
 
 중요한 점:
 

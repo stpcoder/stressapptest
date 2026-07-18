@@ -25,6 +25,24 @@ pages_ = test memory bytes / SAT block bytes
 
 각 SAT block은 다음 metadata로 표현된다 (`src/queue.h:38`).
 
+> **파일:** `src/queue.h` · **구조체:** `page_entry` · **기준:** `73b9df2`
+
+```cpp
+struct page_entry {
+  uint64 offset;
+  void *addr;
+  uint64 paddr;
+  class Pattern *pattern;
+  int32 tag;
+  uint32 touch;
+  uint64 ts;
+  uint32 lastcpu;
+  class Pattern *lastpattern;
+};
+```
+
+**해석:** 실제 test data는 `page_entry` 내부에 저장되지 않습니다. `offset`과 `addr`이 allocation 안의 data 위치를 가리키고, `pattern`은 그 위치에 있어야 하는 기대 데이터의 정의를 가리킵니다. `pattern == NULL`은 empty, non-null은 valid 상태로 사용됩니다.
+
 | field | 의미 |
 |---|---|
 | `offset` | 전체 allocation base에서의 virtual offset |
@@ -69,6 +87,32 @@ Empty
 CheckThread는 timed run 중에는 검사한 block을 다시 valid로 넣고, final check에서는 empty로 바꿔 queue를 소진한다.
 
 ## 기본 FineLockPEQueue
+
+> **파일:** `src/finelock_queue.cc` · **함수:** `FineLockPEQueue::GetRandomWithPredicateTag()` · **기준:** `73b9df2`
+
+```cpp
+uint64 first_try = GetRandom64() % q_size_;
+uint64 next_try = 1;
+
+for (uint64 i = 0; i < q_size_; i++) {
+  uint64 index = (next_try + first_try) % q_size_;
+  next_try = (a_ * next_try + c_) % modlength_;
+
+  if (!(pred_func)(&pages_[index]))
+    continue;
+  if ((tag != kDontCareTag) && !(pages_[index].tag & tag))
+    continue;
+  if (pthread_mutex_trylock(&(pagelocks_[index])) == 0) {
+    // lock 획득 뒤 상태를 다시 검사한다.
+  }
+}
+```
+
+**해석:** worker는 연속 block 번호를 단순 증가시키지 않습니다. random 시작점과 linear-congruential 진행값으로 후보를 탐색하고, valid/empty 조건과 tag 조건이 맞는 entry의 개별 mutex를 획득합니다. block 내부 접근은 순차적이지만 block 간 선택 순서는 pseudo-random입니다.
+
+<sub><em>Linear-congruential progression: 이전 정수에 곱셈과 덧셈을 적용하고 modulus 연산으로 다음 후보 index를 생성하는 결정적 순회 방식입니다.</em></sub><br>
+<sub><em>Predicate: 후보 entry가 valid, empty 또는 특정 tag 조건을 만족하는지 판정하는 함수입니다.</em></sub><br>
+<sub><em>Pseudo-random: 초기 상태와 알고리즘이 같으면 다시 생성할 수 있는 결정적 수열이지만 실행 중에는 주소 선택이 분산되도록 사용하는 값입니다.</em></sub>
 
 기본 구현은 `page_entry[]` array와 block별 mutex로 구성된다 (`src/finelock_queue.cc`). entry 선택 순서는 pseudo-random array 탐색으로 결정된다.
 

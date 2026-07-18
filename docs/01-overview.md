@@ -42,6 +42,42 @@ main()
 
 `main()`의 순서는 `ParseArgs → Initialize → Run → PrintResults → Cleanup`이다 (`src/main.cc:20`).
 
+## 소스 코드로 확인하는 lifecycle
+
+> **파일:** `src/main.cc` · **함수:** `main()` · **기준:** `73b9df2`
+
+```cpp
+Sat *sat = SatFactory();
+
+if (!sat->ParseArgs(argc, argv)) {
+  sat->bad_status();
+} else if (!sat->Initialize()) {
+  sat->bad_status();
+} else if (!sat->Run()) {
+  sat->bad_status();
+}
+sat->PrintResults();
+if (!sat->Cleanup()) {
+  sat->bad_status();
+}
+```
+
+**해석:** `Sat`가 전체 실행 상태를 소유합니다. `Initialize()`에서 OS abstraction, memory, pattern, queue가 준비되고 `Run()`에서 worker가 생성·실행됩니다. `PrintResults()`는 test status와 오류 수를 출력하며 `Cleanup()`은 할당 자원을 해제합니다.
+
+> **파일:** `src/sat.cc` · **함수:** `Sat::InitializeThreads()` · **기준:** `73b9df2`
+
+```cpp
+for (int i = 0; i < memory_threads_; i++) {
+  CopyThread *thread = new CopyThread();
+  thread->InitThread(total_threads_++, this, os_, patternlist_,
+                     &power_spike_status_);
+  memory_vector->insert(memory_vector->end(), thread);
+}
+workers_map_.insert(make_pair(kMemoryType, memory_vector));
+```
+
+**해석:** `-m N`은 `CopyThread` object N개를 생성합니다. 기본값은 환경 검사 단계에서 online CPU 수로 결정됩니다. File, network, check, invert, disk 및 CPU worker는 각각의 option count에 따라 별도 vector에 생성됩니다.
+
 ## 핵심 데이터 흐름
 
 ```text

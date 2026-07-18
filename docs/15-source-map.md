@@ -127,6 +127,41 @@
 
 ## 분석 시 권장 call chain
 
+> **파일:** `src/main.cc`, `src/sat.cc`, `src/worker.cc` · **기준:** `73b9df2`
+
+```cpp
+if (!sat->ParseArgs(argc, argv)) {
+  logprintf(0, "Process Error: Sat::ParseArgs() failed\n");
+  sat->bad_status();
+} else if (!sat->Initialize()) {
+  logprintf(0, "Process Error: Sat::Initialize() failed\n");
+  sat->bad_status();
+} else if (!sat->Run()) {
+  logprintf(0, "Process Error: Sat::Run() failed\n");
+  sat->bad_status();
+}
+sat->PrintResults();
+```
+
+**해석:** 실제 entry point에서 분석할 세 단계는 argument parse, initialization, timed run입니다. 각 단계의 실패는 process status에 반영되며 결과 출력까지 수행됩니다.
+
+```text
+main()
+ ├─ Sat::ParseArgs()
+ ├─ Sat::Initialize()
+ │   ├─ OsLayerFactory() → OsLayer::Initialize()
+ │   ├─ Sat::AllocateMemory()
+ │   ├─ Sat::InitializePatterns()
+ │   └─ Sat::InitializePages() → FillThread::Work()
+ └─ Sat::Run()
+     ├─ Sat::InitializeThreads()
+     ├─ Sat::SpawnThreads() → WorkerThread::SpawnThread()
+     ├─ CopyThread::Work() / CheckThread::Work() / InvertThread::Work()
+     └─ Sat::JoinThreads() → final CheckThread
+```
+
+**해석:** 위 call chain은 source browsing의 기준 경로입니다. memory access 원인을 분석할 때는 `CopyThread::Work()`에서 선택된 branch를 확인한 다음 `CrcCopyPage()`, `CrcWarmCopyPage()` 또는 libc `memcpy()`로 이동합니다. address와 cache 동작은 해당 함수가 호출하는 `OsLayer` 및 `adler32memcpy.cc`에서 확인합니다.
+
 Copy data path는 다음 순서로 읽는다.
 
 ```text

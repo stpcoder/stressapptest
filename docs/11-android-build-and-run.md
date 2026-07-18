@@ -44,6 +44,34 @@ STRESSAPPTEST_CPU_AARCH64
 
 `src/stressapptest_config_android.h`를 build output에 `stressapptest_config.h`로 준비해 public source의 autoconf include 방식을 만족시킨다.
 
+> **파일:** `scripts/build_android_arm64.sh` · **구간:** AArch64 compiler 호출 · **기준:** 이 fork
+
+```bash
+"${cxx}" \
+  -std=gnu++11 \
+  -O2 \
+  -g \
+  -fno-omit-frame-pointer \
+  -fPIE \
+  -pie \
+  -pthread \
+  -DHAVE_CONFIG_H \
+  -DANDROID \
+  -DNDEBUG \
+  -UDEBUG \
+  -DCHECKOPTS \
+  -DSTRESSAPPTEST_CPU_AARCH64 \
+  -I"${output_dir}" \
+  -I"${repo_root}/src" \
+  "${source_paths[@]}" \
+  -o "${output_dir}/stressapptest"
+```
+
+**해석:** NDK의 `aarch64-linux-android<API>-clang++`로 모든 public source를 하나의 PIE executable로 link합니다. `STRESSAPPTEST_CPU_AARCH64`가 ARM64 timestamp, cache maintenance 및 NEON copy 조건부 구현을 선택합니다.
+
+<sub><em>PIE: Position-Independent Executable의 약어이며 ASLR 적용을 위해 고정 virtual address에 의존하지 않도록 생성한 실행 파일입니다.</em></sub><br>
+<sub><em>Conditional compilation: compile-time macro 값에 따라 특정 architecture 또는 platform 구현만 binary에 포함하는 방식입니다.</em></sub>
+
 ## Binary 확인
 
 ```bash

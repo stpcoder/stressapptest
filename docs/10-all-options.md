@@ -4,6 +4,36 @@
 
 <sub><em>Parser option: `Sat::ParseArgs()`가 command line에서 인식하여 내부 설정값에 반영하는 문자열입니다.</em></sub>
 
+## 소스 코드로 확인하는 parser 방식
+
+> **파일:** `src/sat.cc` · **구간:** `ARG_KVALUE`, `ARG_IVALUE`, `Sat::ParseArgs()` · **기준:** `73b9df2`
+
+```cpp
+#define ARG_KVALUE(argument, variable, value) \
+  if (!strcmp(argv[i], argument)) {           \
+    variable = value;                         \
+    continue;                                 \
+  }
+
+#define ARG_IVALUE(argument, variable)        \
+  if (!strcmp(argv[i], argument)) {           \
+    i++;                                      \
+    if (i < argc)                             \
+      variable = strtoull(argv[i], NULL, 0);  \
+    continue;                                 \
+  }
+
+ARG_IVALUE("-M", size_mb_);
+ARG_IVALUE("-s", runtime_seconds_);
+ARG_IVALUE("-m", memory_threads_);
+ARG_IVALUE("-i", invert_threads_);
+ARG_IVALUE("-c", check_threads_);
+```
+
+**해석:** option은 GNU `getopt` table이 아니라 문자열 비교 macro의 실행 순서로 정의됩니다. 정수는 base 0의 `strtoull()`로 읽으므로 decimal과 `0x` hexadecimal을 받을 수 있습니다. 이 장의 option 표는 help text가 아닌 이 parser 구현을 기준으로 작성했습니다.
+
+<sub><em>Base 0 integer parsing: 숫자 prefix에 따라 `0x`는 16진수, 앞의 `0`은 8진수, 그 외에는 10진수로 해석하는 C library 변환 방식입니다.</em></sub>
+
 ## Memory와 실행 시간
 
 | Option | 기본값 | 실제 동작 및 모바일 해석 |

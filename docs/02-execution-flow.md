@@ -40,6 +40,29 @@ worker stop/join
 - 알 수 없는 option은 version/help를 출력하고 exit 1한다.
 - `-h`, `--help`는 version/help를 출력하고 exit 0한다.
 
+### 실제 초기화 순서
+
+> **파일:** `src/sat.cc` · **함수:** `Sat::Initialize()` · **기준:** `73b9df2`
+
+```cpp
+os_ = OsLayerFactory(options);
+if (!os_->Initialize())
+  return false;
+
+if (!CheckEnvironment())
+  return false;
+
+if (!AllocateMemory())
+  return false;
+
+if (!InitializePatterns())
+  return false;
+
+pages_ = size_ / page_length_;
+```
+
+**해석:** CPU 수와 memory 기본값은 `OsLayer` 초기화 이후 확정됩니다. memory allocation이 성공한 다음 pattern checksum과 SAT block 수가 구성됩니다. 따라서 `-s` countdown이 시작되기 전에 큰 memory allocation과 전체 fill이 수행됩니다.
+
 ## 2. 환경 및 기본값 결정
 
 - runtime 기본값: 20초
@@ -107,6 +130,18 @@ variant를 만든다. 총 slot은 15 × 8 = 120개다. weight 0인 variant objec
 ## 7. Timed worker 실행
 
 `Sat::Run()`이 worker를 만들고 `pthread_create()`한 뒤에 `-s` countdown을 시작한다 (`src/sat.cc:1884`).
+
+> **파일:** `src/sat.cc` · **함수:** `Sat::Run()` · **기준:** `73b9df2`
+
+```cpp
+InitializeThreads();
+SpawnThreads();
+
+const time_t start = time(NULL);
+const time_t end = start + runtime_seconds_;
+```
+
+**해석:** `InitializeThreads()`는 C++ worker object를 구성하고 `SpawnThreads()`는 각 object에 대해 `pthread_create()`를 호출합니다. `-s` 시간 측정의 기준점은 worker spawn 이후에 설정됩니다. 초기 FillThread와 종료 후 CheckThread 시간은 timed interval에 포함되지 않습니다.
 
 기본 CopyThread는 반복해서:
 

@@ -41,8 +41,51 @@ mmap(NULL, length,
 
 이 mapping에는 운영체제가 관리하는 normal cacheable userspace memory attribute가 적용된다. physical DRAM의 직접 mapping과 non-cacheable attribute 설정은 이 경로에 포함되지 않는다.
 
+### 실제 anonymous mapping
+
+> **파일:** `src/os.cc` · **함수:** `OsLayer::AllocateTestMem()` · **기준:** `73b9df2`
+
+```cpp
+if (!use_hugepages_ && !use_posix_shm_) {
+  if (sysconf(_SC_PAGESIZE) >= 4096) {
+    void *map_buf = mmap(NULL, length, PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (map_buf != MAP_FAILED) {
+      buf = map_buf;
+      mmapped_allocation_ = true;
+    }
+  }
+}
+```
+
+**해석:** 반환되는 값은 process virtual address 범위의 시작 pointer입니다. 이 호출은 특정 DRAM channel, bank 또는 row를 지정하지 않습니다. anonymous page의 physical backing은 kernel page allocator와 first touch에 의해 형성됩니다.
+
 <sub><em>Memory attribute: page table과 MAIR를 통해 memory type, cacheability 및 shareability를 지정하는 속성입니다.</em></sub><br>
 <sub><em>Normal cacheable memory: CPU cache hierarchy와 coherency protocol을 통해 접근하는 일반 데이터 메모리 유형입니다.</em></sub>
+
+## 소스 코드로 확인하는 VA→PA 진단
+
+> **파일:** `src/os.cc` · **함수:** `OsLayer::VirtualToPhysical()` · **기준:** `73b9df2`
+
+```cpp
+uint64 frame, paddr, pfnmask, pagemask;
+int pagesize = sysconf(_SC_PAGESIZE);
+off_t off = ((uintptr_t)vaddr) / pagesize * 8;
+int fd = open(kPagemapPath, O_RDONLY);
+
+if (lseek(fd, off, SEEK_SET) != off || read(fd, &frame, 8) != 8)
+  return 0;
+
+if (!(frame & (1ULL << 63)) || (frame & (1ULL << 62)))
+  return 0;
+
+pfnmask = ((1ULL << 55) - 1);
+pagemask = pagesize - 1;
+paddr = ((frame & pfnmask) * pagesize) | ((uintptr_t)vaddr & pagemask);
+return paddr;
+```
+
+**해석:** pagemap entry에서 present와 swapped 상태를 확인하고 PFN에 page offset을 결합합니다. Android kernel이 PFN 공개를 제한하면 PFN 부분이 0으로 보이거나 open/read가 실패할 수 있습니다. 계산된 PA는 system physical address이며 LPDDR channel/bank/row 좌표가 아닙니다.
 
 ## Reservation과 first touch
 

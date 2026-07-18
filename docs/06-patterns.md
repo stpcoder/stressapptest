@@ -28,6 +28,25 @@ pattern은 CPU virtual address에 기록되는 데이터 word를 정의한다. p
 
 15 family × 2 polarity × 4 width = 120 object다. weight 0 variant는 선택되지 않는다.
 
+> **파일:** `src/pattern.cc` · **함수:** `PatternList::Initialize()` · **기준:** `73b9df2`
+
+```cpp
+patterns_.resize(pattern_array_size * 8);
+for (int i = 0; i < pattern_array_size; i++) {
+  patterns_[patterncount++].Initialize(pattern_array[i], 32, false,
+                                       pattern_array[i].weight[0]);
+  patterns_[patterncount++].Initialize(pattern_array[i], 64, false,
+                                       pattern_array[i].weight[1]);
+  patterns_[patterncount++].Initialize(pattern_array[i], 128, false,
+                                       pattern_array[i].weight[2]);
+  patterns_[patterncount++].Initialize(pattern_array[i], 256, false,
+                                       pattern_array[i].weight[3]);
+  // 같은 네 width를 invert=true로 다시 생성한다.
+}
+```
+
+**해석:** 각 family는 8개 object로 확장됩니다. 네 width의 원본과 네 width의 bitwise inverse가 생성되며 각 object에 독립적인 선택 weight와 4 KiB expected checksum이 저장됩니다.
+
 ### Width의 정확한 의미
 
 `Pattern::pattern(offset)`은 `offset >> busshift`로 32-bit pattern word 반복 수를 바꾼다.
@@ -70,6 +89,27 @@ pattern은 CPU virtual address에 기록되는 데이터 word를 정의한다. p
 
 <sub><em>Inverted variant: 원본 pattern의 각 bit에 bitwise NOT을 적용한 데이터 배열입니다.</em></sub><br>
 <sub><em>Selection weight: 전체 weight 합에서 특정 pattern variant가 선택될 상대 비율입니다.</em></sub>
+
+> **파일:** `src/pattern.cc` · **함수:** `PatternList::GetRandomPattern()` · **기준:** `73b9df2`
+
+```cpp
+int target = random();
+unsigned int i = 0;
+target = (target % weightcount_) + 1;
+
+do {
+  target -= patterns_[i].weight();
+  if (target <= 0)
+    break;
+  i++;
+} while (i < size_);
+
+if (i < size_) {
+  return &patterns_[i];
+}
+```
+
+**해석:** random 값은 전체 weight 합의 범위로 변환됩니다. 각 pattern weight를 차감하다가 0 이하가 되는 object가 선택됩니다. weight 10은 weight 5보다 이 함수에서 선택될 확률이 두 배입니다.
 
 ## Width별 전체 분포
 

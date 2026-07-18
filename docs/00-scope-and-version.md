@@ -16,6 +16,20 @@
 
 문서의 line number와 구현 설명은 이 commit을 기준으로 한다. 이후 upstream이 변경되면 parser, ARM assembly, 기본값을 다시 대조해야 한다.
 
+## 소스 코드로 확인하는 기본 단위
+
+> **파일:** `src/sattypes.h` · **구간:** 공통 상수 · **기준:** `73b9df2`
+
+```cpp
+static const int kMegabyte = (1024LL*1024LL);
+static const int kSatDiskPage = 8;
+static const int kSatPageSize = (1024LL*1024LL);
+static const int kCacheLineSize = 64;
+static const uint16_t kNetworkPort = 19996;
+```
+
+**해석:** 기본 SAT block은 1 MiB, 기본 file I/O batch는 8 block, 코드가 가정하는 cache line은 64 B, network test port는 19996입니다. `kCacheLineSize`는 SoC cache line을 runtime에서 검출한 값이 아니며 일부 알고리즘의 compile-time 처리 간격입니다.
+
 ## GitHub master와 AOSP mirror의 버전 관계
 
 현재 GitHub master의 최신 commit은 Android 전용 파일을 제거했다. Android Open Source Project는 별도의 `platform/external/stressapptest` mirror와 `Android.bp`를 유지한다.

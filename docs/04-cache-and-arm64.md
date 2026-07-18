@@ -14,6 +14,27 @@ stressapptest가 직접 제어하는 것은 주로 3번이다.
 <sub><em>Microarchitecture policy: CPU 구현이 replacement, prefetch, write allocation 및 write-back 시점을 결정하는 내부 정책입니다.</em></sub><br>
 <sub><em>Workload access policy: software가 주소, 크기, 순서, read/write 비율 및 thread 수를 구성하는 방식입니다.</em></sub>
 
+## 소스 코드로 확인하는 ARM64 cache maintenance
+
+> **파일:** `src/os.h` · **함수:** `OsLayer::FastFlush()` · **기준:** `73b9df2`
+
+```cpp
+#elif defined(STRESSAPPTEST_CPU_AARCH64)
+  asm volatile("dc cvau, %0" : : "r" (vaddr));
+  asm volatile("dsb ish");
+  asm volatile("ic ivau, %0" : : "r" (vaddr));
+  asm volatile("dsb ish");
+  asm volatile("isb");
+#endif
+```
+
+**해석:** `dc cvau`는 해당 virtual address의 data cache line을 Point of Unification 방향으로 clean합니다. `ic ivau`는 같은 주소의 instruction cache line을 invalidate합니다. 이 조합은 data cache line을 Point of Coherency까지 clean-and-invalidate하는 `dc civac`와 다릅니다. 따라서 ARM64의 `FastFlush()`를 “DRAM까지 강제 write하고 data cache를 완전히 비우는 명령”으로 해석할 수 없습니다.
+
+<sub><em>Point of Unification, PoU: instruction fetch와 data access가 동일한 memory copy를 관찰하도록 합류하는 cache hierarchy 지점입니다.</em></sub><br>
+<sub><em>Point of Coherency, PoC: 해당 shareability domain의 CPU와 coherent observer가 동일한 memory copy를 관찰하는 지점입니다.</em></sub><br>
+<sub><em>Cache clean: dirty data를 지정된 cache hierarchy 지점 방향으로 기록하고 line의 valid 상태는 유지할 수 있는 동작입니다.</em></sub><br>
+<sub><em>Cache invalidate: cache line의 valid 상태를 제거하여 이후 access가 다시 line을 획득하게 하는 동작입니다.</em></sub>
+
 ## 일반적인 cached write 흐름
 
 ```text
@@ -107,6 +128,28 @@ CPU instruction 순서와 LPDDR command 순서는 동일하지 않을 수 있다
 ## ARM64 `-W` 경로
 
 현재 GitHub master의 AArch64 `AdlerMemcpyAsm()`은 한 loop에서 64 B를 처리한다 (`src/adler32memcpy.cc:402`).
+
+> **파일:** `src/adler32memcpy.cc` · **함수:** `AdlerMemcpyAsm()` AArch64 구간 · **기준:** `73b9df2`
+
+```cpp
+asm volatile (
+    // Preload upcoming cacheline.
+    "prfm pldl1strm, [" src_r ", #0 ];\n"
+    "prfm pldl1strm, [" src_r ", #64 ];\n"
+    "prfm pldl1strm, [" src_r ", #128 ];\n"
+    "prfm pldl1strm, [" src_r ", #192];\n"
+    "prfm pldl1strm, [" src_r ", #256];\n"
+
+    "TOP:\n"
+    "prfm pldl1strm, [" src_r ", #320];\n"
+    "prfm pldl1strm, [" src_r ", #384];\n"
+    "ld1 {v8.2d, v9.2d, v10.2d, v11.2d}, [" src_r "], #64;\n"
+    "st1 {v8.2d, v9.2d, v10.2d, v11.2d}, [" dst_r "], #64;\n"
+    // ... checksum vector 연산과 loop 제어가 이어진다.
+);
+```
+
+**해석:** 한 iteration에서 source 64 B를 NEON register로 load하고 destination 64 B를 store합니다. `prfm pldl1strm`은 L1 streaming preload hint이며 cache bypass 또는 DRAM access 보장 명령이 아닙니다. working set, cache capacity, prefetch 구현 및 concurrent worker에 따라 실제 LPDDR traffic이 결정됩니다.
 
 핵심 instruction은 다음과 같다.
 

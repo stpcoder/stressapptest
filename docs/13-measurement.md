@@ -30,6 +30,25 @@ SAT는 worker의 처리 block 수와 runtime으로 다음을 출력한다.
 - worker error count
 - queue touch histogram
 
+> **파일:** `src/sat.cc` · **함수:** `Sat::AnalysisAllStats()` · **기준:** `73b9df2`
+
+```cpp
+for (WorkerMap::const_iterator map_it = workers_map_.begin();
+     map_it != workers_map_.end(); ++map_it) {
+  for (WorkerVector::const_iterator it = map_it->second->begin();
+       it != map_it->second->end(); ++it) {
+    thread_runtime_sec = (*it)->GetRunDurationUSec() / 1000000.0;
+    total_data += (*it)->GetMemoryCopiedData();
+    total_data += (*it)->GetDeviceCopiedData();
+    if (thread_runtime_sec > max_runtime_sec)
+      max_runtime_sec = thread_runtime_sec;
+  }
+}
+total_bandwidth = total_data / max_runtime_sec;
+```
+
+**해석:** SAT 전체 bandwidth는 worker가 보고한 논리적 memory/device data의 합을 가장 긴 worker runtime으로 나눈 값입니다. DMC counter에서 관측한 read/write byte의 합을 직접 사용하지 않습니다. 따라서 SAT MB/s와 LPDDR MB/s는 동일한 수치가 될 필요가 없습니다.
+
 CopyThread의 논리값은 block마다 source read와 destination write를 합쳐 2배로 계산한다. 실제 DMC traffic과 차이가 날 수 있는 원인:
 
 - destination write allocate/RFO
