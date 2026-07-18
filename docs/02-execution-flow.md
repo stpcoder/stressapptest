@@ -1,0 +1,141 @@
+# 시작부터 종료까지 실행 순서
+
+## 전체 timeline
+
+```text
+argument parse
+   ↓
+OS/CPU 정보 초기화
+   ↓
+memory 크기 결정 및 mmap
+   ↓
+pattern variant와 expected checksum 생성
+   ↓
+1 MiB block metadata/queue 생성
+   ↓
+8개 FillThread로 전체 memory write       ┐
+   ↓                                      │ -s 이전
+physical 진단/tag 및 valid/empty 분류     ┘
+   ↓
+실행 worker spawn
+   ↓
+-s countdown 동안 copy/check/invert/I/O
+   ↓
+worker stop/join
+   ↓
+8개 CheckThread로 전체 valid block 검사  ← -s 이후
+   ↓
+통계/오류 출력 및 memory 해제
+```
+
+## 1. Argument parse
+
+`Sat::ParseArgs()`가 option을 순서대로 읽는다 (`src/sat.cc:794`). GNU `getopt`를 쓰지 않고 문자열 비교 macro를 사용한다.
+
+구현상 특징:
+
+- 숫자는 `strtoull(..., base=0)`로 읽어 `0x` hexadecimal 입력도 가능하다.
+- 일부 signed field에도 unsigned parse 결과를 대입한다.
+- `-f`, `-d`, `-n`, `--memory_channel`은 반복 지정할 수 있다.
+- 알 수 없는 option은 version/help를 출력하고 exit 1한다.
+- `-h`, `--help`는 version/help를 출력하고 exit 0한다.
+
+## 2. 환경 및 기본값 결정
+
+- runtime 기본값: 20초
+- block 크기: 1 MiB
+- fill thread: 8
+- copy thread: 미지정 시 online logical CPU 수
+- strict transaction check: 켜짐
+- warm `-W`: 꺼짐
+- pause/resume: 600초마다 15초 pause
+
+`-M`이 0이면 `FindFreeMemSize()`가 전체 physical memory를 기준으로 target을 정한다. 이 값은 available memory가 아니라 total memory 비율을 주로 사용하므로 Android에서는 반드시 주의해야 한다.
+
+## 3. Virtual memory 확보
+
+일반 Android/Linux 경로는 다음 `mmap()`이다.
+
+```c
+mmap(NULL, length,
+     PROT_READ | PROT_WRITE,
+     MAP_PRIVATE | MAP_ANONYMOUS,
+     -1, 0)
+```
+
+이 시점에는 virtual address range가 예약되지만 모든 physical page가 즉시 할당되었다고 볼 수 없다. 이후 FillThread의 store가 page fault/first touch를 발생시키며 physical page와 실제 backing memory를 확보한다.
+
+## 4. Pattern 초기화
+
+15개 pattern family 각각에 대해:
+
+- non-inverted/inverted
+- 32/64/128/256 logical width
+
+variant를 만든다. 총 slot은 15 × 8 = 120개이며 weight 0인 variant도 object는 존재하지만 random 선택되지 않는다.
+
+각 variant는 첫 4 KiB에 대한 expected modified-Adler checksum을 미리 계산한다.
+
+## 5. 전체 memory fill
+
+처음에는 모든 `page_entry.pattern`이 null이므로 empty다. 기본 8개의 FillThread가 block을 하나씩 가져와:
+
+1. weighted random pattern 선택
+2. 1 MiB 전체를 64-bit store로 채움
+3. pattern pointer와 last CPU 기록
+4. valid 상태로 반환
+
+이 단계는 모든 test memory를 실제로 touch하며 write-heavy traffic을 만든다. `-s` timer가 시작되기 전이다.
+
+## 6. Physical 진단과 valid/empty 비율 설정
+
+모든 block을 한 번 채운 다음 다시 각 block을 가져와:
+
+- 첫 virtual address의 possible physical address를 `/proc/self/pagemap`으로 조회
+- generic region tag 계산
+- `--do_page_map`이면 4 KiB 단위 bitmap 갱신
+- 기본 fine-lock queue에서는 약 2/5를 empty, 약 3/5를 valid로 분류
+
+여기서 empty는 “OS memory가 free”라는 뜻이 아니다. 해당 1 MiB allocation은 그대로 존재하고, queue상 destination으로 사용 가능하다는 뜻이다.
+
+## 7. Timed worker 실행
+
+`Sat::Run()`이 worker를 만들고 `pthread_create()`한 뒤에 `-s` countdown을 시작한다 (`src/sat.cc:1884`).
+
+기본 CopyThread는 반복해서:
+
+```text
+GetValid(source)
+GetEmpty(destination)
+CrcCopyPage(source → destination)
+PutValid(destination)
+PutEmpty(source)
+sched_yield()
+```
+
+을 수행한다.
+
+## 8. Pause/resume power step
+
+기본 `--pause_delay 600 --pause_duration 15`다. 해당 시간이 되면 `power_spike_status`에 속한 worker를 pause했다가 동시에 resume한다.
+
+주로 CopyThread, FileThread, DiskThread와 CPU frequency monitor가 이 그룹에 속한다. 모든 continuous worker가 멈추는 것은 아니다. 짧은 test에서는 600초에 도달하지 않아 발생하지 않는다.
+
+## 9. 종료와 final check
+
+timer 만료, signal, excessive error 조건이 발생하면 worker를 stop/join한다. 그 다음 기본 8개의 CheckThread가 valid block을 모두 꺼내 checksum/slow compare하고 empty로 바꾼다.
+
+따라서 copy destination write 오류는 copy 직후 즉시 발견되지 않더라도:
+
+- 그 block이 나중에 source가 되었을 때
+- check worker가 읽었을 때
+- 마지막 full check에서
+
+발견될 수 있다.
+
+## 10. Process exit code
+
+- 내부 fatal status 또는 data error가 하나라도 있으면 exit 1
+- 오류가 없으면 exit 0
+
+reboot, kernel panic, watchdog reset, process SIGKILL은 정상적인 final result 출력 전에 process가 사라질 수 있으므로 pstore/kernel log/LMKD log를 별도로 수집해야 한다.
