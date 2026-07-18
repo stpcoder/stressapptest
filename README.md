@@ -5,6 +5,12 @@
 > 기준 소스: upstream commit `73b9df227e89cd52b09852056843610722b7b7ae` (`v1.0.11-2-g73b9df2`)
 > 문서 목적: stressapptest의 데이터 구성, worker 실행 순서, read/write/verify 시점, cache·system memory·LPDDR traffic 전달 경로를 소스 코드 기준으로 설명합니다.
 
+## 온라인 한글 GitBook
+
+> **배포 문서:** [stressapptest 모바일 ARM64 한글 매뉴얼](https://stressapptest-mobile-arm64.gitbook.io/stressapptest-mobile-arm64-docs/)
+
+GitBook에는 장별 navigation, 현재 페이지 목차, 검색, syntax-highlighted source code snippet 및 mobile layout이 적용됩니다. `master` branch와 Git Sync되어 repository의 `docs/` 변경이 배포 문서에 반영됩니다.
+
 ## 핵심 구현 요약
 
 - 기본값에서는 online logical CPU 수만큼 `CopyThread`를 만듭니다. `-m N`으로 바꿀 수 있습니다.
@@ -22,9 +28,9 @@
 <sub><em>Write-back: 수정된 cache line을 하위 cache 또는 system memory 방향으로 기록하는 동작입니다.</em></sub><br>
 <sub><em>Physical mapping: virtual address를 system physical address에 대응시키는 변환 관계입니다.</em></sub>
 
-## 한글 GitBook 메뉴
+## Repository 문서 목차
 
-전체 문서는 [`docs/README.md`](docs/README.md)에서 시작합니다.
+GitBook에 접근할 수 없는 환경에서는 [`docs/README.md`](docs/README.md)부터 Markdown 원문을 읽을 수 있습니다.
 
 1. [문서 범위와 버전](docs/00-scope-and-version.md)
 2. [프로그램 개요와 전체 구성](docs/01-overview.md)
