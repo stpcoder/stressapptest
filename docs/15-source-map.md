@@ -140,7 +140,7 @@ Sat::InitializePages
  → Sat::JoinThreads final CheckThread
 ```
 
-Physical/cache path는 다음 순서가 좋다.
+Physical/cache path는 다음 순서로 분석한다.
 
 ```text
 OsLayer::AllocateTestMem

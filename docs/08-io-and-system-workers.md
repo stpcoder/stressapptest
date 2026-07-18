@@ -12,6 +12,10 @@ O_RDWR | O_CREAT | O_SYNC | O_DIRECT
 
 `O_DIRECT`가 `EINVAL`로 실패하면 이를 빼고 다시 open한 뒤 filesystem page cache flush 경로를 활성화한다.
 
+<sub><em>O_SYNC: write system call의 데이터와 필요한 metadata가 backing storage에 동기화되도록 요청하는 file open flag입니다.</em></sub><br>
+<sub><em>O_DIRECT: filesystem page cache 사용을 최소화하도록 kernel에 요청하는 file open flag입니다.</em></sub><br>
+<sub><em>Page cache: Linux kernel이 file 데이터를 RAM에 보관하여 file I/O를 처리하는 cache 계층입니다.</em></sub>
+
 ### 한 pass
 
 ```text
@@ -27,7 +31,9 @@ valid SAT block 8개 획득
  → destination을 valid로 반환
 ```
 
-FileThread는 UFS/storage DMA와 memory/NoC traffic을 함께 만든다. `O_DIRECT`는 Linux page cache를 우회하려는 것이며 CPU L1/L2/SLC bypass가 아니다.
+FileThread는 UFS/storage DMA와 memory/NoC traffic을 동시에 생성한다. `O_DIRECT`의 적용 범위는 Linux page cache이며, DMA coherency와 CPU L1/L2/SLC access는 platform I/O 경로에 따라 처리된다.
+
+<sub><em>DMA: device가 CPU의 개별 load/store 개입 없이 system memory와 데이터를 전송하는 기능입니다.</em></sub>
 
 `--filesize`는 한 pass의 파일 크기를 byte로 지정하며 내부적으로 `disk_pages = filesize / SAT block size`로 계산한다. 최소 한 block이다.
 
@@ -60,7 +66,9 @@ network worker는 CPU copy, socket buffer, kernel network stack, DMA/NIC/Wi-Fi s
 
 ## DiskThread (`-d`)
 
-`-d device-or-file`은 direct device/file random I/O worker 하나를 만든다. FileThread와 달리 SAT 1 MiB file pass가 아니라 sector/block table과 async I/O를 사용한다.
+`-d device-or-file`은 direct device/file random I/O worker 하나를 만든다. DiskThread는 sector/block table과 asynchronous I/O를 사용하며, FileThread는 SAT block 단위의 sequential file pass를 사용한다.
+
+<sub><em>Asynchronous I/O: I/O 요청 제출과 완료 수집을 분리하여 여러 요청을 동시에 계류시키는 방식입니다.</em></sub>
 
 ### 기본은 non-destructive
 
@@ -84,7 +92,7 @@ network worker는 CPU copy, socket buffer, kernel network stack, DMA/NIC/Wi-Fi s
 
 `--random-threads N`은 각 `-d` DiskThread마다 N개의 추가 reader를 만든다. 이들은 shared `DiskBlockTable`에서 initialized block을 random 선택해 검증한다.
 
-현재 기준 코드에는 주의할 부분이 있다. main DiskThread가 block 준비 후 `block->set_initialized()`가 아니라 getter인 `block->initialized()`를 호출한다 (`src/worker.cc:2948`). 따라서 table entry가 initialized로 바뀌지 않아 RandomDiskThread가 기대대로 block을 받지 못할 가능성이 있다. 이 option을 유효하다고 가정하기 전에 target build에서 trace/수정 검증이 필요하다.
+현재 기준 코드의 main DiskThread는 block 준비 후 상태 조회 함수 `block->initialized()`를 호출한다 (`src/worker.cc:2948`). 상태 설정 함수 `block->set_initialized()` 호출은 해당 경로에 존재하지 않는다. 그 결과 table entry의 initialized flag가 설정되지 않을 수 있으며 RandomDiskThread의 block 획득 조건이 충족되지 않을 수 있다. target build에서 상태 전이 trace를 확인한 후 이 option의 실행 결과를 사용한다.
 
 ## CpuStressThread (`-C`)
 
@@ -95,10 +103,10 @@ generic ARM/Linux workload는 100개의 double array에 대해 100,000,000회 mo
 특성:
 
 - working array가 작아 L1에 머물 가능성이 큼
-- 직접적인 DRAM bandwidth generator가 아님
+- 주된 workload는 CPU FP/vector calculation
 - FP/vector pipeline, CPU dynamic power, thermal, DVFS에 영향
 - CopyThread와 함께 사용하면 memory+compute 동시 전력 조건 생성
-- 자체 data correctness pass/fail을 평가하지 않음
+- worker status는 계산 loop 실행 성공 여부로 기록
 
 ## CpuCacheCoherencyThread (`--cc_test`)
 
@@ -112,7 +120,10 @@ configured CPU 수만큼 thread를 만들고 각 thread가 CPU에 pin된다.
 - snoop/invalidate/update
 - cache coherency protocol correctness
 
-이 test는 작은 shared data를 집중적으로 ping-pong하므로 primary DRAM bandwidth test가 아니다. cache line이 SLC/DRAM에 자주 내려갈지는 coherency implementation에 의존한다.
+이 test는 작은 shared data의 cache-line ownership을 core 사이에서 반복적으로 전환한다. 주된 부하는 snoop, invalidate 및 ownership transaction이며, SLC/DRAM traffic 비율은 coherency implementation에 따라 결정된다.
+
+<sub><em>Cache-line ownership: 특정 core가 cache line을 수정할 수 있도록 coherency protocol이 부여한 권한 상태입니다.</em></sub><br>
+<sub><em>Snoop: 다른 cache가 해당 address의 data 또는 ownership을 보유하는지 조회하는 coherency transaction입니다.</em></sub>
 
 관련 option:
 
@@ -134,16 +145,16 @@ public generic `OsLayer::ErrorPoll()`은 항상 0을 반환한다 (`src/os.cc:73
 - DMC/LLCC error register
 - secure firmware/SoC-specific diagnostics
 
-`--no_errors`는 이 polling thread를 생성하지 않지만 memory pattern verification을 끄는 option은 아니다.
+`--no_errors`는 ErrorPollThread 생성을 비활성화한다. CopyThread, CheckThread 및 final check의 pattern verification 설정은 그대로 유지된다.
 
 ## CpuFreqThread
 
 `--cpu_freq_test`는 TSC/APERF/MPERF MSR을 읽는 x86 전용 구현이다. AArch64에서는 `CanRun()`이 false를 반환해 초기화가 실패한다.
 
-Android ARM에서 CPU frequency를 확인하려면 이 option 대신 cpufreq sysfs, tracepoint, vendor profiler, simpleperf/Perfetto 등을 사용해야 한다.
+Android ARM의 CPU frequency는 cpufreq sysfs, tracepoint, vendor profiler, simpleperf 또는 Perfetto로 측정한다. `--cpu_freq_test`는 AArch64 초기화 단계에서 지원되지 않는 설정으로 처리된다.
 
 ## Monitor mode
 
 `--monitor_mode`는 test memory를 할당하지 않고 ErrorPollThread만 실행한다.
 
-하지만 generic ARM ErrorPoll이 no-op이므로 vendor-specific OsLayer 없이 Android에서 실질적인 ECC monitor로 사용하기 어렵다.
+generic ARM ErrorPoll은 항상 0을 반환한다. Android에서 ECC event monitor로 사용하려면 vendor-specific `OsLayer::ErrorPoll()` 구현을 연결한다.

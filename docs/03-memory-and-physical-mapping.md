@@ -11,15 +11,15 @@
 | 2 GiB 미만 | total의 약 85% |
 | 2 GiB 이상 | total의 약 95% - 192 MiB |
 
-코드는 available physical page 수도 읽어 log에 표시하지만 target 계산의 기준으로 직접 쓰지 않는다. 따라서 메모리가 이미 많이 사용 중인 Android 기기에서 자동값은 allocation failure, swap/zram 압박, LMKD kill 또는 system responsiveness 저하를 만들 수 있다.
+코드는 available physical page 수를 log에 표시한다. target 계산에는 total physical memory 비율을 적용한다. 메모리 사용량이 높은 Android 기기에서 자동값을 사용하면 allocation failure, swap/zram 압박, LMKD kill 또는 system responsiveness 저하가 발생할 수 있다.
 
-모바일 시험에서는 다음처럼 `-M`을 명시하는 것을 권장한다.
+모바일 시험에서는 다음 명령 형식으로 `-M`을 명시한다.
 
 ```bash
 stressapptest -M 512 -s 60 -m 4
 ```
 
-`--reserve_memory N`은 target 계산 시 최소 N MiB를 system에 남기도록 보정한다. 단, parser는 underscore인 `--reserve_memory`를 인식하는 반면 built-in help는 hyphen인 `--reserve-memory`를 출력한다. 현재 소스 기준으로 실제 동작하는 것은 underscore 형식이다.
+`--reserve_memory N`은 target 계산 시 최소 N MiB를 system에 남기도록 보정한다. parser가 인식하는 문자열은 underscore를 사용한 `--reserve_memory`이며, built-in help에는 hyphen을 사용한 `--reserve-memory`가 출력된다. 실행 명령에는 parser 문자열을 적용한다.
 
 ## Allocation 경로
 
@@ -39,13 +39,16 @@ mmap(NULL, length,
      -1, 0)
 ```
 
-이는 normal cacheable userspace memory다. physical DRAM을 직접 map하거나 cache attribute를 non-cacheable로 지정하지 않는다.
+이 mapping에는 운영체제가 관리하는 normal cacheable userspace memory attribute가 적용된다. physical DRAM의 직접 mapping과 non-cacheable attribute 설정은 이 경로에 포함되지 않는다.
+
+<sub><em>Memory attribute: page table과 MAIR를 통해 memory type, cacheability 및 shareability를 지정하는 속성입니다.</em></sub><br>
+<sub><em>Normal cacheable memory: CPU cache hierarchy와 coherency protocol을 통해 접근하는 일반 데이터 메모리 유형입니다.</em></sub>
 
 ## Reservation과 first touch
 
 anonymous `mmap()` 성공은 virtual address range를 확보했다는 의미다. 각 page의 physical backing은 일반적으로 최초 access 때 page fault를 통해 만들어진다.
 
-stressapptest에서는 초기 FillThread가 전체 range에 store하므로 사실상 first-touch phase 역할을 한다.
+stressapptest의 초기 FillThread는 전체 range에 store하며 first-touch phase를 수행한다.
 
 ```text
 mmap 성공
@@ -59,7 +62,7 @@ kernel이 physical page 선택 및 PTE 설치
 store가 cache hierarchy에 반영
 ```
 
-초기 fill이 끝난 뒤에는 대부분의 test range가 resident 상태가 된다. 다만 Android kernel의 reclaim, migration, zram/swap 정책에 따라 전체 실행 동안 동일한 PFN이 유지된다고 보장할 수는 없다.
+초기 fill이 끝난 뒤에는 대부분의 test range가 resident 상태가 된다. 실행 중 PFN은 Android kernel의 reclaim, migration 및 zram/swap 정책에 따라 변경될 수 있다.
 
 ## 세 종류의 주소
 
@@ -73,7 +76,9 @@ LPDDR channel/rank/bank-group/bank/row/column
 
 ### Virtual address
 
-프로세스의 pointer다. 같은 숫자의 virtual address라도 다른 process에서는 다른 physical page를 가리킬 수 있다.
+프로세스가 pointer로 사용하는 주소다. address space별 page table에 따라 process마다 독립적으로 physical page에 mapping된다.
+
+<sub><em>Virtual address, VA: process address space에서 instruction이 load/store 대상으로 사용하는 주소입니다.</em></sub>
 
 ### System physical address
 
@@ -83,17 +88,23 @@ MMU translation 후 interconnect가 사용하는 주소다. 4 KiB Linux page 예
 PA = PFN × 4096 + VA의 하위 12-bit offset
 ```
 
-실제 page granule이 16 KiB라면 offset bit 수와 PFN 계산이 달라진다.
+page granule이 16 KiB인 system에서는 16 KiB page size와 해당 offset bit 수를 적용한다.
+
+<sub><em>System physical address, PA: MMU translation 이후 CPU와 NoC가 memory transaction에 사용하는 주소입니다.</em></sub><br>
+<sub><em>PFN: Physical Frame Number의 약어이며 physical page의 번호입니다.</em></sub>
 
 ### DRAM coordinate
 
 DMC가 PA bit를 다시 해석해 channel, rank, bank, row, column을 선택한다. 최신 mobile DMC는 bandwidth와 bank parallelism을 위해 address bit XOR hashing과 interleaving을 사용할 수 있다.
 
-따라서 PA가 연속이어도 하나의 LPDDR row에 순차 배치된다고 단정할 수 없다.
+연속 PA의 DRAM coordinate는 vendor DMC의 interleave 및 hash 규칙에 따라 결정된다.
+
+<sub><em>DRAM coordinate: channel, rank, bank group, bank, row 및 column으로 구성되는 DRAM 내부 위치 정보입니다.</em></sub><br>
+<sub><em>Interleaving: 연속 주소를 여러 channel 또는 bank에 분산하여 병렬성을 높이는 주소 배치 방식입니다.</em></sub>
 
 ## Virtual 연속성과 physical 연속성
 
-`-M 1024`로 얻은 1 GiB virtual range는 연속이다. 그러나 이를 구성하는 Linux page들의 PFN은 일반적으로 불연속일 수 있다.
+`-M 1024`로 얻은 1 GiB virtual range는 연속이다. 이 range를 구성하는 각 Linux page의 PFN은 독립적으로 할당되며 비연속 배치가 가능하다.
 
 또한 SAT block은 virtual offset 기준으로 생성된다.
 
@@ -103,11 +114,11 @@ SAT block 1: VA base + 1 MiB
 SAT block 2: VA base + 2 MiB
 ```
 
-각 1 MiB block 내부에 들어 있는 4/16/64 KiB physical page가 서로 연속이라는 보장은 없다. 그러므로 “random 1 MiB block”은 random DRAM row 선택과 같은 뜻이 아니다.
+각 1 MiB block은 여러 4/16/64 KiB physical page로 구성되며, 각 page의 PFN은 비연속적으로 배치될 수 있다. random 1 MiB block 선택은 virtual offset 단위의 선택이며 DRAM row 선택은 DMC address mapping 결과로 결정된다.
 
 ## `/proc/self/pagemap`
 
-`OsLayer::VirtualToPhysical()`은 `/proc/self/pagemap`에서 PFN을 읽어 PA를 계산한다 (`src/os.cc:141`). 이것은 진단용 metadata이며 memory access 자체에 사용되지 않는다.
+`OsLayer::VirtualToPhysical()`은 `/proc/self/pagemap`에서 PFN을 읽어 PA를 계산한다 (`src/os.cc:141`). 계산 결과는 진단 metadata에 저장되며 worker의 load/store address 생성에는 사용되지 않는다.
 
 Linux 4.2 이후에는 `CAP_SYS_ADMIN`이 없으면 PFN field가 0으로 가려질 수 있다. Android shell/root 정책에 따라 다음 현상이 가능하다.
 
@@ -122,7 +133,7 @@ PFN을 얻어도 DRAM channel/bank/row는 알 수 없다.
 
 public generic `OsLayer::AllocateTestMem()`은 non-zero `paddr_base`를 지원하지 않고 warning 후 무시한다 (`src/os.cc:514`).
 
-따라서 다음 명령은 일반 Android build에서 특정 physical address를 test하도록 보장하지 않는다.
+일반 Android build에서 다음 명령의 `paddr_base` 값은 memory allocation target에 반영되지 않는다.
 
 ```bash
 stressapptest --paddr_base 0x80000000 ...
@@ -132,7 +143,7 @@ stressapptest --paddr_base 0x80000000 ...
 
 ## `--do_page_map`
 
-이 option은 access한 physical 4 KiB page를 bitmap으로 기록한다. 하지만 구현은 다음을 가정한다.
+이 option은 access한 physical 4 KiB page를 bitmap으로 기록한다. 구현 전제 조건은 다음과 같다.
 
 - 4 KiB page granularity
 - physical memory가 비교적 0-based
@@ -153,14 +164,18 @@ generic 구현의 제한:
 - DIMM/package 모델이 mobile LPDDR topology와 다름
 - vendor DMC remap, rank/bank XOR, interleave를 알지 못함
 
-최신 mobile SoC에서는 vendor address-map 자료로 `OsLayer::FindDimm()`을 새로 구현하지 않는 한 결과를 실제 LPDDR package 위치로 해석하면 안 된다.
+최신 mobile SoC에서 실제 LPDDR package 위치를 출력하려면 vendor address-map 자료를 반영한 `OsLayer::FindDimm()` 구현이 필요하다. generic 구현의 출력은 generic model에 따른 추정값으로 기록한다.
 
 ## DMA에는 IOVA가 하나 더 있을 수 있다
 
-UFS, GPU, NPU 같은 device는 CPU virtual address 대신 IOVA를 사용하고 IOMMU/SMMU가 이를 PA로 변환할 수 있다.
+UFS, GPU, NPU 등의 device는 IOVA를 사용하며 IOMMU/SMMU가 이를 PA로 변환할 수 있다.
 
 ```text
 Device IOVA → SMMU → System PA → DMC → LPDDR
 ```
 
-FileThread의 `O_DIRECT`는 filesystem page cache를 우회하려는 option이지 CPU cache, SLC, SMMU 또는 DMC를 우회하는 기능이 아니다.
+FileThread의 `O_DIRECT` 적용 범위는 filesystem page cache 우회 요청이다. DMA coherency, CPU cache, SLC, SMMU 및 DMC transaction은 platform I/O 경로에 따라 계속 사용된다.
+
+<sub><em>IOVA: DMA device가 transaction address로 사용하는 I/O virtual address입니다.</em></sub><br>
+<sub><em>SMMU: device의 IOVA를 system physical address로 변환하고 접근 권한을 적용하는 System MMU입니다.</em></sub><br>
+<sub><em>O_DIRECT: filesystem page cache 사용을 최소화하도록 kernel에 요청하는 file open flag입니다.</em></sub>

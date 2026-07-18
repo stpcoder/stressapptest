@@ -50,7 +50,7 @@ worker stop/join
 - warm `-W`: 꺼짐
 - pause/resume: 600초마다 15초 pause
 
-`-M`이 0이면 `FindFreeMemSize()`가 전체 physical memory를 기준으로 target을 정한다. 이 값은 available memory가 아니라 total memory 비율을 주로 사용하므로 Android에서는 반드시 주의해야 한다.
+`-M`이 0이면 `FindFreeMemSize()`가 total physical memory 비율을 기준으로 target을 정한다. available memory는 log 출력에 사용되며 target 산정의 주 기준에는 포함되지 않는다. Android 실행에서는 `-M`을 명시하여 할당량을 제한한다.
 
 ## 3. Virtual memory 확보
 
@@ -63,7 +63,10 @@ mmap(NULL, length,
      -1, 0)
 ```
 
-이 시점에는 virtual address range가 예약되지만 모든 physical page가 즉시 할당되었다고 볼 수 없다. 이후 FillThread의 store가 page fault/first touch를 발생시키며 physical page와 실제 backing memory를 확보한다.
+이 시점에는 virtual address range가 예약된다. physical backing page는 이후 FillThread의 store에서 발생하는 page fault와 first touch를 통해 할당된다.
+
+<sub><em>Anonymous mmap: file backing 없이 process virtual address range를 확보하는 Linux memory mapping 방식입니다.</em></sub><br>
+<sub><em>First touch: 예약된 virtual page에 최초로 접근하여 kernel의 physical backing page 할당을 유도하는 동작입니다.</em></sub>
 
 ## 4. Pattern 초기화
 
@@ -72,7 +75,7 @@ mmap(NULL, length,
 - non-inverted/inverted
 - 32/64/128/256 logical width
 
-variant를 만든다. 총 slot은 15 × 8 = 120개이며 weight 0인 variant도 object는 존재하지만 random 선택되지 않는다.
+variant를 만든다. 총 slot은 15 × 8 = 120개다. weight 0인 variant object도 생성되며 random selection 대상에서는 제외된다.
 
 각 variant는 첫 4 KiB에 대한 expected modified-Adler checksum을 미리 계산한다.
 
@@ -96,7 +99,10 @@ variant를 만든다. 총 slot은 15 × 8 = 120개이며 weight 0인 variant도 
 - `--do_page_map`이면 4 KiB 단위 bitmap 갱신
 - 기본 fine-lock queue에서는 약 2/5를 empty, 약 3/5를 valid로 분류
 
-여기서 empty는 “OS memory가 free”라는 뜻이 아니다. 해당 1 MiB allocation은 그대로 존재하고, queue상 destination으로 사용 가능하다는 뜻이다.
+`empty`는 queue에서 destination으로 선택 가능한 상태를 의미한다. 해당 1 MiB allocation과 physical backing은 유지된다.
+
+<sub><em>Valid block: 기대 pattern metadata를 보유하며 source 또는 검증 대상으로 사용할 수 있는 SAT block입니다.</em></sub><br>
+<sub><em>Empty block: destination write 대상으로 사용할 수 있도록 pattern metadata가 해제된 SAT block입니다.</em></sub>
 
 ## 7. Timed worker 실행
 
@@ -119,7 +125,7 @@ sched_yield()
 
 기본 `--pause_delay 600 --pause_duration 15`다. 해당 시간이 되면 `power_spike_status`에 속한 worker를 pause했다가 동시에 resume한다.
 
-주로 CopyThread, FileThread, DiskThread와 CPU frequency monitor가 이 그룹에 속한다. 모든 continuous worker가 멈추는 것은 아니다. 짧은 test에서는 600초에 도달하지 않아 발생하지 않는다.
+`power_spike_status` 그룹에는 주로 CopyThread, FileThread, DiskThread 및 CPU frequency monitor가 포함된다. `continuous_status` 그룹의 worker는 해당 pause 대상에서 제외된다. 600초 미만의 test에서는 기본 pause 시점에 도달하지 않는다.
 
 ## 9. 종료와 final check
 

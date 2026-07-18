@@ -4,7 +4,7 @@
 
 현재 GitHub master에는 standalone `Android.bp`가 없다. 이 fork는 Android NDK로 현재 GitHub source를 직접 cross-compile하는 `scripts/build_android_arm64.sh`를 제공한다.
 
-AOSP source tree 안에서 빌드하려면 AOSP의 `platform/external/stressapptest` mirror와 그 branch의 `Android.bp`를 사용하는 편이 자연스럽다. 단, AOSP mirror와 GitHub master의 ARM64 copy 구현이 같은지 반드시 commit을 비교한다.
+AOSP source tree 통합 빌드에는 해당 branch의 `platform/external/stressapptest/Android.bp`를 사용한다. 실행 binary의 ARM64 copy 구현은 AOSP mirror commit과 GitHub master commit의 `src/adler32memcpy.cc`를 대조하여 확인한다.
 
 ## Standalone NDK build
 
@@ -77,13 +77,13 @@ adb shell /data/local/tmp/stressapptest --help
 
 ## 안전한 첫 실행
 
-자동 memory 선택을 사용하지 말고 작게 시작한다.
+첫 실행에는 명시적 memory 크기와 짧은 runtime을 적용한다.
 
 ```bash
 adb shell '/data/local/tmp/stressapptest -M 256 -s 30 -m 2 -v 8'
 ```
 
-그 다음 단계적으로 확대한다.
+초기 결과와 system 상태를 확인한 후 다음 순서로 부하를 확대한다.
 
 ```text
 256 MiB / 2 workers / 30 s
@@ -118,7 +118,10 @@ adb shell 'for c in /sys/devices/system/cpu/cpu[0-9]*; do \
   echo -n "$c "; cat "$c/cpu_capacity" 2>/dev/null; done'
 ```
 
-예를 들어 CPU 4~7만 허용해 실행하려면 mask를 target topology에 맞게 계산한다.
+CPU 4~7을 허용하는 경우의 hexadecimal mask는 `f0`이다. 실제 실행 mask는 target topology의 CPU numbering을 기준으로 계산한다.
+
+<sub><em>CPU mask: thread 또는 process가 실행될 수 있는 logical CPU를 bit 단위로 표시한 값입니다.</em></sub><br>
+<sub><em>cpuset: Android/Linux cgroup이 process에 허용하는 CPU 집합을 관리하는 기능입니다.</em></sub>
 
 ```bash
 adb shell 'taskset f0 /data/local/tmp/stressapptest -M 512 -s 60 -m 4'
@@ -163,9 +166,9 @@ stressapptest -s 3600
 # 실제 block device 파괴 위험
 stressapptest -d /dev/block/by-name/userdata --destructive
 
-# generic ARM에서 지원되지 않음
+# generic ARM 초기화에서 지원 불가 상태 반환
 stressapptest --cpu_freq_test --cpu_freq_threshold 1000
 
-# 특정 physical memory를 test한다고 보장하지 않음
+# generic OsLayer가 paddr_base를 무시하고 일반 allocation 수행
 stressapptest --paddr_base 0x80000000
 ```

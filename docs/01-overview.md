@@ -2,14 +2,22 @@
 
 ## 목적
 
-stressapptest는 userspace에서 많은 memory 및 I/O transaction을 만들고, 이동하는 데이터가 예상 pattern을 유지하는지 지속적으로 확인하는 correctness-under-load test다.
+stressapptest는 userspace에서 memory 및 I/O transaction을 생성하고, 부하가 실행되는 동안 이동 데이터가 예상 pattern을 유지하는지 검증하는 correctness-under-load test다.
 
-최대 DRAM bandwidth만 얻는 benchmark와는 목적이 다르다.
+<sub><em>Transaction: worker가 block을 획득한 시점부터 read·write·verify 후 queue에 반환할 때까지의 처리 단위입니다.</em></sub><br>
+<sub><em>Pattern: memory block에 기록되는 반복 데이터 배열과 해당 배열의 기대 checksum 정보를 의미합니다.</em></sub>
 
-- bandwidth benchmark: 가능한 많은 byte/s를 이동하는 것이 우선
-- stressapptest: 부하가 있는 동안 source data가 손상되는지 검증하는 것이 우선
+목적별 처리 우선순위는 다음과 같다.
 
-따라서 checksum 계산, queue lock, random block 선택, scheduler yield가 포함된다. 이 overhead 때문에 SAT가 표시하는 throughput이 SoC의 peak LPDDR bandwidth와 같지 않다.
+| 도구 유형 | 우선 처리 항목 |
+|---|---|
+| bandwidth benchmark | 단위 시간당 데이터 전송량 측정 |
+| stressapptest | 부하 실행 중 source data의 무결성 검증 |
+
+stressapptest의 처리 시간에는 checksum 계산, queue lock, random block 선택 및 scheduler yield가 포함된다. SAT throughput은 이 소프트웨어 처리 비용을 포함한 논리적 전송률로 정의된다.
+
+<sub><em>Throughput: worker가 단위 시간에 처리했다고 계산한 논리적 데이터 양입니다.</em></sub><br>
+<sub><em>Scheduler yield: 실행 중인 thread가 CPU 실행 기회를 scheduler에 자발적으로 반환하는 동작입니다.</em></sub>
 
 ## 상위 object 구성
 
@@ -78,7 +86,7 @@ CopyThread는 valid source와 empty destination을 각각 하나씩 잠근다. C
 | error monitor | ErrorPollThread 1개, generic ARM build에서는 실질적으로 no-op |
 | final verify | CheckThread 8개가 남은 valid block 전체 검사 |
 
-초기 fill과 final verify는 `-s` countdown 밖에서 수행된다. 따라서 `-s 60`이라고 전체 process가 정확히 60초만 메모리를 사용하는 것이 아니다.
+초기 fill과 final verify는 `-s` countdown의 측정 범위 밖에서 수행된다. 전체 process 실행 시간은 초기 fill 시간, `-s` 실행 시간 및 final verify 시간의 합으로 결정된다.
 
 ## CPU 수와 affinity
 
@@ -93,18 +101,21 @@ Android에서는 다음을 구분해야 한다.
 - 현재 thermal/hotplug 상태
 - 실제 big/mid/little microarchitecture
 
-따라서 “8-core니까 항상 worker 하나가 core 하나를 전담한다”는 보장은 없다.
+worker와 CPU의 일대일 대응 여부는 online CPU 수, 허용 CPU mask, worker 수 및 scheduler 상태에 따라 결정된다.
 
-## stress가 만들어지는 이유
+## Memory stress 구성 요소
 
-```text
-큰 working set
-  × 여러 worker
-  × random 1 MiB source/destination
-  × block 내부 순차 streaming
-  × source read + destination dirty store
-  × checksum 연산
-= cache가 장시간 보관하기 어려운 다중 memory stream
-```
+| 구성 요소 | 실행 효과 |
+|---|---|
+| cache capacity보다 큰 working set | 이전에 접근한 cache line의 capacity eviction 증가 |
+| 여러 CopyThread | CPU cluster와 NoC에 여러 memory transaction 동시 발행 |
+| pseudo-random 1 MiB source/destination | block 간 temporal locality 감소 |
+| block 내부 순차 접근 | hardware prefetch 및 연속 burst transaction 유도 |
+| source read와 destination store | cache refill과 dirty line 생성 |
+| checksum 연산 | load data 검증과 CPU execution resource 사용 |
 
-이것이 L1/L2/SLC miss, refill, dirty write-back, NoC traffic, DMC request를 증가시킨다. cache를 강제로 disable하는 방식이 아니다.
+이 접근 구조는 L1/L2/SLC miss, refill, dirty write-back, NoC traffic 및 DMC request를 증가시킨다. 테스트 메모리의 cache attribute는 운영체제가 설정한 normal cacheable 속성을 유지한다.
+
+<sub><em>Cache miss: 요청한 cache line이 현재 cache level에 존재하지 않아 하위 계층 조회가 필요한 상태입니다.</em></sub><br>
+<sub><em>Refill: cache miss가 발생한 line을 하위 cache 또는 system memory에서 가져와 cache에 채우는 동작입니다.</em></sub><br>
+<sub><em>Dirty write-back: CPU store로 수정된 cache line을 하위 cache 또는 system memory 방향으로 기록하는 동작입니다.</em></sub>

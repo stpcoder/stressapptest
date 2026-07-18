@@ -24,7 +24,7 @@ stressapptest -M 512 -s 1 -m 0 -c 0 -v 12
 예상 phase:
 
 1. 8개 FillThread가 512 MiB 전체 write
-2. timed worker는 data traffic을 거의 만들지 않음
+2. timed worker 구간은 worker metadata 처리만 수행
 3. final 8개 CheckThread가 valid block read
 
 짧은 `-s`에도 fill/final check가 있으므로 write-heavy init와 read-heavy final을 분리해 관찰할 수 있다. 단, phase 지속 시간은 빠를 수 있으므로 trace timestamp가 필요하다.
@@ -81,7 +81,9 @@ stressapptest -M 512 -s 60 -m 4 -F
 - DMC read/write bytes
 - destination write 검출 지연
 
-`-F`에서 DMC bandwidth가 증가하면 checksum arithmetic이 bottleneck이었거나 bionic memcpy가 더 효율적인 store path를 사용했을 가능성이 있다. 이것은 직접 cache bypass의 증거는 아니다.
+`-F`에서 DMC bandwidth가 증가한 경우에는 checksum arithmetic 제거 효과와 bionic `memcpy()` 구현의 load/store 효율을 분석한다. cache bypass 여부는 instruction trace, cache PMU 및 DMC counter를 사용하여 별도로 판정한다.
+
+<sub><em>Bottleneck: 전체 처리율을 제한하는 계산, memory 또는 synchronization 자원입니다.</em></sub>
 
 ## 4. ARM64 warm/vector copy
 
@@ -102,7 +104,7 @@ stressapptest -M 512 -s 60 -m 4 -W
 default vs -W vs -F
 ```
 
-세 mode의 CPU utilization과 DMC bandwidth를 함께 보면 checksum/vector/memcpy implementation 차이를 분리하기 쉽다.
+세 mode의 CPU utilization, retired instruction 및 DMC bandwidth를 함께 측정하여 checksum, vector copy 및 libc `memcpy()` 구현의 영향을 분리한다.
 
 ## 5. RMW/invert 중심
 
@@ -117,7 +119,7 @@ stressapptest -M 512 -s 60 -m 0 -i 4
 - 64 B마다 ARM64 `dc cvau` 기반 maintenance
 - 많은 barrier와 cache state transition
 
-Copy workload와 성격이 매우 다르므로 “write bandwidth mode”로 단순 비교하지 않는다.
+Invert workload의 결과는 four-pass RMW, 방향 전환, cache maintenance 및 barrier 비용을 포함한다. Copy workload와의 비교에는 각 mode의 logical byte 계산과 DMC read/write byte를 함께 사용한다.
 
 ## 6. CPU power 결합
 
@@ -132,7 +134,9 @@ stressapptest -M 512 -s 300 -m 4 -C 4
 - shared power/thermal budget 경쟁
 - DVFS/thermal throttling 가능성
 
-LPDDR 자체가 아니라 SoC total power corner를 만들고 싶을 때 사용한다. `-C`만 늘리면 memory bandwidth가 오히려 감소할 수도 있다.
+이 구성은 SoC total power 및 thermal 조건을 증가시키는 실험에 사용한다. `-C` 증가로 CPU power budget 사용량이 증가하면 DVFS 또는 thermal 제한에 의해 memory worker throughput이 감소할 수 있다.
+
+<sub><em>Power corner: 여러 hardware block의 동시 동작으로 전력, 전압 또는 온도 조건이 한계에 접근하는 시험 상태입니다.</em></sub>
 
 ## 7. Cache coherency 집중
 
@@ -209,7 +213,7 @@ stressapptest -M 512 -s 120 -m 4 \
 
 현재 public option에는 지속적인 pure write-only memory worker가 없다.
 
-- FillThread: 초기 write-heavy, timed loop 아님
+- FillThread: 초기화 구간에서 한 번 실행되는 write-heavy worker
 - CopyThread: source read + destination write
 - InvertThread: read-modify-write
 - CheckThread: read-only

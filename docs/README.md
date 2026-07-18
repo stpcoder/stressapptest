@@ -1,6 +1,6 @@
 # stressapptest 모바일 ARM64 한글 매뉴얼
 
-이 문서는 stressapptest를 단순히 “메모리를 많이 사용하는 프로그램”으로 설명하지 않습니다. 현재 소스의 object, queue, worker, pattern, checksum, ARM64 instruction을 연결하여 다음 질문에 답합니다.
+이 문서는 stressapptest의 object, queue, worker, pattern, checksum 및 ARM64 instruction을 소스 코드의 실행 순서에 따라 설명합니다. 분석 범위는 다음 항목으로 구성됩니다.
 
 - 메모리는 언제 할당되고 언제 실제 physical page가 생기는가?
 - 1 MiB block과 Linux page, cache line, LPDDR row는 어떻게 다른가?
@@ -11,9 +11,13 @@
 - virtual address, physical address, DRAM channel/bank/row mapping은 무엇이 다른가?
 - SAT bandwidth와 실제 DMC bandwidth가 왜 다를 수 있는가?
 
+<sub><em>Object: 프로그램의 상태와 동작을 함께 보유하는 C++ class instance입니다.</em></sub><br>
+<sub><em>Queue: worker가 사용할 SAT block의 상태를 관리하고 동시 접근을 제어하는 자료구조입니다.</em></sub><br>
+<sub><em>Checksum: 데이터에서 계산한 요약값을 기대값과 비교하여 변형 여부를 검사하는 값입니다.</em></sub>
+
 ## 권장 읽기 순서
 
-처음 보는 독자는 다음 순서가 좋습니다.
+기본 분석에는 다음 읽기 순서를 권장합니다.
 
 1. [프로그램 개요와 전체 구성](01-overview.md)
 2. [시작부터 종료까지 실행 순서](02-execution-flow.md)
@@ -23,11 +27,11 @@
 6. [cache와 ARM64](04-cache-and-arm64.md)
 7. [모든 옵션](10-all-options.md)
 
-LPDDR 개발·분석 엔지니어라면 이후 [시험 recipe](12-test-recipes.md)와 [측정 방법](13-measurement.md)을 함께 보십시오.
+LPDDR 개발·분석 업무에는 [시험 recipe](12-test-recipes.md)와 [측정 방법](13-measurement.md)을 추가로 적용합니다.
 
-## 한 문장으로 표현한 동작
+## 동작 요약
 
-> 큰 anonymous virtual memory를 1 MiB 단위로 관리하고, 여러 worker가 random block을 선택한 뒤 block 내부를 순차적으로 read/checksum/write하여 cache capacity를 넘는 다중 stream과 dirty eviction을 지속적으로 만든다.
+> stressapptest는 anonymous virtual memory를 기본 1 MiB SAT block으로 분할하고, 여러 worker가 pseudo-random으로 선택한 block에 순차 read·checksum·write를 수행한다. working set이 cache capacity를 초과하면 refill과 dirty eviction이 반복적으로 발생한다.
 
 ## 문서 표기 원칙
 
@@ -38,6 +42,10 @@ LPDDR 개발·분석 엔지니어라면 이후 [시험 recipe](12-test-recipes.m
 - `DRAM 좌표`: DMC가 해석한 channel/rank/bank group/bank/row/column.
 - 코드 위치는 현재 기준 commit의 `파일:줄`로 적습니다.
 - “일반적으로”라고 적은 microarchitecture 동작은 ARM architecture가 허용하는 대표 동작이며, 특정 SoC 구현을 보장하지 않습니다.
+
+주요 기술 용어는 각 장의 최초 사용 위치에 다음 형식으로 정의합니다.
+
+<sub><em>용어: 해당 장에서 적용하는 기술적 의미와 범위입니다.</em></sub>
 
 ## 안전 경고
 
