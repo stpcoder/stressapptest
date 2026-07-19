@@ -1,26 +1,26 @@
-# 메모리를 copy하고 오류를 찾는 과정
+# 메모리를 복사하고 오류를 찾는 과정
 
-기본 copy loop는 source를 읽으면서 checksum을 계산하고 같은 loop에서 destination에 씁니다. source checksum이 기대값과 다르면 다시 자세히 비교하고, destination은 나중에 source로 선택될 때 검사합니다.
+기본 복사 방식은 원본을 읽으면서 checksum을 계산하고 같은 반복문에서 대상에 씁니다. 원본의 checksum이 기대값과 다르면 해당 구간을 다시 자세히 비교합니다. 대상에 쓴 데이터는 이후 원본으로 선택되거나 마지막 전체 검사를 수행할 때 확인합니다.
 
 ## 검증에 사용하는 checksum
 
-소스 함수명 `CrcCopyPage`와 `CrcCheckPage`의 checksum 구현은 `src/adler32memcpy.cc`에 정의된 modified Adler 방식이다. CRC polynomial 연산은 사용하지 않는다.
+`CrcCopyPage`와 `CrcCheckPage`가 사용하는 checksum은 `src/adler32memcpy.cc`에 구현된 modified Adler 방식입니다. 함수 이름에 `Crc`가 포함되어 있지만 CRC polynomial 연산은 사용하지 않습니다.
 
-32-bit data word를 번갈아 네 누산기에 반영한다.
+32-bit 데이터 word를 네 개의 누산기에 번갈아 반영합니다.
 
 ```text
-a1, a2: data 누적
-b1, b2: a 누적값의 누적
+a1, a2: 데이터 값을 더하는 누산기
+b1, b2: a 누산기의 값을 다시 더하는 누산기
 ```
 
-이 checksum은 반복 pattern의 고속 corruption screening에 사용된다. cryptographic collision resistance와 CRC polynomial 기반 검출 특성은 제공하지 않는다.
+이 checksum은 반복 pattern의 데이터 변화를 빠르게 찾는 용도로 사용합니다. 암호학적 checksum과 같은 충돌 방지 성능이나 CRC polynomial 방식의 오류 검출 특성을 제공하지는 않습니다.
 
 <sub><em>Modified Adler checksum: 네 개의 누산기로 32-bit data word와 누적합을 계산하는 stressapptest의 고속 검증값입니다.</em></sub><br>
 <sub><em>Collision: 서로 다른 데이터가 동일한 checksum 결과를 생성하는 경우입니다.</em></sub>
 
 ## 기대 checksum 만들기
 
-Pattern variant가 초기화될 때 첫 4 KiB pattern의 checksum을 계산해 `Pattern::crc_`에 저장한다.
+각 `Pattern` 객체를 초기화할 때 4 KiB pattern의 checksum을 계산하여 `Pattern::crc_`에 저장합니다.
 
 > **파일:** `src/pattern.cc` · **함수:** `Pattern::CalculateCrc()` · **기준:** `73b9df2`
 
@@ -50,24 +50,24 @@ while (i < count) {
 crc_->Set(a1, a2, b1, b2);
 ```
 
-**해석:** 네 누산기는 pattern에서 생성한 4 KiB의 32-bit word를 순서대로 반영합니다. 이 값은 실제 memory를 읽은 결과가 아니며 각 Pattern object의 기대값입니다.
+**코드 설명:** 네 누산기에 pattern으로 만든 4 KiB의 32-bit word를 순서대로 반영합니다. 이 값은 실제 메모리를 읽은 결과가 아니라, 이후 검사에 사용할 기대값입니다.
 
-SAT block 기본 1 MiB는 4 KiB slice 256개다. Pattern이 주기적으로 반복되므로 각 slice를 같은 expected checksum과 비교한다.
+기본 1 MiB SAT block은 4 KiB 검사 구간 256개로 나뉩니다. Pattern이 주기적으로 반복되므로 각 구간을 같은 기대 checksum과 비교합니다.
 
-## Copy 중 실제 read/write 순서
+## 복사 중 실제 읽기·쓰기 순서
 
-`CrcCopyPage(destination, source)`는 4 KiB마다 `AdlerMemcpyC()`를 호출한다.
+`CrcCopyPage(destination, source)`는 block을 4 KiB씩 나누어 `AdlerMemcpyC()`를 호출합니다.
 
-개념적 inner loop:
+반복문 안에서는 다음 순서로 처리합니다.
 
 ```text
-source word load
- → checksum a/b update
- → destination word store
- → next word
+원본 word 읽기
+ → checksum 누산기 갱신
+ → 대상 word 쓰기
+ → 다음 word 처리
 ```
 
-4 KiB가 끝나면 계산한 source checksum을 expected pattern checksum과 비교한다.
+4 KiB 처리가 끝날 때마다 원본에서 계산한 checksum을 기대 pattern의 checksum과 비교합니다.
 
 > **파일:** `src/worker.cc` · **함수:** `WorkerThread::CrcCopyPage()` · **기준:** `73b9df2`
 
@@ -94,126 +94,126 @@ dstpe->pattern = srcpe->pattern;
 dstpe->lastcpu = sched_getcpu();
 ```
 
-**해석:** 1 MiB SAT block은 4 KiB slice 단위로 처리됩니다. `AdlerMemcpyC()`가 source load, checksum update, destination store를 한 loop에서 수행합니다. checksum mismatch가 발생하면 같은 source slice를 word 단위로 다시 비교합니다.
+**코드 설명:** 1 MiB SAT block을 4 KiB씩 처리합니다. `AdlerMemcpyC()`는 원본 읽기, checksum 계산, 대상 쓰기를 하나의 반복문에서 수행합니다. Checksum이 기대값과 다르면 같은 원본 구간을 word 단위로 다시 비교합니다.
 
 중요한 점:
 
-- source는 copy하면서 즉시 검증됨
-- destination store 검증은 이후 source 선택 또는 final check에서 수행
-- source corruption이 destination으로 복사될 수 있으므로 mismatch 복구 경로가 존재
+- 원본은 복사와 동시에 검사합니다.
+- 대상에 쓴 데이터는 해당 block을 이후 원본으로 사용하거나 마지막 전체 검사를 수행할 때 검사합니다.
+- 잘못된 원본 데이터가 대상에 복사될 수 있으므로 오류 데이터를 복구하는 경로가 있습니다.
 
-## Destination에 쓴 데이터는 언제 검사하는가?
+## 대상 block에 쓴 데이터를 검사하는 시점
 
-destination write 오류는 다음 시점 중 하나에서 검출될 수 있다.
+대상 block에 쓴 데이터의 오류는 다음 시점에 발견할 수 있습니다.
 
-1. destination block이 나중에 CopyThread source로 선택될 때
-2. CheckThread가 block을 검사할 때
-3. File/Network worker가 source로 사용하기 전 strict check할 때
-4. timed run 종료 후 final full check할 때
+1. 대상 block이 나중에 `CopyThread`의 원본으로 선택될 때
+2. `CheckThread`가 해당 block을 검사할 때
+3. 파일·네트워크 Worker가 원본으로 사용하기 전에 검사할 때
+4. 설정한 시험 시간이 끝난 뒤 마지막 전체 검사를 수행할 때
 
-따라서 오류 발생 시각과 log 검출 시각이 다를 수 있다.
+따라서 실제 오류가 발생한 시각과 로그에 오류가 기록된 시각은 다를 수 있습니다.
 
-## Checksum이 다를 때 다시 확인하는 방법
+## Checksum 불일치가 발생했을 때의 재검사
 
-checksum이 다르면 `CheckRegion()`이 해당 4 KiB를 64-bit word 단위로 다시 읽는다.
-
-```text
-actual 64-bit load
-expected pattern word 두 개 조합
-actual != expected 비교
-```
-
-최대 128개의 error record를 우선 저장하고, 더 많은 mismatch가 있으면 page/block error 형태로 추가 처리한다.
-
-## 일시적인 source read 오류 찾기
-
-checksum mismatch 이후 slow reread에서 word mismatch가 확인되지 않는 경우에는 transient source read 오류 처리 경로가 실행된다.
-
-이 조건은 첫 read와 두 번째 read의 결과가 달랐을 가능성을 나타낸다. destination에는 첫 copy에서 읽은 데이터가 저장되어 있으므로 코드는 다음 절차를 수행한다.
+Checksum이 다르면 `CheckRegion()`이 해당 4 KiB 구간을 64-bit word 단위로 다시 읽습니다.
 
 ```text
-첫 copy 때 destination에 저장된 captured data
- → source에 다시 memcpy
- → source를 expected pattern과 slow compare
+실제 64-bit 값 읽기
+기대 pattern의 32-bit word 두 개를 64-bit 값으로 조합
+실제값과 기대값 비교
 ```
 
-이 방식으로 일시적인 read-path corruption을 재현 가능한 memory contents로 바꾸어 상세 주소를 찾으려 한다.
+먼저 최대 128개의 상세 오류를 저장합니다. 불일치가 더 많으면 page 또는 block 단위 오류로 추가 처리합니다.
 
-## 오류 위치를 다시 읽고 수정하기
+## 일시적인 원본 읽기 오류 확인
 
-`ProcessError()`는 다음 정보 field를 기록한다.
+첫 checksum은 다르지만 자세한 재검사에서 word 불일치가 발견되지 않으면 일시적인 원본 읽기 오류 처리 경로를 실행합니다.
 
-- current CPU
-- last writer CPU
+이 결과는 첫 번째 읽기와 두 번째 읽기의 값이 달랐을 가능성을 의미합니다. 대상에는 첫 복사에서 읽은 값이 저장되어 있으므로 다음 절차로 다시 확인합니다.
+
+```text
+첫 복사 때 대상에 저장된 데이터
+ → 원본에 다시 복사
+ → 원본을 기대 pattern과 word 단위로 비교
+```
+
+이 과정은 일시적으로 잘못 읽힌 값을 메모리에 다시 기록하여 어느 주소의 값이 달랐는지 확인하기 위한 것입니다.
+
+## 오류가 발생한 위치의 재검사와 복구
+
+`ProcessError()`는 다음 정보를 기록합니다.
+
+- 현재 검사를 수행한 CPU
+- 마지막으로 데이터를 쓴 CPU
 - virtual address
-- possible physical address
-- actual value
-- expected value
-- reread value
+- 계산 가능한 경우 physical address
+- 실제값
+- 기대값
+- 다시 읽은 값
 - pattern name
-- 설정된 경우 DIMM/channel 추정
+- 옵션을 설정한 경우 DIMM·channel 추정값
 
-그 후 잘못된 word를 expected 값으로 덮어써 corruption이 다음 copy에 계속 전파되지 않게 한다.
+그 후 잘못된 word를 기대값으로 복구하여 오류 데이터가 다음 복사 작업으로 계속 전달되지 않게 합니다.
 
-generic ARM64에서는 reread 전 cache flush가 no-op일 수 있다. actual과 reread 비교에 따른 read/write error 분류에는 `has_clflush_` 상태와 `Flush()` 실행 여부를 함께 기록한다.
+공통 ARM64 구현에서는 다시 읽기 전에 호출하는 cache flush가 실제 cache 관리 명령을 실행하지 않을 수 있습니다. 실제값과 재검사값의 차이로 읽기 오류와 쓰기 오류를 분류할 때에는 `has_clflush_` 상태와 `Flush()` 실행 여부를 함께 확인해야 합니다.
 
-## 다른 block의 데이터가 나타나는 오류
+## 다른 주소의 데이터가 읽힌 경우
 
-`--tag_mode`에서는 각 64 B line 첫 8 B가 virtual-address-derived tag다. CheckRegion은 해당 위치의 expected value 계산에 현재 address tag를 사용하고 나머지 word에는 pattern 값을 사용한다.
+`--tag_mode`에서는 각 64 B cache line의 첫 8 B에 virtual address로 만든 tag를 기록합니다. `CheckRegion()`은 첫 8 B의 기대값을 현재 주소로 계산하고, 나머지 word는 pattern 값과 비교합니다.
 
 다른 주소의 line이 잘못 들어오면:
 
 ```text
-data pattern 일부는 우연히 맞을 수 있음
-address tag는 현재 destination 주소와 불일치
+데이터 pattern 일부는 우연히 일치할 수 있음
+주소 tag는 현재 대상 주소와 일치하지 않음
 ```
 
-하여 wrong-address 계열 오류를 더 직접적으로 보고할 수 있다.
+따라서 다른 주소의 데이터가 전달된 오류를 더 직접적으로 확인할 수 있습니다.
 
 ## `-F`의 검증 범위
 
-`-F`는 `strict_ = false`로 만든다.
+`-F`는 `strict_ = false`로 설정하여 복사 중 즉시 검사를 줄입니다.
 
 꺼지는 항목:
 
-- CopyThread의 per-transaction source checksum
-- InvertThread 전/후 checksum
-- File/Network source/destination의 즉시 checksum
+- `CopyThread`가 복사할 때 수행하는 원본 checksum
+- `InvertThread`가 반전 작업 전후에 수행하는 checksum
+- 파일·네트워크 Worker가 원본과 대상을 즉시 검사하는 checksum
 
 유지되는 항목:
 
-- pattern metadata 이동
-- timed run 후 final CheckThread 전체 검사
-- sector/network의 별도 protocol/error handling 일부
+- Pattern 상태 정보 전달
+- 설정한 시험 시간 종료 후 `CheckThread`의 마지막 전체 검사
+- Sector·network protocol 자체의 일부 오류 검사
 
-`-F`는 transaction 중 source/destination checksum 검사를 비활성화하고 timed run 이후 final CheckThread 검사는 유지한다.
+즉, `-F`는 복사 작업 중의 원본·대상 checksum 검사를 생략하지만 마지막 전체 검사는 유지합니다.
 
 ## 오류 검증 기능을 시험하는 옵션
 
-- `--force_errors`: CopyThread가 낮은 확률로 source byte를 `0xba`로 변경하고 여러 error path도 자극
-- `--force_errors_like_crazy`: 위 기능을 켜고 run loop가 약 10초마다 valid block의 pattern metadata를 바꾸어 반복 오류 생성
+- `--force_errors`: `CopyThread`가 낮은 확률로 원본 byte를 `0xba`로 변경하여 오류 처리 코드를 실행합니다.
+- `--force_errors_like_crazy`: 위 기능에 더하여 약 10초마다 valid block의 pattern 정보를 바꾸어 반복적으로 오류를 만듭니다.
 
-이 option은 error reporting code를 검증하기 위한 software corruption injection을 수행한다. memory access pattern과 hardware transaction 강도는 별도의 worker option으로 결정된다.
+이 옵션은 오류 보고 기능을 시험하기 위해 프로그램이 의도적으로 데이터 또는 상태 정보를 변경합니다. 메모리 접근 방식과 hardware 부하 강도는 Worker 관련 옵션으로 별도로 결정됩니다.
 
 <sub><em>Error injection: 오류 처리 경로를 시험하기 위해 software가 의도적으로 data 또는 metadata를 변경하는 기능입니다.</em></sub>
 
 ## 조기 종료 조건
 
-- `--stop_on_errors`: 일부 error path에서 첫 오류 즉시 process exit 또는 stop
-- `--max_errors N`: total error count가 threshold를 넘으면 main loop 조기 종료
+- `--stop_on_errors`: 지원되는 오류 처리 경로에서 첫 오류가 발생하면 즉시 프로그램을 종료합니다.
+- `--max_errors N`: 전체 오류 수가 N을 초과하면 주 실행 반복을 조기에 끝냅니다.
 
-현재 main loop의 종료 조건은 `errors > max_errorcount_`이다. `--max_errors N`을 지정하면 누적 오류 수가 N을 초과한 검사 시점에 종료 절차가 시작된다.
+현재 주 실행 반복문의 종료 조건은 `errors > max_errorcount_`입니다. 따라서 누적 오류 수가 N과 같을 때가 아니라 N을 초과했을 때 종료 절차가 시작됩니다.
 
-## 표시되는 bandwidth 해석
+## 출력되는 처리량 해석
 
-worker는 처리 block 수와 block size를 곱해 논리적 byte를 계산한다.
+Worker는 처리한 block 수와 block 크기를 사용하여 논리적 처리량을 계산합니다.
 
-| Worker | 보고되는 memory data |
+| Worker | 프로그램이 보고하는 메모리 처리량 |
 |---|---|
 | Copy | block × 2 |
 | Check | block × 1 |
-| Invert | 내부 page count에 추가 multiplier |
-| File | memory/device 각각 별도 multiplier |
-| Network | send+receive 기준 device × 2 |
+| Invert | 내부 처리 block 수에 추가 배수 적용 |
+| File | 메모리와 저장 장치를 별도로 계산 |
+| Network | 송신과 수신을 합하여 장치 처리량 × 2 |
 
-논리적 byte 계산에는 checksum reread, write allocate, cache refill/write-back, prefetch, queue metadata 및 filesystem/socket 내부 copy가 직접 반영되지 않는다. LPDDR bandwidth 분석에는 DMC counter 측정값을 사용한다.
+논리적 처리량에는 checksum 재검사, write allocate, cache refill·write-back, prefetch, queue 상태 정보, filesystem·socket 내부 복사가 직접 반영되지 않습니다. LPDDR bandwidth는 DMC counter로 측정해야 합니다.

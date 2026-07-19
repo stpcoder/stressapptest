@@ -1,31 +1,31 @@
-# 메모리 block과 queue
+# 메모리 block 관리 방법
 
-stressapptest는 큰 메모리 영역을 기본 1 MiB block으로 나누고, queue로 각 block의 상태를 관리합니다. worker는 queue에서 source와 destination block을 가져오고 작업이 끝나면 다시 반환합니다.
+stressapptest는 테스트 메모리를 기본 1 MiB 크기의 block으로 나눕니다. Queue는 각 block이 읽을 데이터인지, 새 데이터를 쓸 공간인지 관리합니다. Worker는 queue에서 원본 block과 대상 block을 가져오고 작업이 끝나면 다시 반환합니다.
 
 ## SAT block의 크기와 역할
 
-stressapptest는 전체 allocation을 `page_length_` 단위로 나눈다. 기본값은 1 MiB이며 `-p`로 변경할 수 있다.
+stressapptest는 전체 테스트 메모리를 `page_length_` 단위로 나눕니다. 기본값은 1 MiB이며 `-p`로 변경할 수 있습니다.
 
 ```text
-pages_ = test memory bytes / SAT block bytes
+block 수 = 전체 테스트 메모리 byte / SAT block byte
 ```
 
-소스는 이 단위를 `page`로 명명한다. 문서에서는 Linux MMU page와 구분하기 위해 `SAT block`으로 표기한다.
+소스 코드에서는 이 단위를 `page`라고 부릅니다. 이 문서에서는 Linux의 page와 혼동하지 않도록 `SAT block`으로 표기합니다.
 
-<sub><em>SAT block: stressapptest queue가 source, destination 및 검증 상태를 관리하는 논리적 memory chunk입니다.</em></sub><br>
+<sub><em>SAT block: stressapptest의 queue가 원본, 대상, 검사 상태를 관리하는 메모리 구역입니다.</em></sub><br>
 <sub><em>Linux page: kernel과 MMU가 virtual-to-physical mapping을 관리하는 최소 page 단위입니다.</em></sub>
 
 | 개념 | 기본 크기 | 누가 관리하는가 |
 |---|---:|---|
 | SAT block | 1 MiB | stressapptest queue |
-| checksum slice | 4 KiB | CrcCopy/CrcCheck loop |
+| checksum 검사 구간 | 4 KiB | CrcCopy·CrcCheck 반복문 |
 | Linux page | 기기 설정 의존 | kernel/MMU |
 | cache line | 통상 64 B | CPU/cache coherency |
 | LPDDR row | device density/map 의존 | DMC/DRAM |
 
 ## 각 block의 정보를 담는 `page_entry`
 
-각 SAT block은 다음 metadata로 표현된다 (`src/queue.h:38`).
+각 SAT block의 상태는 다음 `page_entry` 구조체에 기록됩니다 (`src/queue.h:38`).
 
 > **파일:** `src/queue.h` · **구조체:** `page_entry` · **기준:** `73b9df2`
 
@@ -43,52 +43,51 @@ struct page_entry {
 };
 ```
 
-**해석:** 실제 test data는 `page_entry` 내부에 저장되지 않습니다. `offset`과 `addr`이 allocation 안의 data 위치를 가리키고, `pattern`은 그 위치에 있어야 하는 기대 데이터의 정의를 가리킵니다. `pattern == NULL`은 empty, non-null은 valid 상태로 사용됩니다.
+**코드 설명:** 실제 테스트 데이터는 `page_entry` 안에 저장되지 않습니다. `offset`과 `addr`은 테스트 메모리 안에서 해당 block이 위치한 주소를 가리킵니다. `pattern`은 해당 block에 기록되어 있어야 하는 데이터 pattern을 가리킵니다. `pattern == NULL`이면 새 데이터를 쓸 수 있는 empty 상태이고, 값이 있으면 읽고 검사할 수 있는 valid 상태입니다.
 
-| field | 의미 |
+| 항목 | 의미 |
 |---|---|
-| `offset` | 전체 allocation base에서의 virtual offset |
-| `addr` | block을 사용할 때 준비된 현재 virtual pointer |
-| `paddr` | block 첫 주소의 진단용 possible PA |
-| `pattern` | 이 block에 있어야 하는 Pattern pointer. null이면 empty |
-| `tag` | generic region/NUMA 선택 mask |
-| `touch` | valid block 선택 횟수 또는 queue metric |
-| `ts` | 마지막 GetValid 시 timestamp |
-| `lastcpu` | 마지막 write를 수행한 CPU |
-| `lastpattern` | 마지막 read 시점의 pattern |
+| `offset` | 전체 테스트 메모리의 시작 위치에서 해당 block까지의 virtual address 차이 |
+| `addr` | Worker가 해당 block에 접근할 때 사용하는 virtual address |
+| `paddr` | block 첫 주소에서 계산한 진단용 physical address |
+| `pattern` | 이 block에 있어야 하는 pattern. null이면 empty 상태 |
+| `tag` | 메모리 구역 또는 NUMA 조건을 선택하는 bit mask |
+| `touch` | valid block이 선택된 횟수를 기록하는 값 |
+| `ts` | 마지막으로 `GetValid`가 실행된 시각 |
+| `lastcpu` | 마지막 쓰기를 수행한 CPU |
+| `lastpattern` | 마지막으로 읽었을 때 기록된 pattern |
 
-`paddr`에는 block 첫 virtual address에 대응하는 PA가 저장된다. block을 구성하는 나머지 Linux page의 physical 연속성은 별도로 확인해야 한다.
+`paddr`에는 block의 첫 virtual address에 대응하는 physical address만 저장됩니다. Block 안에 있는 나머지 Linux page가 physical address에서도 연속인지는 별도로 확인해야 합니다.
 
-## Empty와 Valid 상태
+## 읽을 block과 쓸 block 구분
 
 ### Valid
 
-- `pattern != NULL`
-- memory 내용이 해당 pattern이라고 기대됨
-- source/check/file/network output으로 사용 가능
+- `pattern != NULL`인 상태입니다.
+- 메모리 내용이 `pattern`이 가리키는 기대 데이터와 같아야 합니다.
+- 복사의 원본, 데이터 검사, 파일·네트워크 출력에 사용할 수 있습니다.
 
 ### Empty
 
-- `pattern == NULL`
-- destination으로 덮어써도 됨
-- queue에서 destination으로 사용할 수 있는 상태
-- mmap과 physical backing은 유지되는 상태
+- `pattern == NULL`인 상태입니다.
+- 새 데이터를 써도 되는 대상 block입니다.
+- `mmap()`으로 확보한 virtual address와 연결된 physical page는 그대로 유지됩니다.
 
 상태 전이는 다음과 같다.
 
 ```text
 Empty
-  │ Fill 또는 Copy destination write
+  │ 초기 데이터 또는 복사 데이터 쓰기
   ▼
 Valid(pattern=P)
-  │ Copy source로 소비
+  │ 복사의 원본으로 사용
   ▼
 Empty
 ```
 
-CheckThread는 timed run 중에는 검사한 block을 다시 valid로 넣고, final check에서는 empty로 바꿔 queue를 소진한다.
+`CheckThread`는 설정된 시험 시간이 남아 있으면 검사한 block을 다시 valid 상태로 반환합니다. 마지막 전체 검사에서는 block을 empty 상태로 바꾸면서 valid block을 모두 검사합니다.
 
-## 기본 queue인 FineLockPEQueue
+## 기본 block 관리 구조: FineLockPEQueue
 
 > **파일:** `src/finelock_queue.cc` · **함수:** `FineLockPEQueue::GetRandomWithPredicateTag()` · **기준:** `73b9df2`
 
@@ -110,15 +109,15 @@ for (uint64 i = 0; i < q_size_; i++) {
 }
 ```
 
-**해석:** worker는 연속 block 번호를 단순 증가시키지 않습니다. random 시작점과 linear-congruential 진행값으로 후보를 탐색하고, valid/empty 조건과 tag 조건이 맞는 entry의 개별 mutex를 획득합니다. block 내부 접근은 순차적이지만 block 간 선택 순서는 pseudo-random입니다.
+**코드 설명:** Worker는 block 번호를 0부터 순서대로 선택하지 않습니다. 임의의 시작 위치를 정한 뒤 linear-congruential 계산으로 다음 후보를 고릅니다. 후보가 valid·empty 상태와 tag 조건을 만족하면 해당 block의 mutex 획득을 시도합니다. Block을 고르는 순서는 pseudo-random이지만, 선택한 block 내부는 앞에서 뒤로 순차 접근합니다.
 
 <sub><em>Linear-congruential progression: 이전 정수에 곱셈과 덧셈을 적용하고 modulus 연산으로 다음 후보 index를 생성하는 결정적 순회 방식입니다.</em></sub><br>
 <sub><em>Predicate: 후보 entry가 valid, empty 또는 특정 tag 조건을 만족하는지 판정하는 함수입니다.</em></sub><br>
 <sub><em>Pseudo-random: 초기 상태와 알고리즘이 같으면 다시 생성할 수 있는 결정적 수열이지만 실행 중에는 주소 선택이 분산되도록 사용하는 값입니다.</em></sub>
 
-기본 구현은 `page_entry[]` array와 block별 mutex로 구성된다 (`src/finelock_queue.cc`). entry 선택 순서는 pseudo-random array 탐색으로 결정된다.
+기본 구현은 `page_entry[]` 배열과 각 block에 대응하는 mutex로 구성됩니다 (`src/finelock_queue.cc`). 배열에서 block을 찾는 순서는 pseudo-random 계산으로 정합니다.
 
-<sub><em>Mutex: 하나의 block metadata와 data access 권한을 한 worker에 배타적으로 부여하는 동기화 객체입니다.</em></sub><br>
+<sub><em>Mutex: 하나의 block 상태 정보와 데이터 접근 권한을 한 Worker에만 부여하는 동기화 객체입니다.</em></sub><br>
 <sub><em>Fine-grain locking: 각 block에 독립 lock을 배치하여 서로 다른 block의 동시 처리를 허용하는 방식입니다.</em></sub>
 
 ```text
@@ -128,69 +127,69 @@ page_entry[1] + lock[1]
 page_entry[N] + lock[N]
 ```
 
-Get operation은:
+Block을 가져오는 순서는 다음과 같습니다.
 
-1. random 시작 index 선택
-2. linear-congruential progression으로 array 탐색
-3. valid/empty predicate와 tag 확인
-4. 해당 block mutex를 `trylock`
-5. 성공한 entry를 worker에 반환
+1. 임의의 시작 index를 선택합니다.
+2. Linear-congruential 계산으로 배열의 다음 후보를 정합니다.
+3. 후보의 valid·empty 상태와 tag가 Worker의 요청에 맞는지 확인합니다.
+4. 해당 block의 mutex에 `trylock`을 실행합니다.
+5. 잠금에 성공한 block을 Worker에 전달합니다.
 
-Put operation은 metadata를 같은 array slot에 기록하고 mutex를 unlock한다.
+작업이 끝나면 변경된 상태 정보를 같은 배열 위치에 기록하고 mutex를 해제합니다.
 
 장점:
 
-- 하나의 global queue lock contention 감소
-- 서로 다른 worker가 다른 block을 동시에 획득 가능
-- 시작점과 탐색 순서를 섞어 특정 block 편향 감소
+- Queue 전체를 하나의 mutex로 잠글 때보다 잠금 대기가 줄어듭니다.
+- 여러 Worker가 서로 다른 block을 동시에 처리할 수 있습니다.
+- 시작 위치와 탐색 순서가 바뀌므로 특정 block만 반복해서 선택하는 현상이 줄어듭니다.
 
-## 주소를 선택하는 단위
+## Block과 block 내부 주소 선택
 
-주소 선택에는 두 granularity가 있다.
+주소는 다음 두 단계로 선택합니다.
 
 ```text
-큰 단위: 어느 1 MiB block인가? → pseudo-random
-작은 단위: block 안에서 어느 byte인가? → 앞에서 뒤로 순차
+1단계: 처리할 1 MiB block 선택 → pseudo-random
+2단계: 선택한 block 내부 처리 → 앞에서 뒤로 순차 접근
 ```
 
-이 구성은 block 간 주소 선택을 분산하고, 각 block 내부에서는 연속 cache line stream을 생성한다. 연속 stream은 hardware prefetch와 burst transaction 형성에 유리한 access 형태를 제공한다.
+이 방식은 전체 테스트 메모리에서 처리할 block을 분산해서 고르는 동시에, 선택한 block 안에서는 연속된 cache line을 처리합니다. 연속 접근은 hardware prefetch가 다음 데이터를 미리 요청하고 memory controller가 여러 요청을 연속해서 처리할 수 있게 합니다.
 
-access granularity는 1 MiB block 선택과 block 내부 순차 접근으로 구성된다. 따라서 cache-line 단위 random access와 단일 buffer 순차 access의 특성을 각각 그대로 적용할 수 없으며, PMU 결과는 이 두 단계의 주소 선택 구조를 기준으로 해석한다.
+따라서 stressapptest는 모든 cache line을 완전히 임의 순서로 접근하는 시험도 아니고, 하나의 큰 buffer를 처음부터 끝까지 순차 접근하는 시험도 아닙니다. PMU 결과는 `block은 분산 선택, block 내부는 순차 접근`이라는 구조를 기준으로 해석해야 합니다.
 
-## Valid/Empty 비율
+## 읽을 block과 쓸 block의 비율
 
-초기 fill은 모든 block을 먼저 valid data로 채운다. 그 후 기본 fine-lock mode에서는 약 2/5를 empty, 약 3/5를 valid로 표시한다 (`src/sat.cc:415`, `src/sat.cc:526`).
+초기 데이터 쓰기 단계에서는 모든 block을 valid 데이터로 채웁니다. 이후 기본 fine-lock 방식에서는 전체 block의 약 2/5를 empty, 약 3/5를 valid 상태로 설정합니다 (`src/sat.cc:415`, `src/sat.cc:526`).
 
 empty block이 필요한 이유:
 
-- 각 CopyThread가 destination 하나 필요
-- file/network read가 들어갈 destination 필요
-- worker끼리 destination 경쟁을 줄이기 위함
+- 각 `CopyThread`가 데이터를 쓸 대상 block이 필요합니다.
+- 파일·네트워크에서 읽은 데이터를 저장할 대상 block이 필요합니다.
+- 여러 Worker가 대상 block을 얻기 위해 대기하는 시간을 줄입니다.
 
-모든 block은 초기 fill에서 pattern data가 기록된다. `empty` 전환은 pattern metadata를 해제하며, 이전 data byte를 지우거나 physical backing을 반환하지 않는다.
+모든 block에는 초기 단계에서 pattern 데이터가 기록됩니다. Empty 상태로 바꿀 때에는 `pattern` 정보만 제거합니다. 이전 데이터 byte를 지우거나 연결된 physical page를 운영체제에 반환하지는 않습니다.
 
-## 한 번에 크게 잠그는 queue
+## 전체 queue를 한 번에 잠그는 방식
 
-`--coarse_grain_lock`은 legacy `PageEntryQueue` 두 개를 사용한다.
+`--coarse_grain_lock`은 이전 방식의 `PageEntryQueue` 두 개를 사용합니다.
 
 - `empty_` queue
 - `valid_` queue
-- 각 queue마다 global mutex 하나
-- random entry를 next-out 위치와 swap한 뒤 pop
+- 각 queue 전체를 보호하는 mutex 하나
+- 임의로 선택한 항목을 꺼낼 위치와 교환한 뒤 queue에서 제거
 
-동일한 correctness semantics를 유지한다. worker 수가 증가하면 global mutex의 lock contention도 증가할 수 있다. 이 option은 queue 성능 비교와 benchmarking에 사용한다.
+Block의 상태 관리 규칙은 기본 방식과 같습니다. 그러나 Worker 수가 늘면 여러 Worker가 queue 전체의 mutex를 기다리는 시간이 증가할 수 있습니다. 이 옵션은 두 queue 구현의 성능을 비교할 때 사용합니다.
 
 ## Queue 잠금이 필요한 이유
 
-worker가 block을 Get하면 해당 block은 Put할 때까지 다른 worker가 가져가지 못한다. 따라서 정상 경로에서는 두 CopyThread가 같은 destination block을 동시에 쓰지 않는다.
+Worker가 block을 가져오면 작업을 끝내고 반환할 때까지 다른 Worker는 그 block을 사용할 수 없습니다. 따라서 정상 동작에서는 두 `CopyThread`가 같은 대상 block에 동시에 쓰지 않습니다.
 
-queue operation은 page_entry, lock, counter 및 log metadata에 대한 CPU read/write를 포함한다. `-m 0 -c N` 구성에서도 이 metadata write traffic은 발생한다.
+Queue 처리 과정에서도 CPU는 `page_entry`, mutex, counter, 로그 정보를 읽고 씁니다. 따라서 `-m 0 -c N`처럼 `CopyThread`를 사용하지 않는 구성에서도 이 관리 정보에 대한 소량의 메모리 접근은 발생합니다.
 
-## Tag로 worker 영역 나누기
+## Tag를 이용한 block 구역 선택
 
-초기화 중 block 첫 PA를 generic region으로 분류하고 bit mask tag를 기록한다. `--local_numa` 또는 `--remote_numa`이면 worker가 특정 tag의 block만 선택한다.
+초기화 과정에서 block 첫 physical address를 공통 규칙에 따라 메모리 구역으로 분류하고 bit mask tag를 기록합니다. `--local_numa` 또는 `--remote_numa`를 사용하면 Worker는 조건에 맞는 tag의 block만 선택합니다.
 
-현재 generic `OsLayer`의 region 계산에는 mobile NUMA/LPDDR channel topology 정보가 포함되지 않는다. mobile ARM에서 local/remote DRAM locality를 판정하려면 vendor topology를 반영한 platform-specific 구현이 필요하다.
+현재 공통 `OsLayer`의 메모리 구역 계산에는 모바일 SoC의 NUMA 또는 LPDDR channel 구조가 포함되어 있지 않습니다. 모바일 ARM에서 CPU와 DRAM의 local·remote 관계를 구분하려면 SoC 제조사의 구조를 반영한 별도 구현이 필요합니다.
 
 <sub><em>Region tag: worker가 local/remote 조건으로 block을 선택할 때 사용하는 software bit mask입니다.</em></sub><br>
 <sub><em>NUMA locality: CPU와 memory node 사이의 topology에 따라 access latency와 bandwidth가 달라지는 특성입니다.</em></sub>

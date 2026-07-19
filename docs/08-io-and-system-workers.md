@@ -1,10 +1,10 @@
-# I/O·CPU worker별 동작
+# I/O·CPU Worker 종류와 동작
 
-이 장에서는 메모리 copy 외에 파일, network, block device, CPU 계산, cache coherency에 부하를 주는 worker를 설명합니다. 각 worker는 지정한 옵션이 있을 때만 추가됩니다.
+이 장에서는 메모리 복사 외에 파일, 네트워크, 저장 장치, CPU 연산, cache coherency를 시험하는 Worker를 설명합니다. 각 Worker는 해당 옵션을 지정할 때만 생성됩니다.
 
 ## FileThread (`-f`)
 
-`-f path` 하나마다 FileThread 하나를 만든다. 기본 `disk_pages_`는 8이므로 기본 block 1 MiB 기준 한 pass에서 8 MiB를 파일로 write한 뒤 8 MiB를 read한다.
+`-f path` 하나마다 `FileThread` 하나를 만듭니다. 기본 `disk_pages_`는 8입니다. Block 크기가 기본값인 1 MiB이면 한 번의 작업에서 8 MiB를 파일에 쓴 뒤 다시 8 MiB를 읽습니다.
 
 ### 파일을 여는 방식
 
@@ -12,7 +12,7 @@
 O_RDWR | O_CREAT | O_SYNC | O_DIRECT
 ```
 
-`O_DIRECT`가 `EINVAL`로 실패하면 이를 빼고 다시 open한 뒤 filesystem page cache flush 경로를 활성화한다.
+`O_DIRECT`를 사용한 파일 열기가 `EINVAL`로 실패하면 `O_DIRECT`를 제외하고 다시 엽니다. 이후 filesystem page cache를 정리하는 경로를 활성화합니다.
 
 > **파일:** `src/worker.cc` · **함수:** `FileThread::OpenFile()` · **기준:** `73b9df2`
 
@@ -25,28 +25,28 @@ if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
 }
 ```
 
-**해석:** 첫 open은 direct I/O를 요청합니다. filesystem이 이를 지원하지 않아 `EINVAL`을 반환한 경우 buffered I/O로 전환하고 후속 단계에서 page cache flush를 사용합니다. `O_DIRECT`는 CPU data cache를 끄는 option이 아닙니다.
+**코드 설명:** 첫 번째 `open()`은 direct I/O를 요청합니다. Filesystem이 이를 지원하지 않아 `EINVAL`을 반환하면 buffered I/O로 바꾸고 이후 page cache 정리를 요청합니다. `O_DIRECT`는 Linux의 파일 page cache에 적용되는 옵션이며 CPU data cache를 끄지는 않습니다.
 
 <sub><em>O_SYNC: write system call의 데이터와 필요한 metadata가 backing storage에 동기화되도록 요청하는 file open flag입니다.</em></sub><br>
 <sub><em>O_DIRECT: filesystem page cache 사용을 최소화하도록 kernel에 요청하는 file open flag입니다.</em></sub><br>
 <sub><em>Page cache: Linux kernel이 file 데이터를 RAM에 보관하여 file I/O를 처리하는 cache 계층입니다.</em></sub>
 
-### 한 번의 처리 순서
+### 파일 한 번을 처리하는 순서
 
 ```text
-valid SAT block 8개 획득
- → strict이면 source checksum
- → 각 512 B sector에 magic/block/sector/pass tag 삽입
- → 파일 시작부터 순차 write
- → source block을 empty로 반환
+valid SAT block 8개 가져오기
+ → 기본 검사 방식이면 원본 checksum 확인
+ → 각 512 B sector에 magic·block·sector·반복 번호 기록
+ → 파일 시작 위치부터 순차 쓰기
+ → 원본 block을 empty 상태로 반환
  → 파일 시작으로 seek
- → empty SAT block 8개에 순차 read
- → sector tag 검증 및 원 pattern 복원
- → strict이면 block checksum
- → destination을 valid로 반환
+ → empty SAT block 8개에 순차 읽기
+ → sector 정보를 검사하고 원래 pattern 복원
+ → 기본 검사 방식이면 block checksum 확인
+ → 대상 block을 valid 상태로 반환
 ```
 
-FileThread는 UFS/storage DMA와 memory/NoC traffic을 동시에 생성한다. `O_DIRECT`의 적용 범위는 Linux page cache이며, DMA coherency와 CPU L1/L2/SLC access는 platform I/O 경로에 따라 처리된다.
+`FileThread`는 UFS 또는 저장 장치의 DMA와 메모리·NoC 접근을 동시에 발생시킵니다. `O_DIRECT`는 Linux page cache에만 적용됩니다. DMA coherency와 CPU L1·L2·SLC의 동작은 기기의 I/O 구성에 따라 계속 발생합니다.
 
 > **파일:** `src/worker.cc` · **함수:** `FileThread::ReadPages()` · **기준:** `73b9df2`
 
@@ -65,15 +65,15 @@ if (strict) {
 PutValidPage(&dst);
 ```
 
-**해석:** file read destination은 empty SAT block입니다. sector tag를 검사하고 strict mode에서는 pattern checksum까지 검사한 다음 valid 상태로 반환합니다. 이 경로는 storage에서 memory로 들어온 데이터를 SAT memory pool에 재투입합니다.
+**코드 설명:** 파일에서 읽은 데이터는 empty SAT block에 저장합니다. Sector 정보를 확인하고 기본 검사 방식에서는 pattern checksum도 검사합니다. 검사가 끝난 block은 valid 상태로 바꾸어 다시 SAT 메모리 영역에서 사용할 수 있게 합니다.
 
 <sub><em>DMA: device가 CPU의 개별 load/store 개입 없이 system memory와 데이터를 전송하는 기능입니다.</em></sub>
 
-`--filesize`는 한 pass의 파일 크기를 byte로 지정하며 내부적으로 `disk_pages = filesize / SAT block size`로 계산한다. 최소 한 block이다.
+`--filesize`는 한 번에 처리할 파일 크기를 byte로 지정합니다. 내부에서는 `disk_pages = filesize / SAT block 크기`로 block 수를 계산하며 최소값은 한 block입니다.
 
 ## NetworkThread (`-n`, `--listen`)
 
-network port는 TCP 19996이다.
+통신에는 TCP port 19996을 사용합니다.
 
 > **파일:** `src/worker.cc` · **함수:** `NetworkThread::Work()` · **기준:** `73b9df2`
 
@@ -96,30 +96,30 @@ result = result && sat_->PutValid(&dst);
 result = result && sat_->PutEmpty(&src);
 ```
 
-**해석:** valid block을 peer로 전송하고 peer가 반사한 1 MiB를 empty destination에 수신합니다. strict mode는 송신 전 source와 수신 후 destination을 각각 검사합니다.
+**코드 설명:** Valid block을 상대 기기로 전송하고 상대 기기가 그대로 돌려보낸 1 MiB를 empty 대상 block에 받습니다. 기본 검사 방식에서는 전송 전 원본과 수신 후 대상을 각각 검사합니다.
 
-### 받는 쪽
+### 데이터를 되돌려 보내는 쪽
 
-`--listen`은 `0.0.0.0:19996`에 bind/listen하고 connection마다 NetworkSlaveThread를 만든다.
+`--listen`은 `0.0.0.0:19996`에서 연결을 기다리고 연결마다 `NetworkSlaveThread`를 만듭니다.
 
-Slave는 512 B aligned local buffer에 1 SAT block을 recv한 뒤 같은 bytes를 sender에게 다시 send한다. 별도 pattern verification은 sender가 수행한다.
+수신 측은 512 B 단위로 정렬된 임시 buffer에 SAT block 하나를 받은 뒤 같은 데이터를 송신 측으로 돌려보냅니다. Pattern 검사는 송신 측에서 수행합니다.
 
-### 보내는 쪽
+### 테스트 데이터를 보내는 쪽
 
-`-n ipaddr` 하나마다 NetworkThread 하나를 만든다. 시작 후 15초 기다렸다가 연결한다.
+`-n ipaddr` 하나마다 `NetworkThread` 하나를 만듭니다. 프로그램 시작 후 15초를 기다린 뒤 상대 기기에 연결합니다.
 
 ```text
-valid source + empty destination 획득
- → strict이면 source checksum
- → source 1 block TCP send
- → reflector가 보낸 1 block recv into destination
- → strict이면 destination checksum
- → destination valid, source empty
+valid 원본 + empty 대상 가져오기
+ → 기본 검사 방식이면 원본 checksum 확인
+ → 원본 block 하나를 TCP로 전송
+ → 상대 기기가 돌려보낸 block을 대상에 수신
+ → 기본 검사 방식이면 대상 checksum 확인
+ → 대상은 valid, 기존 원본은 empty로 변경
 ```
 
-network worker는 CPU copy, socket buffer, kernel network stack, DMA/NIC/Wi-Fi subsystem을 함께 사용하므로 순수 LPDDR controller test로 분리하기 어렵다.
+네트워크 Worker는 CPU 복사, socket buffer, kernel network stack, DMA, NIC 또는 Wi-Fi 장치를 함께 사용합니다. 따라서 결과를 LPDDR controller만의 부하로 해석할 수 없습니다.
 
-`--tag_mode`와 함께 사용할 수 없다.
+`--tag_mode`와 함께 사용할 수 없습니다.
 
 ## DiskThread (`-d`)
 
@@ -134,35 +134,35 @@ if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
 }
 ```
 
-**해석:** target을 `O_RDWR`로 열기 때문에 block device에 대한 write 권한을 획득합니다. 기본 `--non_destructive` 상태에서는 write phase가 비활성화되지만 target 지정과 option 변경에는 데이터 손상 위험이 있습니다.
+**코드 설명:** 시험 대상을 `O_RDWR`로 열기 때문에 block device에 쓸 수 있는 권한을 얻습니다. 기본값인 `--non_destructive`에서는 쓰기 단계를 실행하지 않습니다. 그러나 대상 경로를 잘못 지정하거나 옵션을 변경하면 저장된 데이터가 손상될 수 있습니다.
 
-`-d device-or-file`은 direct device/file random I/O worker 하나를 만든다. DiskThread는 sector/block table과 asynchronous I/O를 사용하며, FileThread는 SAT block 단위의 sequential file pass를 사용한다.
+`-d device-or-file`은 장치 또는 파일의 임의 위치를 읽고 쓰는 `DiskThread` 하나를 만듭니다. `DiskThread`는 sector·block 상태표와 asynchronous I/O를 사용합니다. 반면 `FileThread`는 SAT block 단위로 파일의 처음부터 순차 처리합니다.
 
 <sub><em>Asynchronous I/O: I/O 요청 제출과 완료 수집을 분리하여 여러 요청을 동시에 계류시키는 방식입니다.</em></sub>
 
-### 기본 동작은 데이터를 보존함
+### 기본 읽기 동작과 쓰기 활성화 조건
 
-`--destructive`를 주지 않으면 write phase가 disable되고 random location을 read만 한다. 이 경우 기존 disk data는 SAT pattern과 비교하지 않는다.
+`--destructive`를 지정하지 않으면 쓰기 단계를 실행하지 않고 임의 위치를 읽기만 합니다. 이때 기존 저장 장치의 데이터는 SAT pattern과 비교하지 않습니다.
 
-`--destructive`를 주면 random block에 SAT pattern을 write하고 충분한 queue depth 후 다시 read/verify한다.
+`--destructive`를 지정하면 임의의 block에 SAT pattern을 쓴 뒤, 여러 I/O 요청을 진행하고 해당 block을 다시 읽어 검사합니다.
 
-> 휴대폰의 실제 block device에 `--destructive`를 사용하면 filesystem, userdata, boot partition을 복구 불가능하게 손상시킬 수 있다.
+> 휴대폰의 실제 block device에 `--destructive`를 사용하면 filesystem, userdata, boot partition을 복구할 수 없게 손상시킬 수 있습니다.
 
-### 주요 설정값
+### 주요 I/O 설정값
 
-- sector/alignment: 512 B
-- read block 기본: 512 B
-- write block: 미지정 시 read block과 같게 보정
-- disk cache 기본: worker constructor 기준 16 MiB
-- in-flight queue: cache에 들어갈 block 수의 약 150%
-- device size 요구: cache size의 3배 초과
-- libaio가 build에 있어야 async read/write 경로 사용
+- sector와 주소 정렬 단위: 512 B
+- 기본 읽기 block: 512 B
+- 쓰기 block: 지정하지 않으면 읽기 block과 같은 크기
+- 기본 disk cache: Worker 생성 코드 기준 16 MiB
+- 동시에 진행하는 I/O 수: cache에 들어가는 block 수의 약 150%
+- 필요한 장치 크기: cache 크기의 3배 초과
+- asynchronous 읽기·쓰기 사용 조건: build에 libaio 포함
 
 ### RandomDiskThread
 
-`--random-threads N`은 각 `-d` DiskThread마다 N개의 추가 reader를 만든다. 이들은 shared `DiskBlockTable`에서 initialized block을 random 선택해 검증한다.
+`--random-threads N`은 각 `DiskThread`에 N개의 추가 읽기 Worker를 만듭니다. 이 Worker들은 공동 `DiskBlockTable`에서 초기화가 끝난 block을 임의로 선택하여 검사합니다.
 
-현재 기준 코드의 main DiskThread는 block 준비 후 상태 조회 함수 `block->initialized()`를 호출한다 (`src/worker.cc:2948`). 상태 설정 함수 `block->set_initialized()` 호출은 해당 경로에 존재하지 않는다. 그 결과 table entry의 initialized flag가 설정되지 않을 수 있으며 RandomDiskThread의 block 획득 조건이 충족되지 않을 수 있다. target build에서 상태 전이 trace를 확인한 후 이 option의 실행 결과를 사용한다.
+현재 분석한 코드의 주 `DiskThread`는 block을 준비한 뒤 상태를 읽는 `block->initialized()`를 호출합니다 (`src/worker.cc:2948`). 그러나 해당 실행 경로에는 상태를 설정하는 `block->set_initialized()` 호출이 없습니다. 따라서 상태표의 initialized 값이 설정되지 않아 `RandomDiskThread`가 검사할 block을 얻지 못할 수 있습니다. 이 옵션을 사용할 때에는 대상 build에서 상태 변경 과정을 먼저 확인해야 합니다.
 
 ## CpuStressThread (`-C`)
 
@@ -175,19 +175,19 @@ do {
 } while (IsReadyToRun());
 ```
 
-**해석:** CPU-specific workload를 반복하고 매 iteration마다 scheduler에 실행 기회를 반환합니다. 이 worker 자체는 memory pattern pass/fail을 판정하지 않습니다.
+**코드 설명:** CPU 연산을 반복하고 매 반복이 끝날 때 scheduler에 다른 thread를 실행할 기회를 줍니다. 이 Worker는 메모리 pattern의 합격·불합격을 판정하지 않습니다.
 
-`-C N`은 N개의 CPU stress worker를 만든다.
+`-C N`은 N개의 CPU 연산 Worker를 만듭니다.
 
-generic ARM/Linux workload는 100개의 double array에 대해 100,000,000회 moving-average 형태의 floating-point 계산을 반복한다 (`src/os.cc:904`).
+공통 ARM·Linux 구현은 100개의 `double` 배열을 사용하여 moving average 형태의 부동소수점 계산을 100,000,000회 반복합니다 (`src/os.cc:904`).
 
 특성:
 
-- working array가 작아 L1에 머물 가능성이 큼
-- 주된 workload는 CPU FP/vector calculation
-- FP/vector pipeline, CPU dynamic power, thermal, DVFS에 영향
-- CopyThread와 함께 사용하면 memory+compute 동시 전력 조건 생성
-- worker status는 계산 loop 실행 성공 여부로 기록
+- 계산 배열이 작아 L1 cache에 머물 가능성이 큽니다.
+- 주된 부하는 CPU의 부동소수점 또는 vector 연산입니다.
+- 연산 pipeline, CPU 동적 전력, 온도, DVFS에 영향을 줍니다.
+- `CopyThread`와 함께 사용하면 메모리 접근과 연산이 동시에 많은 조건을 만듭니다.
+- Worker 상태는 계산 반복문의 실행 성공 여부로 기록합니다.
 
 ## CpuCacheCoherencyThread (`--cc_test`)
 
@@ -209,28 +209,28 @@ for (int cline_num = 0; cline_num < cc_cacheline_count_; cline_num++) {
 }
 ```
 
-**해석:** 각 thread는 pseudo-random cache-line-sized structure를 선택하고 자신의 byte slot을 증가시킨 다음 전체 구조의 합을 검사합니다. 실제 source에는 홀수 thread/line에서 offset 순서를 반전하는 분기가 추가로 적용됩니다.
+**코드 설명:** 각 thread는 cache line 크기의 구조체를 pseudo-random 방식으로 선택합니다. 구조체 안에서 자신에게 배정된 byte 값을 증가시킨 뒤 전체 합이 기대값과 같은지 검사합니다. 실제 코드에는 홀수 번호 thread와 cache line에서 byte 위치의 순서를 반대로 정하는 조건도 있습니다.
 
-configured CPU 수만큼 thread를 만들고 각 thread가 CPU에 pin된다.
+설정한 CPU 수만큼 thread를 만들고 각 thread를 지정한 CPU에서 실행합니다.
 
-여러 cache-line-sized structure 중 하나를 pseudo-random 선택하고 자기 thread에 대응하는 byte counter를 반복 증가시킨다. 이후 모든 선택 line의 해당 counter 합이 `cc_inc_count`와 같은지 확인하고 0으로 reset한다.
+여러 cache line 크기의 구조체 중 하나를 pseudo-random 방식으로 선택하고, 자신의 byte counter를 반복해서 증가시킵니다. 이후 모든 구조체에서 해당 counter를 더한 값이 `cc_inc_count`와 같은지 확인하고 0으로 초기화합니다.
 
 목적:
 
-- 여러 core 사이 shared cache line ownership 이동
-- snoop/invalidate/update
-- cache coherency protocol correctness
+- 여러 CPU core 사이에서 shared cache line의 쓰기 권한 이동
+- Snoop과 cache line 무효화
+- Cache coherency protocol의 정상 동작 검사
 
-이 test는 작은 shared data의 cache-line ownership을 core 사이에서 반복적으로 전환한다. 주된 부하는 snoop, invalidate 및 ownership transaction이며, SLC/DRAM traffic 비율은 coherency implementation에 따라 결정된다.
+이 시험은 작은 공동 데이터의 cache line 쓰기 권한을 여러 CPU core 사이에서 반복해서 이동시킵니다. 주된 부하는 snoop, cache line 무효화, 쓰기 권한 이동입니다. SLC와 DRAM까지 전달되는 요청의 비율은 SoC의 coherency 구현에 따라 달라집니다.
 
 <sub><em>Cache-line ownership: 특정 core가 cache line을 수정할 수 있도록 coherency protocol이 부여한 권한 상태입니다.</em></sub><br>
 <sub><em>Snoop: 다른 cache가 해당 address의 data 또는 ownership을 보유하는지 조회하는 coherency transaction입니다.</em></sub>
 
-관련 option:
+관련 옵션은 다음과 같습니다.
 
-- `--cc_line_count`: shared cache-line structure 수, 기본 2
-- `--cc_line_size`: auto-detected line size override
-- `--cc_inc_count`: 한 batch의 increment 수, 기본 1000
+- `--cc_line_count`: 공동으로 사용하는 cache line 크기 구조체 수, 기본값 2
+- `--cc_line_size`: 자동으로 확인한 cache line 크기를 사용하지 않고 직접 지정
+- `--cc_inc_count`: 한 번의 검사에서 값을 증가시키는 횟수, 기본값 1000
 
 ## ErrorPollThread
 
@@ -243,13 +243,13 @@ do {
 } while (IsReadyToRun());
 ```
 
-**해석:** platform error polling을 반복하고 기본 wait는 1초입니다. generic Android/Linux `OsLayer::ErrorPoll()`은 0을 반환하므로 vendor-specific 구현이 없으면 실제 ECC/RAS event를 수집하지 않습니다.
+**코드 설명:** SoC 오류 확인 함수를 반복해서 호출하며 기본 대기 시간은 1초입니다. 공통 Android·Linux `OsLayer::ErrorPoll()`은 항상 0을 반환합니다. 따라서 SoC별 구현이 없으면 실제 ECC 또는 RAS 오류를 수집하지 않습니다.
 
-기본으로 하나 생성되어 `OsLayer::ErrorPoll()`을 약 1초마다 호출한다.
+기본으로 하나 생성되며 `OsLayer::ErrorPoll()`을 약 1초마다 호출합니다.
 
-public generic `OsLayer::ErrorPoll()`은 항상 0을 반환한다 (`src/os.cc:739`). 현재 Android ARM generic build는 vendor corrected ECC/RAS event를 자동으로 읽지 않는다.
+공개 저장소의 공통 `OsLayer::ErrorPoll()`은 항상 0을 반환합니다 (`src/os.cc:739`). 현재 Android ARM 공통 build는 SoC가 보고하는 corrected ECC 또는 RAS 오류를 자동으로 읽지 않습니다.
 
-따라서 mobile에서는 다음을 외부에서 별도 수집해야 한다.
+따라서 모바일 시험에서는 다음 정보를 별도로 수집해야 합니다.
 
 - kernel RAS/EDAC/vendor memory error log
 - pstore/ramoops
@@ -257,7 +257,7 @@ public generic `OsLayer::ErrorPoll()`은 항상 0을 반환한다 (`src/os.cc:73
 - DMC/LLCC error register
 - secure firmware/SoC-specific diagnostics
 
-`--no_errors`는 ErrorPollThread 생성을 비활성화한다. CopyThread, CheckThread 및 final check의 pattern verification 설정은 그대로 유지된다.
+`--no_errors`는 `ErrorPollThread`를 생성하지 않게 합니다. `CopyThread`, `CheckThread`, 마지막 전체 검사의 pattern 검사는 그대로 유지됩니다.
 
 ## CpuFreqThread
 
@@ -274,13 +274,13 @@ public generic `OsLayer::ErrorPoll()`은 항상 0을 반환한다 (`src/os.cc:73
 #endif
 ```
 
-**해석:** public implementation은 x86 CPUID와 MSR을 전제로 합니다. ARM64 Android에서 `--cpu_freq_test`를 활성화하면 environment check가 실패합니다.
+**코드 설명:** 공개 구현은 x86의 CPUID와 MSR을 사용합니다. ARM64 Android에서 `--cpu_freq_test`를 지정하면 실행 환경 검사에 실패합니다.
 
-`--cpu_freq_test`는 TSC/APERF/MPERF MSR을 읽는 x86 전용 구현이다. AArch64에서는 `CanRun()`이 false를 반환해 초기화가 실패한다.
+`--cpu_freq_test`는 TSC, APERF, MPERF MSR을 읽는 x86 전용 기능입니다. AArch64에서는 `CanRun()`이 false를 반환하여 초기화가 실패합니다.
 
-Android ARM의 CPU frequency는 cpufreq sysfs, tracepoint, vendor profiler, simpleperf 또는 Perfetto로 측정한다. `--cpu_freq_test`는 AArch64 초기화 단계에서 지원되지 않는 설정으로 처리된다.
+Android ARM의 CPU 주파수는 cpufreq sysfs, tracepoint, SoC 제조사 profiler, simpleperf, Perfetto로 측정해야 합니다. `--cpu_freq_test`는 AArch64에서 지원하지 않는 옵션입니다.
 
-## Monitor mode
+## 오류 감시 전용 방식
 
 > **파일:** `src/sat.cc` · **함수:** `Sat::Initialize()` · **기준:** `73b9df2`
 
@@ -293,8 +293,8 @@ if (monitor_mode_) {
 }
 ```
 
-**해석:** monitor mode는 test memory allocation, pattern initialization 및 memory worker 생성을 건너뜁니다. 실행되는 핵심 동작은 ErrorPollThread이며 generic build에서는 앞 절의 no-op 제한을 그대로 받습니다.
+**코드 설명:** Monitor mode는 테스트 메모리 할당, pattern 준비, 메모리 Worker 생성을 모두 건너뜁니다. `ErrorPollThread`만 실행하며 공통 build에서는 앞 절에서 설명한 대로 실제 SoC 오류를 수집하지 않습니다.
 
-`--monitor_mode`는 test memory를 할당하지 않고 ErrorPollThread만 실행한다.
+`--monitor_mode`는 테스트 메모리를 할당하지 않고 `ErrorPollThread`만 실행합니다.
 
-generic ARM ErrorPoll은 항상 0을 반환한다. Android에서 ECC event monitor로 사용하려면 vendor-specific `OsLayer::ErrorPoll()` 구현을 연결한다.
+공통 ARM의 `ErrorPoll()`은 항상 0을 반환합니다. Android에서 ECC 오류 감시 기능으로 사용하려면 해당 SoC에 맞는 `OsLayer::ErrorPoll()` 구현을 연결해야 합니다.

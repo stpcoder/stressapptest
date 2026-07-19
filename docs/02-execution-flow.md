@@ -1,46 +1,46 @@
 # 실행 순서 한눈에 보기
 
-## 전체 실행 순서
+## 작동 단계별 순서
 
 ```text
-명령행 옵션 읽기
+명령행 옵션 확인
    ↓
 OS/CPU 정보 초기화
    ↓
-메모리 크기 결정 및 mmap
+테스트 메모리 크기 결정과 mmap
    ↓
-pattern과 기대 checksum 생성
+Pattern과 기대 checksum 생성
    ↓
 1 MiB block 정보와 queue 생성
    ↓
-8개 FillThread로 전체 메모리 쓰기        ┐
-   ↓                                      │ -s 이전
-physical address 진단과 block 상태 분류  ┘
+8개 FillThread가 전체 메모리에 쓰기       ┐
+   ↓                                      │ -s 시작 전
+physical address 확인과 block 상태 설정   ┘
    ↓
-worker 생성
+Worker 생성
    ↓
-설정한 시간 동안 copy/check/invert/I/O 실행
+설정한 시간 동안 복사·검사·반전·I/O 실행
    ↓
-worker 정지 및 종료 대기
+Worker 정지와 종료 대기
    ↓
 8개 CheckThread로 전체 valid block 검사  ← 실행 시간 종료 후
    ↓
-통계와 오류 출력 후 메모리 해제
+통계와 오류를 출력한 뒤 메모리 해제
 ```
 
-## 1. 명령행 옵션 읽기
+## 1. 실행 옵션 확인
 
-`Sat::ParseArgs()`가 option을 순서대로 읽는다 (`src/sat.cc:794`). GNU `getopt`를 쓰지 않고 문자열 비교 macro를 사용한다.
+`Sat::ParseArgs()`는 사용자가 입력한 옵션을 앞에서부터 확인합니다 (`src/sat.cc:794`). GNU `getopt`를 사용하지 않고 각 옵션 이름을 문자열로 직접 비교합니다.
 
-구현상 특징:
+옵션을 읽는 방식은 다음과 같습니다.
 
-- 숫자는 `strtoull(..., base=0)`로 읽어 `0x` hexadecimal 입력도 가능하다.
-- 일부 signed field에도 unsigned parse 결과를 대입한다.
-- `-f`, `-d`, `-n`, `--memory_channel`은 반복 지정할 수 있다.
-- 알 수 없는 option은 version/help를 출력하고 exit 1한다.
-- `-h`, `--help`는 version/help를 출력하고 exit 0한다.
+- 숫자는 `strtoull(..., base=0)`로 읽으므로 `0x`로 시작하는 16진수도 입력할 수 있습니다.
+- 일부 signed 변수에도 unsigned 방식으로 변환한 값을 저장합니다.
+- `-f`, `-d`, `-n`, `--memory_channel`은 여러 번 지정할 수 있습니다.
+- 등록되지 않은 옵션을 입력하면 version과 도움말을 출력하고 종료 코드 1을 반환합니다.
+- `-h` 또는 `--help`를 입력하면 version과 도움말을 출력하고 종료 코드 0을 반환합니다.
 
-### 실제 초기화 순서
+### 프로그램 초기화 순서
 
 > **파일:** `src/sat.cc` · **함수:** `Sat::Initialize()` · **기준:** `73b9df2`
 
@@ -61,23 +61,23 @@ if (!InitializePatterns())
 pages_ = size_ / page_length_;
 ```
 
-**해석:** CPU 수와 memory 기본값은 `OsLayer` 초기화 이후 확정됩니다. memory allocation이 성공한 다음 pattern checksum과 SAT block 수가 구성됩니다. 따라서 `-s` countdown이 시작되기 전에 큰 memory allocation과 전체 fill이 수행됩니다.
+**코드 설명:** `OsLayer`를 초기화하면서 CPU 수와 메모리 기본값을 정합니다. 테스트 메모리 할당이 성공하면 pattern checksum과 SAT block 수를 준비합니다. 이 모든 과정과 초기 데이터 쓰기는 `-s`로 지정한 실행 시간이 시작되기 전에 수행됩니다.
 
-## 2. 환경 및 기본값 결정
+## 2. CPU 정보와 기본 설정 확인
 
-- runtime 기본값: 20초
-- block 크기: 1 MiB
-- fill thread: 8
-- copy thread: 미지정 시 online logical CPU 수
-- strict transaction check: 켜짐
-- warm `-W`: 꺼짐
-- pause/resume: 600초마다 15초 pause
+- 실행 시간 기본값: 20초
+- SAT block 크기: 1 MiB
+- 초기 쓰기 FillThread: 8개
+- CopyThread: 미지정 시 온라인 상태의 논리 CPU 수
+- 복사 중 checksum 검사: 사용
+- `-W` vector 복사: 사용하지 않음
+- 주기적 정지: 600초마다 15초
 
-`-M`이 0이면 `FindFreeMemSize()`가 total physical memory 비율을 기준으로 target을 정한다. available memory는 log 출력에 사용되며 target 산정의 주 기준에는 포함되지 않는다. Android 실행에서는 `-M`을 명시하여 할당량을 제한한다.
+`-M`을 지정하지 않으면 `FindFreeMemSize()`가 전체 physical memory 크기를 기준으로 테스트 크기를 계산합니다. 현재 사용 가능한 메모리는 log에만 표시되고 계산 기준으로 사용되지 않습니다. Android에서는 `-M`을 직접 지정하여 테스트 메모리 크기를 제한해야 합니다.
 
-## 3. Virtual memory 할당
+## 3. 테스트 메모리 할당
 
-일반 Android/Linux 경로는 다음 `mmap()`이다.
+Android/Linux의 일반 할당 경로에서는 다음 `mmap()`을 사용합니다.
 
 ```c
 mmap(NULL, length,
@@ -86,50 +86,50 @@ mmap(NULL, length,
      -1, 0)
 ```
 
-이 시점에는 virtual address range가 예약된다. physical backing page는 이후 FillThread의 store에서 발생하는 page fault와 first touch를 통해 할당된다.
+`mmap()`이 성공하면 먼저 virtual address 영역이 예약됩니다. 실제 physical page는 FillThread가 각 page에 처음 데이터를 쓸 때 page fault를 거쳐 할당됩니다.
 
-<sub><em>Anonymous mmap: file backing 없이 process virtual address range를 확보하는 Linux memory mapping 방식입니다.</em></sub><br>
-<sub><em>First touch: 예약된 virtual page에 최초로 접근하여 kernel의 physical backing page 할당을 유도하는 동작입니다.</em></sub>
+<sub><em>Anonymous mmap: 파일과 연결하지 않고 프로세스가 사용할 virtual address 범위를 확보하는 Linux 메모리 매핑 방식입니다.</em></sub><br>
+<sub><em>First touch: 예약된 virtual page에 처음 접근하여 kernel이 연결할 physical page를 할당하게 하는 동작입니다.</em></sub>
 
-## 4. Pattern 준비
+## 4. 테스트 데이터 pattern 준비
 
-15개 pattern family 각각에 대해:
+15개 pattern 종류마다 다음 조합을 만듭니다.
 
-- non-inverted/inverted
-- 32/64/128/256 logical width
+- 원본과 bit 반전 pattern
+- 32/64/128/256-bit 반복 범위
 
-variant를 만든다. 총 slot은 15 × 8 = 120개다. weight 0인 variant object도 생성되며 random selection 대상에서는 제외된다.
+하나의 pattern 종류에서 8개 조합이 만들어지므로 전체 pattern 객체는 120개입니다. 선택 가중치가 0인 객체도 생성되지만 실제 테스트에서는 선택되지 않습니다.
 
-각 variant는 첫 4 KiB에 대한 expected modified-Adler checksum을 미리 계산한다.
+각 pattern 객체는 4 KiB 데이터에 대한 기대 modified-Adler checksum을 미리 계산합니다.
 
-## 5. 전체 메모리에 pattern 쓰기
+## 5. 전체 메모리에 초기 데이터 쓰기
 
-처음에는 모든 `page_entry.pattern`이 null이므로 empty다. 기본 8개의 FillThread가 block을 하나씩 가져와:
+처음에는 모든 `page_entry.pattern` 값이 null이므로 전체 block이 empty 상태입니다. FillThread 8개가 각 block을 가져와 다음 작업을 수행합니다.
 
-1. weighted random pattern 선택
-2. 1 MiB 전체를 64-bit store로 채움
-3. pattern pointer와 last CPU 기록
-4. valid 상태로 반환
+1. 선택 가중치에 따라 pattern 하나 선택
+2. 1 MiB block 전체에 64-bit 단위로 pattern 기록
+3. 사용한 pattern과 마지막으로 쓴 CPU 번호 기록
+4. block을 valid 상태로 변경
 
-이 단계는 모든 test memory를 실제로 touch하며 write-heavy traffic을 만든다. `-s` timer가 시작되기 전이다.
+이 단계에서 전체 테스트 메모리에 처음으로 데이터를 쓰기 때문에 쓰기 요청과 physical page 할당이 집중됩니다. 이 작업은 `-s` 실행 시간이 시작되기 전에 완료됩니다.
 
-## 6. Physical address 진단과 block 상태 설정
+## 6. Physical address 확인과 block 상태 설정
 
-모든 block을 한 번 채운 다음 다시 각 block을 가져와:
+모든 block에 데이터를 쓴 다음 각 block을 다시 확인하여 다음 정보를 설정합니다.
 
-- 첫 virtual address의 possible physical address를 `/proc/self/pagemap`으로 조회
-- generic region tag 계산
-- `--do_page_map`이면 4 KiB 단위 bitmap 갱신
-- 기본 fine-lock queue에서는 약 2/5를 empty, 약 3/5를 valid로 분류
+- block 첫 virtual address에 대응하는 physical address를 `/proc/self/pagemap`으로 조회
+- 공통 `OsLayer` 방식으로 region tag 계산
+- `--do_page_map` 사용 시 4 KiB 단위 주소 bitmap 갱신
+- 기본 fine-lock queue에서 약 2/5를 empty, 약 3/5를 valid로 설정
 
-`empty`는 queue에서 destination으로 선택 가능한 상태를 의미한다. 해당 1 MiB allocation과 physical backing은 유지된다.
+`empty`는 다음 복사의 대상 block으로 사용할 수 있다는 뜻입니다. 1 MiB 메모리와 physical page는 계속 할당된 상태로 유지됩니다.
 
-<sub><em>Valid block: 기대 pattern metadata를 보유하며 source 또는 검증 대상으로 사용할 수 있는 SAT block입니다.</em></sub><br>
-<sub><em>Empty block: destination write 대상으로 사용할 수 있도록 pattern metadata가 해제된 SAT block입니다.</em></sub>
+<sub><em>Valid block: 기대 pattern 정보를 보유하며 복사의 원본 또는 검사의 대상으로 사용할 수 있는 SAT block입니다.</em></sub><br>
+<sub><em>Empty block: 새 데이터를 쓸 대상으로 사용할 수 있도록 pattern 정보가 해제된 SAT block입니다.</em></sub>
 
-## 7. 설정한 시간 동안 worker 실행
+## 7. 설정한 시간 동안 Worker 실행
 
-`Sat::Run()`이 worker를 만들고 `pthread_create()`한 뒤에 `-s` countdown을 시작한다 (`src/sat.cc:1884`).
+`Sat::Run()`은 Worker 객체를 준비하고 `pthread_create()`로 thread를 시작한 뒤 `-s` 실행 시간을 측정합니다 (`src/sat.cc:1884`).
 
 > **파일:** `src/sat.cc` · **함수:** `Sat::Run()` · **기준:** `73b9df2`
 
@@ -141,42 +141,38 @@ const time_t start = time(NULL);
 const time_t end = start + runtime_seconds_;
 ```
 
-**해석:** `InitializeThreads()`는 C++ worker object를 구성하고 `SpawnThreads()`는 각 object에 대해 `pthread_create()`를 호출합니다. `-s` 시간 측정의 기준점은 worker spawn 이후에 설정됩니다. 초기 FillThread와 종료 후 CheckThread 시간은 timed interval에 포함되지 않습니다.
+**코드 설명:** `InitializeThreads()`는 C++ Worker 객체를 만들고, `SpawnThreads()`는 각 Worker를 실제 pthread로 실행합니다. `-s` 시간 측정은 pthread를 시작한 이후부터 적용됩니다. 초기 FillThread와 종료 후 CheckThread의 실행 시간은 여기에 포함되지 않습니다.
 
-기본 CopyThread는 반복해서:
+기본 CopyThread는 다음 순서를 반복합니다.
 
 ```text
-GetValid(source)
-GetEmpty(destination)
-CrcCopyPage(source → destination)
-PutValid(destination)
-PutEmpty(source)
+GetValid(원본)
+GetEmpty(대상)
+CrcCopyPage(원본 → 대상)
+PutValid(대상)
+PutEmpty(원본)
 sched_yield()
 ```
 
-을 수행한다.
+## 8. Worker 일시 정지와 재시작
 
-## 8. 일시 정지와 재시작
+기본 설정은 `--pause_delay 600 --pause_duration 15`입니다. 실행 시작 후 600초가 지나면 `power_spike_status`에 속한 Worker를 15초 동안 멈춘 후 다시 실행합니다.
 
-기본 `--pause_delay 600 --pause_duration 15`다. 해당 시간이 되면 `power_spike_status`에 속한 worker를 pause했다가 동시에 resume한다.
+`power_spike_status`에는 주로 CopyThread, FileThread, DiskThread, CPU 주파수 확인 Worker가 들어갑니다. `continuous_status`에 속한 Worker는 계속 실행됩니다. 전체 실행 시간이 600초보다 짧으면 기본 설정에서는 정지 동작이 발생하지 않습니다.
 
-`power_spike_status` 그룹에는 주로 CopyThread, FileThread, DiskThread 및 CPU frequency monitor가 포함된다. `continuous_status` 그룹의 worker는 해당 pause 대상에서 제외된다. 600초 미만의 test에서는 기본 pause 시점에 도달하지 않는다.
+## 9. 종료 후 전체 데이터 검사
 
-## 9. 종료 후 전체 검사
+설정 시간이 끝나거나 종료 signal 또는 오류 제한 조건이 발생하면 모든 Worker에 정지 요청을 보내고 종료를 기다립니다. 그 다음 CheckThread 8개가 남아 있는 valid block을 모두 가져와 checksum과 실제 데이터를 검사한 후 empty 상태로 바꿉니다.
 
-timer 만료, signal, excessive error 조건이 발생하면 worker를 stop/join한다. 그 다음 기본 8개의 CheckThread가 valid block을 모두 꺼내 checksum/slow compare하고 empty로 바꾼다.
+대상 block에 데이터를 쓰는 과정에서 발생한 오류는 다음 검사 시점에 발견될 수 있습니다.
 
-따라서 copy destination write 오류는 copy 직후 즉시 발견되지 않더라도:
+- 해당 block이 다음 복사의 원본으로 선택될 때
+- 실행 중 CheckThread가 해당 block을 검사할 때
+- 종료 후 마지막 전체 검사에서
 
-- 그 block이 나중에 source가 되었을 때
-- check worker가 읽었을 때
-- 마지막 full check에서
+## 10. 프로그램 종료 코드
 
-발견될 수 있다.
+- 내부 실행 오류 또는 데이터 오류가 하나라도 있으면 종료 코드 1
+- 오류 없이 정상 완료하면 종료 코드 0
 
-## 10. Process 종료 코드
-
-- 내부 fatal status 또는 data error가 하나라도 있으면 exit 1
-- 오류가 없으면 exit 0
-
-reboot, kernel panic, watchdog reset, process SIGKILL은 정상적인 final result 출력 전에 process가 사라질 수 있으므로 pstore/kernel log/LMKD log를 별도로 수집해야 한다.
+재부팅, kernel panic, watchdog reset, SIGKILL이 발생하면 마지막 결과가 출력되지 않을 수 있습니다. 이 경우 pstore, kernel log, LMKD log에서 종료 원인을 확인해야 합니다.

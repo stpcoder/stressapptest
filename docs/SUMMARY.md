@@ -1,25 +1,25 @@
-# Summary
+# 목차
 
 ## 먼저 읽기
 
-- [stressapp 분석](README.md)
-- [stressapptest는 어떻게 동작하는가](01-overview.md)
+- [stressapptest 한글 설명서](README.md)
+- [stressapptest의 작동 원리](01-overview.md)
 - [실행 순서 한눈에 보기](02-execution-flow.md)
-- [메모리를 copy하고 오류를 찾는 과정](09-copy-and-verification.md)
+- [메모리를 복사하고 오류를 찾는 과정](09-copy-and-verification.md)
 
-## 메모리 부하가 만들어지는 과정
+## 메모리 부하 과정
 
-- [테스트 메모리는 어떻게 준비되는가](03-memory-and-physical-mapping.md)
-- [cache를 거쳐 LPDDR 부하가 만들어지는 과정](04-cache-and-arm64.md)
-- [메모리 block과 queue](05-block-and-queue.md)
-- [메모리에 쓰는 데이터 pattern](06-patterns.md)
+- [테스트 메모리 준비 과정](03-memory-and-physical-mapping.md)
+- [Cache에서 LPDDR까지 데이터가 이동하는 과정](04-cache-and-arm64.md)
+- [메모리 block 관리 방법](05-block-and-queue.md)
+- [메모리에 기록하는 테스트 데이터](06-patterns.md)
 
-## Worker별 동작
+## Worker 종류
 
-- [메모리 worker별 동작](07-memory-workers.md)
-- [I/O·CPU worker별 동작](08-io-and-system-workers.md)
+- [메모리 Worker 종류와 동작](07-memory-workers.md)
+- [I/O·CPU Worker 종류와 동작](08-io-and-system-workers.md)
 
-## 실행하고 측정하기
+## 실행과 측정
 
 - [Android ARM64 빌드와 실행](11-android-build-and-run.md)
 - [목적별 테스트 명령](12-test-recipes.md)
