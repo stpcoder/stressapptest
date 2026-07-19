@@ -1,6 +1,12 @@
+<div class="sat-hero" markdown>
+<span class="sat-kicker">Mobile LPDDR · Android ARM64 · Source analysis</span>
+
 # stressapptest 한글 설명서
 
-이 문서는 Android ARM64 기기에서 stressapptest가 메모리에 어떤 부하를 만들고, 데이터 오류를 어떻게 찾는지 설명합니다. 실제 소스 코드를 따라가며 다음 네 가지를 확인합니다.
+Android ARM64 기기에서 stressapptest가 메모리에 어떤 부하를 만들고 데이터 오류를 어떻게 찾는지 소스 코드 기준으로 설명합니다.
+</div>
+
+이 설명서에서는 다음 네 가지를 확인합니다.
 
 - 테스트할 메모리를 어떻게 준비하고 block으로 나누는가
 - 각 Worker가 어느 시점에 메모리를 읽고 쓰는가
