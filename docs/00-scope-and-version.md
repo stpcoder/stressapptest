@@ -66,7 +66,7 @@ static const uint16_t kNetworkPort = 19996;
 
 이 문서는 메모리 부하 과정과 데이터 검사 방법을 설명합니다. 개별 문제의 원인은 kernel 로그, pstore, watchdog, LMKD, 온도, PMIC, RAS, DMC counter를 함께 확인하여 판정해야 합니다.
 
-<sub><em>Root cause: 관찰된 failure를 직접 발생시킨 최종 원인입니다.</em></sub><br>
+<sub><em>Root cause: 관찰된 failure를 직접 발생시킨 최종 원인입니다.</em></sub>
 <sub><em>RAS: Reliability, Availability, Serviceability의 약어이며 hardware error 검출·기록·복구 기능을 의미합니다.</em></sub>
 
 ## 용어상 주의
@@ -80,5 +80,5 @@ static const uint16_t kNetworkPort = 19996;
 
 문서에서는 `SAT block`, `Linux page`, `checksum`, `system physical address`, `DRAM 내부 위치`를 서로 다른 용어로 사용합니다.
 
-<sub><em>SAT block: stressapptest queue가 관리하는 논리적 메모리 단위이며 기본 크기는 1 MiB입니다.</em></sub><br>
+<sub><em>SAT block: stressapptest queue가 관리하는 논리적 메모리 단위이며 기본 크기는 1 MiB입니다.</em></sub>
 <sub><em>DRAM coordinate: DMC가 선택하는 channel, rank, bank, row 및 column의 조합입니다.</em></sub>

@@ -88,7 +88,7 @@ mmap(NULL, length,
 
 `mmap()`이 성공하면 먼저 virtual address 영역이 예약됩니다. 실제 physical page는 FillThread가 각 page에 처음 데이터를 쓸 때 page fault를 거쳐 할당됩니다.
 
-<sub><em>Anonymous mmap: 파일과 연결하지 않고 프로세스가 사용할 virtual address 범위를 확보하는 Linux 메모리 매핑 방식입니다.</em></sub><br>
+<sub><em>Anonymous mmap: 파일과 연결하지 않고 프로세스가 사용할 virtual address 범위를 확보하는 Linux 메모리 매핑 방식입니다.</em></sub>
 <sub><em>First touch: 예약된 virtual page에 처음 접근하여 kernel이 연결할 physical page를 할당하게 하는 동작입니다.</em></sub>
 
 ## 4. 테스트 데이터 pattern 준비
@@ -124,7 +124,7 @@ mmap(NULL, length,
 
 `empty`는 다음 복사의 대상 block으로 사용할 수 있다는 뜻입니다. 1 MiB 메모리와 physical page는 계속 할당된 상태로 유지됩니다.
 
-<sub><em>Valid block: 기대 pattern 정보를 보유하며 복사의 원본 또는 검사의 대상으로 사용할 수 있는 SAT block입니다.</em></sub><br>
+<sub><em>Valid block: 기대 pattern 정보를 보유하며 복사의 원본 또는 검사의 대상으로 사용할 수 있는 SAT block입니다.</em></sub>
 <sub><em>Empty block: 새 데이터를 쓸 대상으로 사용할 수 있도록 pattern 정보가 해제된 SAT block입니다.</em></sub>
 
 ## 7. 설정한 시간 동안 Worker 실행

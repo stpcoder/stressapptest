@@ -15,7 +15,7 @@ b1, b2: a 누산기의 값을 다시 더하는 누산기
 
 이 checksum은 반복 pattern의 데이터 변화를 빠르게 찾는 용도로 사용합니다. 암호학적 checksum과 같은 충돌 방지 성능이나 CRC polynomial 방식의 오류 검출 특성을 제공하지는 않습니다.
 
-<sub><em>Modified Adler checksum: 네 개의 누산기로 32-bit data word와 누적합을 계산하는 stressapptest의 고속 검증값입니다.</em></sub><br>
+<sub><em>Modified Adler checksum: 네 개의 누산기로 32-bit data word와 누적합을 계산하는 stressapptest의 고속 검증값입니다.</em></sub>
 <sub><em>Collision: 서로 다른 데이터가 동일한 checksum 결과를 생성하는 경우입니다.</em></sub>
 
 ## 기대 checksum 만들기

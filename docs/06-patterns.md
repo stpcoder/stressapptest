@@ -14,9 +14,9 @@ stressapptest는 bit가 바뀌는 순서와 반복 구조가 서로 다른 patte
 
 Pattern은 CPU가 virtual address에 기록할 데이터 word를 정의합니다. 실제 DQ·CA 신호와 bank·row의 변화는 cache write-back, DMC 주소 배치, PHY 배선, LPDDR protocol을 모두 거친 결과로 결정됩니다.
 
-<sub><em>Pattern family: 동일한 생성 규칙을 공유하는 기본 데이터 배열의 집합입니다.</em></sub><br>
-<sub><em>Bit transition: 데이터 bit가 0에서 1 또는 1에서 0으로 변경되는 동작입니다.</em></sub><br>
-<sub><em>DQ: LPDDR device와 controller 사이에서 데이터를 전송하는 physical signal입니다.</em></sub><br>
+<sub><em>Pattern family: 동일한 생성 규칙을 공유하는 기본 데이터 배열의 집합입니다.</em></sub>
+<sub><em>Bit transition: 데이터 bit가 0에서 1 또는 1에서 0으로 변경되는 동작입니다.</em></sub>
+<sub><em>DQ: LPDDR device와 controller 사이에서 데이터를 전송하는 physical signal입니다.</em></sub>
 <sub><em>CA: LPDDR command와 address 정보를 전송하는 physical signal입니다.</em></sub>
 
 ## Pattern을 만드는 방법
@@ -62,7 +62,7 @@ for (int i = 0; i < pattern_array_size; i++) {
 
 이 width는 pattern 함수에서 동일한 32-bit word를 반복하는 논리적 범위다. LPDDR physical channel width, burst width 및 DQ width는 별도의 hardware 속성으로 관리된다. DMC interleave, cache-line assembly, endian 및 bus packing은 이후 hardware 경로에서 적용된다.
 
-<sub><em>Logical width: 동일한 32-bit pattern word가 반복되는 byte 배열의 범위입니다.</em></sub><br>
+<sub><em>Logical width: 동일한 32-bit pattern word가 반복되는 byte 배열의 범위입니다.</em></sub>
 <sub><em>Burst width: 하나의 DRAM read/write command가 전송하는 데이터 구성을 나타내며 device width와 burst length로 결정됩니다.</em></sub>
 
 ## Pattern 종류와 선택 확률
@@ -89,7 +89,7 @@ for (int i = 0; i < pattern_array_size; i++) {
 
 표의 확률에는 원본과 반전 pattern이 모두 포함됩니다. `OneZero`의 전체 선택 확률은 37.5%입니다. 원본·반전 여부와 반복 범위는 각 조합에 지정된 선택 비율에 따라 정해집니다.
 
-<sub><em>Inverted variant: 원본 pattern의 각 bit에 bitwise NOT을 적용한 데이터 배열입니다.</em></sub><br>
+<sub><em>Inverted variant: 원본 pattern의 각 bit에 bitwise NOT을 적용한 데이터 배열입니다.</em></sub>
 <sub><em>Selection weight: 전체 weight 합에서 특정 pattern variant가 선택될 상대 비율입니다.</em></sub>
 
 > **파일:** `src/pattern.cc` · **함수:** `PatternList::GetRandomPattern()` · **기준:** `73b9df2`

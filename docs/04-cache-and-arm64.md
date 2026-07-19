@@ -12,8 +12,8 @@ stressapptest는 테스트 메모리의 page table에 설정된 cache 속성을 
 
 stressapptest가 직접 구성하는 부분은 세 번째 항목입니다.
 
-<sub><em>Memory attribute policy: kernel이 page table과 MAIR를 통해 memory type, cacheability 및 shareability를 지정하는 정책입니다.</em></sub><br>
-<sub><em>Microarchitecture policy: CPU 구현이 replacement, prefetch, write allocation 및 write-back 시점을 결정하는 내부 정책입니다.</em></sub><br>
+<sub><em>Memory attribute policy: kernel이 page table과 MAIR를 통해 memory type, cacheability 및 shareability를 지정하는 정책입니다.</em></sub>
+<sub><em>Microarchitecture policy: CPU 구현이 replacement, prefetch, write allocation 및 write-back 시점을 결정하는 내부 정책입니다.</em></sub>
 <sub><em>Workload access policy: software가 주소, 크기, 순서, read/write 비율 및 thread 수를 구성하는 방식입니다.</em></sub>
 
 ## ARM64 cache 관련 코드
@@ -32,9 +32,9 @@ stressapptest가 직접 구성하는 부분은 세 번째 항목입니다.
 
 **코드 설명:** `dc cvau`는 해당 virtual address의 data cache line을 Point of Unification 방향으로 clean합니다. `ic ivau`는 같은 주소의 instruction cache line을 무효화합니다. 이 조합은 data cache line을 Point of Coherency까지 clean한 뒤 무효화하는 `dc civac`와 다릅니다. 따라서 ARM64의 `FastFlush()`가 데이터를 LPDDR까지 즉시 쓰거나 data cache를 완전히 비운다고 해석하면 안 됩니다.
 
-<sub><em>Point of Unification, PoU: instruction fetch와 data access가 동일한 memory copy를 관찰하도록 합류하는 cache hierarchy 지점입니다.</em></sub><br>
-<sub><em>Point of Coherency, PoC: 해당 shareability domain의 CPU와 coherent observer가 동일한 memory copy를 관찰하는 지점입니다.</em></sub><br>
-<sub><em>Cache clean: dirty data를 지정된 cache hierarchy 지점 방향으로 기록하고 line의 valid 상태는 유지할 수 있는 동작입니다.</em></sub><br>
+<sub><em>Point of Unification, PoU: instruction fetch와 data access가 동일한 memory copy를 관찰하도록 합류하는 cache hierarchy 지점입니다.</em></sub>
+<sub><em>Point of Coherency, PoC: 해당 shareability domain의 CPU와 coherent observer가 동일한 memory copy를 관찰하는 지점입니다.</em></sub>
+<sub><em>Cache clean: dirty data를 지정된 cache hierarchy 지점 방향으로 기록하고 line의 valid 상태는 유지할 수 있는 동작입니다.</em></sub>
 <sub><em>Cache invalidate: cache line의 valid 상태를 제거하여 이후 access가 다시 line을 획득하게 하는 동작입니다.</em></sub>
 
 ## CPU가 쓴 데이터가 LPDDR에 반영되는 순서
@@ -59,9 +59,9 @@ L1에서 dirty cache line을 내보내더라도 데이터가 즉시 LPDDR에 기
 
 Write-back은 dirty cache line 교체, 명시적인 cache clean, 다른 CPU의 소유권 요청, 전원 상태 전환, CPU 내부의 선제 처리에서 발생할 수 있습니다. 수정하지 않은 clean cache line은 데이터를 다시 쓰지 않고 제거할 수 있습니다.
 
-<sub><em>Write-back: dirty cache line의 최신 데이터를 하위 cache 또는 system memory 방향으로 기록하는 동작입니다.</em></sub><br>
-<sub><em>Dirty line: CPU store 이후 현재 cache가 하위 계층보다 최신 데이터를 보유한 cache line입니다.</em></sub><br>
-<sub><em>Eviction: 새로운 line을 배치하기 위해 기존 cache line을 해당 cache level에서 제거하는 동작입니다.</em></sub><br>
+<sub><em>Write-back: dirty cache line의 최신 데이터를 하위 cache 또는 system memory 방향으로 기록하는 동작입니다.</em></sub>
+<sub><em>Dirty line: CPU store 이후 현재 cache가 하위 계층보다 최신 데이터를 보유한 cache line입니다.</em></sub>
+<sub><em>Eviction: 새로운 line을 배치하기 위해 기존 cache line을 해당 cache level에서 제거하는 동작입니다.</em></sub>
 <sub><em>Clean eviction: 수정되지 않은 cache line을 data write 없이 해당 cache level에서 제거하는 동작입니다.</em></sub>
 
 ## Cache와 DRAM의 데이터가 일치하는 시점
@@ -70,7 +70,7 @@ Write-Back memory에서는 dirty cache line이 해당 주소의 최신 데이터
 
 Coherency가 보장하는 것은 같은 coherency 영역에 속한 CPU와 장치가 규칙에 따라 최신 값을 읽는다는 점입니다. 모든 cache와 LPDDR의 저장 값이 항상 같다는 의미는 아닙니다. 두 값은 해당 cache line의 clean 또는 write-back이 완료된 뒤에 같아집니다.
 
-<sub><em>Coherency: 여러 CPU 또는 coherent device가 동일한 physical address의 최신 데이터를 일관되게 관찰하도록 관리하는 protocol입니다.</em></sub><br>
+<sub><em>Coherency: 여러 CPU 또는 coherent device가 동일한 physical address의 최신 데이터를 일관되게 관찰하도록 관리하는 protocol입니다.</em></sub>
 <sub><em>Coherent observer: 동일 coherency domain에 참여하여 cache 상태와 최신 데이터를 protocol에 따라 조회하는 CPU 또는 device입니다.</em></sub>
 
 ## CopyThread의 cache 접근
@@ -98,7 +98,7 @@ Coherency가 보장하는 것은 같은 coherency 영역에 속한 CPU와 장치
 
 대상 block의 cache line 전체를 연속으로 덮기 때문에 일부 CPU는 연속 쓰기를 감지하여 불필요한 read-for-ownership을 줄일 수 있습니다. 이 최적화의 적용 여부는 CPU 구현에 따라 달라집니다.
 
-<sub><em>Write allocate: store miss에서 cache line과 write ownership을 확보한 후 cache에서 데이터를 수정하는 정책입니다.</em></sub><br>
+<sub><em>Write allocate: store miss에서 cache line과 write ownership을 확보한 후 cache에서 데이터를 수정하는 정책입니다.</em></sub>
 <sub><em>Read-for-ownership: store를 수행할 core가 cache line의 최신 데이터와 수정 권한을 확보하기 위해 발생시키는 coherency transaction입니다.</em></sub>
 
 ## LPDDR 접근량이 증가하는 원인
@@ -114,8 +114,8 @@ Coherency가 보장하는 것은 같은 coherency 영역에 속한 CPU와 장치
 
 Worker는 임의로 선택한 1 MiB 원본 block과 대상 block을 계속 바꿉니다. 따라서 이전에 사용한 cache line이 용량 부족이나 cache index 충돌로 교체됩니다. 각 block 내부는 앞에서 뒤로 연속해서 접근하므로 hardware prefetch가 다음 cache line을 미리 요청할 수 있고, 여러 memory request가 동시에 진행될 수 있습니다.
 
-<sub><em>Working set: 일정 시간 동안 workload가 접근하는 전체 데이터 범위입니다.</em></sub><br>
-<sub><em>Prefetch: 향후 접근할 가능성이 있는 cache line을 실제 load보다 먼저 요청하는 동작입니다.</em></sub><br>
+<sub><em>Working set: 일정 시간 동안 workload가 접근하는 전체 데이터 범위입니다.</em></sub>
+<sub><em>Prefetch: 향후 접근할 가능성이 있는 cache line을 실제 load보다 먼저 요청하는 동작입니다.</em></sub>
 <sub><em>Outstanding request: 응답 완료 이전에 cache 또는 memory system에 계류 중인 transaction입니다.</em></sub>
 
 그 결과 다음 요청이 증가합니다.
@@ -211,8 +211,8 @@ isb
 
 `-i`는 데이터 반전, 접근 방향 전환, PoU까지의 cache 관리 명령, barrier 실행으로 구성됩니다. LPDDR 요청은 이러한 동작이 cache 계층을 거치는 과정에서 필요할 때 발생합니다.
 
-<sub><em>PoU: Point of Unification의 약어이며 instruction fetch와 data access가 동일한 데이터 복사본을 관찰하도록 하는 계층 지점입니다.</em></sub><br>
-<sub><em>PoC: Point of Coherency의 약어이며 coherency 참여자가 동일한 데이터 복사본을 관찰하도록 하는 계층 지점입니다.</em></sub><br>
+<sub><em>PoU: Point of Unification의 약어이며 instruction fetch와 data access가 동일한 데이터 복사본을 관찰하도록 하는 계층 지점입니다.</em></sub>
+<sub><em>PoC: Point of Coherency의 약어이며 coherency 참여자가 동일한 데이터 복사본을 관찰하도록 하는 계층 지점입니다.</em></sub>
 <sub><em>RMW: Read-Modify-Write의 약어이며 기존 값을 읽고 연산한 결과를 동일 위치에 다시 쓰는 동작입니다.</em></sub>
 
 ## ARM64에서 오류 데이터를 다시 읽을 때의 제한
@@ -235,7 +235,7 @@ CPU cache와 Linux의 파일 page cache는 서로 다른 계층입니다.
 
 `FileThread`의 `O_DIRECT`는 filesystem page cache를 가능한 범위에서 우회하도록 요청합니다. DMA buffer coherency와 SoC 내부 데이터 이동은 기기의 I/O 구성에 따라 계속 발생합니다.
 
-<sub><em>Page cache: Linux kernel이 file 데이터를 RAM에 보관하여 file I/O를 처리하는 cache 계층입니다.</em></sub><br>
+<sub><em>Page cache: Linux kernel이 file 데이터를 RAM에 보관하여 file I/O를 처리하는 cache 계층입니다.</em></sub>
 <sub><em>O_DIRECT: filesystem page cache 사용을 최소화하도록 kernel에 요청하는 file open flag입니다.</em></sub>
 
 ## 실제 LPDDR 접근량 확인 방법
@@ -253,5 +253,5 @@ stressapptest가 처리했다고 계산한 byte
 
 LPDDR 접근량은 DMC의 읽기·쓰기 byte 또는 명령 counter로 확인해야 합니다. CPU cache miss counter만 사용할 경우에는 prefetch, shared cache hit, write allocate, write-back, snoop 요청을 별도로 고려해야 합니다.
 
-<sub><em>DMC counter: DRAM memory controller에서 처리한 read/write byte, command, queue 또는 bank event를 집계하는 hardware counter입니다.</em></sub><br>
+<sub><em>DMC counter: DRAM memory controller에서 처리한 read/write byte, command, queue 또는 bank event를 집계하는 hardware counter입니다.</em></sub>
 <sub><em>Snoop traffic: 다른 cache의 data 또는 ownership 상태를 조회·변경하기 위해 발생하는 coherency transaction입니다.</em></sub>

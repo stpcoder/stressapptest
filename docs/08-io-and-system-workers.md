@@ -27,8 +27,8 @@ if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
 
 **코드 설명:** 첫 번째 `open()`은 direct I/O를 요청합니다. Filesystem이 이를 지원하지 않아 `EINVAL`을 반환하면 buffered I/O로 바꾸고 이후 page cache 정리를 요청합니다. `O_DIRECT`는 Linux의 파일 page cache에 적용되는 옵션이며 CPU data cache를 끄지는 않습니다.
 
-<sub><em>O_SYNC: write system call의 데이터와 필요한 metadata가 backing storage에 동기화되도록 요청하는 file open flag입니다.</em></sub><br>
-<sub><em>O_DIRECT: filesystem page cache 사용을 최소화하도록 kernel에 요청하는 file open flag입니다.</em></sub><br>
+<sub><em>O_SYNC: write system call의 데이터와 필요한 metadata가 backing storage에 동기화되도록 요청하는 file open flag입니다.</em></sub>
+<sub><em>O_DIRECT: filesystem page cache 사용을 최소화하도록 kernel에 요청하는 file open flag입니다.</em></sub>
 <sub><em>Page cache: Linux kernel이 file 데이터를 RAM에 보관하여 file I/O를 처리하는 cache 계층입니다.</em></sub>
 
 ### 파일 한 번을 처리하는 순서
@@ -223,7 +223,7 @@ for (int cline_num = 0; cline_num < cc_cacheline_count_; cline_num++) {
 
 이 시험은 작은 공동 데이터의 cache line 쓰기 권한을 여러 CPU core 사이에서 반복해서 이동시킵니다. 주된 부하는 snoop, cache line 무효화, 쓰기 권한 이동입니다. SLC와 DRAM까지 전달되는 요청의 비율은 SoC의 coherency 구현에 따라 달라집니다.
 
-<sub><em>Cache-line ownership: 특정 core가 cache line을 수정할 수 있도록 coherency protocol이 부여한 권한 상태입니다.</em></sub><br>
+<sub><em>Cache-line ownership: 특정 core가 cache line을 수정할 수 있도록 coherency protocol이 부여한 권한 상태입니다.</em></sub>
 <sub><em>Snoop: 다른 cache가 해당 address의 data 또는 ownership을 보유하는지 조회하는 coherency transaction입니다.</em></sub>
 
 관련 옵션은 다음과 같습니다.

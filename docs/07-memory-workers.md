@@ -32,7 +32,7 @@ int WorkerThread::SpawnThread() {
 
 **코드 설명:** Worker 객체 하나가 POSIX thread 하나에 대응합니다. `-m`을 지정하지 않으면 현재 online 상태인 logical CPU 수만큼 `CopyThread`를 만듭니다. 초기화에 사용하는 `FillThread` 8개, `ErrorPollThread`, 다른 옵션으로 추가한 Worker는 별도로 생성됩니다. 따라서 전체 thread 수가 CPU core 수와 항상 같은 것은 아닙니다.
 
-<sub><em>WorkerThread: 공통 thread 상태, CPU mask, 오류 수 및 실행 시간을 관리하는 base class입니다.</em></sub><br>
+<sub><em>WorkerThread: 공통 thread 상태, CPU mask, 오류 수 및 실행 시간을 관리하는 base class입니다.</em></sub>
 <sub><em>CPU affinity: thread가 실행될 수 있는 CPU 집합을 scheduler에 지정하는 속성입니다.</em></sub>
 
 ## FillThread
@@ -173,7 +173,7 @@ libc memcpy(destination, source, 1 MiB)
 
 이 값은 프로그램이 처리한 원본과 대상의 byte를 더한 수치입니다. 실제 DMC 처리량은 write allocate, prefetch, cache refill, 오류 재검사, cache write-back, cache hit의 영향을 받으므로 이 값과 다를 수 있습니다.
 
-<sub><em>Logical bandwidth: software가 처리 block 수와 block 크기로 계산한 전송률입니다.</em></sub><br>
+<sub><em>Logical bandwidth: software가 처리 block 수와 block 크기로 계산한 전송률입니다.</em></sub>
 <sub><em>DMC bandwidth: DRAM memory controller가 실제로 처리한 read/write 데이터 전송률입니다.</em></sub>
 
 ## CheckThread

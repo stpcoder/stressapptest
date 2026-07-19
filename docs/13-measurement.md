@@ -158,7 +158,7 @@ T9 프로그램 종료
 
 `/proc/self/pagemap`과 `--memory_channel`은 주소를 분석하기 위한 프로그램의 추정값을 제공합니다. 실제 channel별 접근량은 channel별 DMC counter로 측정해야 합니다.
 
-<sub><em>PMU: Performance Monitoring Unit의 약어이며 hardware event 발생 횟수를 집계하는 장치입니다.</em></sub><br>
+<sub><em>PMU: Performance Monitoring Unit의 약어이며 hardware event 발생 횟수를 집계하는 장치입니다.</em></sub>
 <sub><em>DMC traffic: DRAM memory controller가 channel별로 처리한 read/write byte 또는 command입니다.</em></sub>
 
 Channel별 DMC counter를 사용할 수 있으면 같은 명령을 여러 번 실행하여 다음 항목을 확인합니다.

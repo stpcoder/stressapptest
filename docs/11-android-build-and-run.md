@@ -71,7 +71,7 @@ STRESSAPPTEST_CPU_AARCH64
 
 **코드 설명:** NDK의 `aarch64-linux-android<API>-clang++`로 공개 소스 파일을 하나의 PIE 실행 파일로 연결합니다. `STRESSAPPTEST_CPU_AARCH64`는 ARM64용 timestamp, cache 관리 명령, NEON 복사 코드를 선택합니다.
 
-<sub><em>PIE: Position-Independent Executable의 약어이며 ASLR 적용을 위해 고정 virtual address에 의존하지 않도록 생성한 실행 파일입니다.</em></sub><br>
+<sub><em>PIE: Position-Independent Executable의 약어이며 ASLR 적용을 위해 고정 virtual address에 의존하지 않도록 생성한 실행 파일입니다.</em></sub>
 <sub><em>Conditional compilation: compile-time macro 값에 따라 특정 architecture 또는 platform 구현만 binary에 포함하는 방식입니다.</em></sub>
 
 ## 빌드 결과 확인
@@ -150,7 +150,7 @@ adb shell 'for c in /sys/devices/system/cpu/cpu[0-9]*; do \
 
 CPU 4~7만 허용하는 16진수 mask는 `f0`입니다. 실제 mask는 대상 SoC의 CPU 번호를 기준으로 계산해야 합니다.
 
-<sub><em>CPU mask: thread 또는 process가 실행될 수 있는 logical CPU를 bit 단위로 표시한 값입니다.</em></sub><br>
+<sub><em>CPU mask: thread 또는 process가 실행될 수 있는 logical CPU를 bit 단위로 표시한 값입니다.</em></sub>
 <sub><em>cpuset: Android/Linux cgroup이 process에 허용하는 CPU 집합을 관리하는 기능입니다.</em></sub>
 
 ```bash

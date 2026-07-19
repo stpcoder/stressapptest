@@ -197,7 +197,7 @@ body {
 
 .md-typeset sub {
   display: block;
-  margin: 0.35rem 0;
+  margin: 0;
   padding: 0;
   color: var(--sat-muted);
   background: transparent;
@@ -221,4 +221,3 @@ body {
     padding-top: 1.5rem;
   }
 }
-

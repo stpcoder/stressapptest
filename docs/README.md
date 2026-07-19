@@ -16,7 +16,7 @@
 - 큰 메모리 영역을 여러 core가 반복해서 처리하면 cache miss와 write-back이 증가합니다.
 - 대상 block에 쓴 데이터는 그 block이 다음 복사의 원본으로 선택되거나 마지막 전체 검사를 수행할 때 확인합니다.
 
-<sub><em>Queue: Worker가 사용할 SAT block의 상태를 관리하고, 여러 Worker가 같은 block을 동시에 사용하지 않도록 제어하는 구조입니다.</em></sub><br>
+<sub><em>Queue: Worker가 사용할 SAT block의 상태를 관리하고, 여러 Worker가 같은 block을 동시에 사용하지 않도록 제어하는 구조입니다.</em></sub>
 <sub><em>Checksum: 읽은 데이터에서 계산한 값을 기대값과 비교하여 데이터가 바뀌었는지 확인하는 값입니다.</em></sub>
 
 ## 권장 읽기 순서

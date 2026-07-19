@@ -72,7 +72,7 @@ stressapptest --reserve_memory 1024
 
 공통 모바일 build의 메모리 구역 tag에는 실제 NUMA 또는 LPDDR channel 구조가 포함되어 있지 않습니다. 실제 위치 관계를 분석하려면 SoC 제조사의 구조를 반영한 `OsLayer` 구현이 필요합니다.
 
-<sub><em>NUMA: CPU와 memory node의 topology에 따라 memory access latency와 bandwidth가 달라지는 구조입니다.</em></sub><br>
+<sub><em>NUMA: CPU와 memory node의 topology에 따라 memory access latency와 bandwidth가 달라지는 구조입니다.</em></sub>
 <sub><em>Region tag: local/remote block 선택에 사용하는 stressapptest 내부 bit mask입니다.</em></sub>
 
 ## Cache 일관성과 CPU 주파수 검사
