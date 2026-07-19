@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://squidfunk.github.io/mkdocs-material/schema.json
 
-site_name: stressapptest Mobile ARM64 한글 설명서
+site_name: StressAppTest 설명
 site_description: Android ARM64 환경에서 stressapptest의 메모리 부하, cache 동작, Worker와 데이터 검사 과정을 설명합니다.
 site_url: https://stpcoder.github.io/stressapptest/
 repo_url: https://github.com/stpcoder/stressapptest
@@ -62,7 +62,7 @@ markdown_extensions:
 
 nav:
   - 시작:
-      - 설명서 홈: README.md
+      - 개요: README.md
       - stressapptest의 작동 원리: 01-overview.md
       - 실행 순서 한눈에 보기: 02-execution-flow.md
   - 메모리 부하 과정:
@@ -84,4 +84,3 @@ nav:
       - 모바일 환경에서 알아둘 제한사항: 14-limitations.md
       - 소스 코드 찾아보기: 15-source-map.md
       - 용어 설명: 16-glossary.md
-

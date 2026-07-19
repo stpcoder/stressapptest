@@ -1,4 +1,4 @@
-# stressapptest 한글 설명서
+# StressAppTest 설명
 
 이 저장소는 [stressapptest 공식 저장소](https://github.com/stressapptest/stressapptest)를 Android ARM64 환경에서 분석하고 실행할 수 있도록 정리한 개인 fork입니다. 한글 설명서와 standalone NDK 빌드 도구를 함께 제공합니다.
 
@@ -7,9 +7,9 @@
 
 ## 문서 바로 보기
 
-> **MkDocs Material:** [stressapptest Mobile ARM64 한글 설명서](https://stpcoder.github.io/stressapptest/)
+> **MkDocs Material:** [StressAppTest 설명](https://stpcoder.github.io/stressapptest/)
 
-문서 사이트는 GitHub Pages에 배포됩니다. `master` branch의 문서가 변경되면 GitHub Actions가 MkDocs Material 사이트를 다시 만들고 자동으로 배포합니다. 왼쪽에는 하늘색 메뉴를 배치하고 본문은 흰색으로 구성했습니다.
+문서 사이트는 GitHub Pages에 배포됩니다. `master` branch의 문서가 변경되면 GitHub Actions가 MkDocs Material 사이트를 다시 만들고 자동으로 배포합니다. GitBook과 같은 평평한 흰색 화면, 얇은 구분선, 파란색 현재 메뉴 표시를 사용합니다.
 
 ## 핵심 동작
 
