@@ -26,7 +26,7 @@ Log: DDR_FREQ write=3196 monotonic_us=... node=/sys/kernel/debug/aoss_send_messa
 
 `write`는 전체 메시지 쓰기가 성공한 직후에 기록됩니다. Hardware readback이 아니라 프로그램이 마지막으로 성공적으로 쓴 값입니다.
 
-오류 record는 expected data의 마지막 whole-block write, 첫 mismatching read, cache flush 뒤의 reread 시점 값을 각각 저장합니다.
+오류 record는 expected data의 마지막 whole-block write, 첫 mismatching read, `Flush()` 호출 뒤의 reread 시점 값을 각각 저장합니다.
 
 ```text
 Hardware Error: ... read:0x..., reread:0x... expected:0x.... 'OneZero256' read error. ddr_freq(write=3196 read=4266 reread=5333).
@@ -36,7 +36,7 @@ Hardware Error: ... read:0x..., reread:0x... expected:0x.... 'OneZero256' read e
 |---|---|
 | `write` | 해당 block을 pattern fill, copy, invert, file read 또는 network receive로 마지막 전체 기록하기 직전 |
 | `read` | `CheckRegion()`이 잘못된 actual 값을 읽기 직전 |
-| `reread` | `ProcessError()`가 해당 주소의 cache flush를 호출한 뒤 다시 읽기 직전 |
+| `reread` | `ProcessError()`가 해당 주소의 `Flush()`를 호출한 뒤 다시 읽기 직전 |
 
 Pattern fill과 최초 read 사이에 여러 sweep 전환이 발생할 수 있으므로 `write`와 `read`가 달라질 수 있습니다. `CheckRegion()`은 한 번에 최대 128개의 오류 record를 저장한 뒤 각 주소를 순차 처리하므로, 오류가 많으면 최초 read와 reread 사이에도 다음 sweep 전환이 발생할 수 있습니다.
 
@@ -264,7 +264,7 @@ ddr_freq(write=3196 read=4266 reread=5333).
 | `read error` | `reread == expected`일 때 추가되는 분류 문자열 |
 | `ddr_freq(write=...)` | expected data를 해당 block에 마지막으로 전체 기록하기 직전의 내부 DDR 값 |
 | `ddr_freq(read=...)` | 최초 mismatch load 직전의 내부 DDR 값 |
-| `ddr_freq(reread=...)` | cache flush 호출 뒤 reread load 직전의 내부 DDR 값 |
+| `ddr_freq(reread=...)` | `Flush()` 호출 뒤 reread load 직전의 내부 DDR 값 |
 
 `lastcpu`는 software가 기록한 마지막 writer CPU 후보입니다. CPU migration, vendor 수정, DMA와 다른 device의 접근을 포함하는 hardware trace가 아니므로 보조 정보로 사용합니다.
 
