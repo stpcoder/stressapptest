@@ -78,6 +78,7 @@ jobs:
       - name: Install pinned Android NDK
         shell: bash
         run: |
+          set +o pipefail
           yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
             "ndk;${ANDROID_NDK_VERSION}"
 
