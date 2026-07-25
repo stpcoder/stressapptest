@@ -2,6 +2,10 @@
 
 이 문서는 Android ARM64 기기에서 stressapptest가 메모리에 어떤 부하를 만들고 데이터 오류를 어떻게 찾는지 소스 코드 기준으로 설명합니다. 다음 네 가지를 중심으로 확인합니다.
 
+[Android ARM64 최신 실행 파일 다운로드](https://github.com/stpcoder/stressapptest/releases/latest/download/stressapptest-android-arm64)
+
+이 fork에서 추가한 `-P`, Qualcomm DDR 고정·sweep, 오류 시점 주파수 로그의 빠른 실행법은 [저장소 README](https://github.com/stpcoder/stressapptest#readme)에서 확인할 수 있습니다.
+
 - 테스트할 메모리를 어떻게 준비하고 block으로 나누는가
 - 각 Worker가 어느 시점에 메모리를 읽고 쓰는가
 - cache가 켜진 상태에서 LPDDR 접근량이 어떻게 증가하는가

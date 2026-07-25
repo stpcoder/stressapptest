@@ -1,106 +1,178 @@
-# StressAppTest 설명
+# StressAppTest Android ARM64 확장판
 
-이 저장소는 [stressapptest 공식 저장소](https://github.com/stressapptest/stressapptest)를 Android ARM64 환경에서 분석하고 실행할 수 있도록 정리한 개인 fork입니다. 한글 설명서와 standalone NDK 빌드 도구를 함께 제공합니다.
+이 저장소는 공개 [stressapptest](https://github.com/stressapptest/stressapptest)에 Android AArch64 실장기 테스트 기능을 추가한 개인 fork입니다. 이 README는 이 fork에서 추가한 기능과 실행 방법만 설명합니다.
 
-> 기준 소스: upstream commit `73b9df227e89cd52b09852056843610722b7b7ae` (`v1.0.11-2-g73b9df2`)
-> 문서 목적: stressapptest가 메모리를 준비하고, Worker를 실행하고, 데이터를 검사하는 전체 과정을 소스 코드 기준으로 설명합니다.
+[![Android ARM64 최신 버전 다운로드](https://img.shields.io/badge/Android_ARM64-최신_버전_다운로드-1976d2?style=for-the-badge&logo=android&logoColor=white)](https://github.com/stpcoder/stressapptest/releases/latest/download/stressapptest-android-arm64)
 
-## 문서 바로 보기
+압축 파일과 SHA-256 checksum이 필요하면 [최신 Release 페이지](https://github.com/stpcoder/stressapptest/releases/latest)에서 다운로드할 수 있습니다.
 
-> **MkDocs Material:** [StressAppTest 설명](https://stpcoder.github.io/stressapptest/)
+## 추가된 기능
 
-문서 사이트는 GitHub Pages에 배포됩니다. `master` branch의 문서가 변경되면 GitHub Actions가 MkDocs Material 사이트를 다시 만들고 자동으로 배포합니다. GitBook과 같은 평평한 흰색 화면, 얇은 구분선, 파란색 현재 메뉴 표시를 사용합니다.
+| 기능 | 옵션 | 설명 |
+|---|---|---|
+| 패턴 고정 | `-P <ID\|이름>` | 모든 초기 memory block을 지정한 패턴으로 채우고 해당 패턴만 사용 |
+| DDR 주파수 고정 | `--ddr <주파수>` | 초기 pattern 기록 전과 Worker 시작 전에 Qualcomm AOSS에 요청 |
+| 전체 주파수 sweep | `--ddr-sweep all` | 등록된 전체 주파수를 순서대로 반복 |
+| 선택 주파수 sweep | `--ddr-sweep <목록>` | 쉼표로 지정한 주파수만 순서대로 반복 |
+| 전환 간격 | `--ddr-step <초>` | sweep 주파수 유지 시간. 기본값은 3초 |
+| AOSS node 변경 | `--ddr-node <경로>` | 기본 debugfs node가 다른 제품에서 사용 |
+| 오류 주파수 기록 | 자동 | `read`, `reread`, `expected` 오류에 mismatch 감지 시점의 요청 주파수 출력 |
 
-## 핵심 동작
+기본 Qualcomm AOSS node는 다음 경로입니다.
 
-- 기본 설정에서는 온라인 상태의 논리 CPU 수만큼 `CopyThread`를 만듭니다. `-m N`으로 개수를 바꿀 수 있습니다.
-- 테스트 메모리는 기본 1 MiB 크기의 SAT block으로 나뉩니다. Worker는 공용 queue에서 읽을 block과 쓸 block을 하나씩 가져옵니다.
-- 한 block 안에서는 주소를 순서대로 읽고 씁니다. 다음 block은 여러 block 가운데 임의로 선택합니다.
-- 기본 복사 과정은 원본 block 읽기, checksum 계산, 대상 block 쓰기를 함께 수행합니다.
-- stressapptest는 cache가 켜진 일반 메모리를 사용합니다. 테스트 영역이 cache보다 크고 여러 core가 동시에 작업하면 cache miss와 write-back이 반복되어 LPDDR 접근량이 증가합니다.
-- `CRC`라는 함수 이름을 사용하지만 실제 검증에는 modified Adler checksum을 사용합니다.
-- 프로그램에 표시되는 처리량은 Worker가 처리한 논리적 byte입니다. 실제 LPDDR 접근량은 DMC·NoC·SLC 계측값으로 확인해야 합니다.
-
-<sub><em>Worker: 특정 부하 또는 검증 루프를 수행하는 pthread 실행 단위입니다.</em></sub><br>
-<sub><em>Write-back: 수정된 cache line을 하위 cache 또는 system memory 방향으로 기록하는 동작입니다.</em></sub><br>
-<sub><em>Physical mapping: virtual address를 system physical address에 대응시키는 변환 관계입니다.</em></sub>
-
-## 문서 목차
-
-처음 읽는다면 아래 순서가 가장 빠릅니다. 웹사이트에 접근할 수 없는 환경에서는 [`docs/README.md`](docs/README.md)에서 같은 내용을 확인할 수 있습니다.
-
-1. [stressapptest의 작동 원리](docs/01-overview.md)
-2. [실행 순서 한눈에 보기](docs/02-execution-flow.md)
-3. [메모리를 복사하고 오류를 찾는 과정](docs/09-copy-and-verification.md)
-4. [Cache에서 LPDDR까지 데이터가 이동하는 과정](docs/04-cache-and-arm64.md)
-5. [메모리 Worker 종류와 동작](docs/07-memory-workers.md)
-6. [목적별 테스트 명령](docs/12-test-recipes.md)
-7. [부하와 오류를 측정하는 방법](docs/13-measurement.md)
-8. [로그 출력과 DRAM 주파수 전환 오류를 분석하는 방법](docs/17-logging-and-dram-frequency.md)
-
-사이트 메뉴와 화면 설정은 [`mkdocs.yml`](mkdocs.yml), 세부 색상과 본문 스타일은 [`docs/stylesheets/extra.css`](docs/stylesheets/extra.css)에 있습니다.
-
-### 문서 사이트를 로컬에서 확인하기
-
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements-docs.txt
-mkdocs serve
+```text
+/sys/kernel/debug/aoss_send_message
 ```
 
-브라우저에서 `http://127.0.0.1:8000/stressapptest/`를 열면 배포 전 화면을 확인할 수 있습니다.
+프로그램은 shell의 `echo`를 실행하지 않고 다음 메시지를 debugfs node에 직접 씁니다.
 
-## 빠른 빌드
-
-### 일반 Linux
-
-```bash
-./configure
-make -j"$(nproc)"
-./src/stressapptest --help
+```text
+{class:ddr, res:fixed, val:3196}
 ```
 
-### Android ARM64 standalone NDK
+테스트가 끝난 후 마지막 fixed DDR 요청을 별도로 해제하지 않습니다.
+
+## 휴대폰에 설치
+
+GitHub Release에서 바이너리를 받은 다음 Android 기기에 복사합니다.
+
+```bash
+adb push stressapptest-android-arm64 /data/local/tmp/stressapptest
+adb shell chmod 0755 /data/local/tmp/stressapptest
+```
+
+Qualcomm AOSS node를 변경하려면 root 권한과 허용된 SELinux domain이 필요합니다. `adb root`를 지원하는 `userdebug` 또는 `eng` build에서는 다음과 같이 실행할 수 있습니다.
+
+```bash
+adb root
+adb shell
+cd /data/local/tmp
+```
+
+상용 `user` build에서는 root 권한과 SELinux 정책이 별도로 준비되어야 합니다.
+
+## 패턴 하나만 실행
+
+패턴 번호는 0부터 시작합니다. 이 fork에서 ID `27`은 `OneZero256`입니다.
+
+다음 두 명령은 동일하게 작동합니다.
+
+```bash
+./stressapptest \
+  -M 1024 -m 4 -i 4 -s 600 \
+  --printsec 10 \
+  -P 27
+```
+
+```bash
+./stressapptest \
+  -M 1024 -m 4 -i 4 -s 600 \
+  --printsec 10 \
+  -P OneZero256
+```
+
+패턴 이름은 대소문자를 구분하지 않습니다. `-P`를 생략하면 upstream과 동일하게 가중치 기반 무작위 패턴 선택을 사용합니다.
+
+lowercase `-p`는 기존 memory block 크기 옵션입니다. 패턴 선택에는 반드시 uppercase `-P`를 사용합니다.
+
+## DDR 주파수 하나로 고정
+
+OneZero256 패턴을 3196 요청값으로 10분 동안 실행합니다.
+
+```bash
+./stressapptest \
+  -M 1024 -m 4 -i 4 -s 600 \
+  --printsec 10 \
+  -P OneZero256 \
+  --ddr 3196
+```
+
+## 전체 DDR 주파수 sweep
+
+`all`에 등록된 값은 다음과 같습니다.
+
+```text
+547, 768, 1017, 1353, 1555, 1708, 2092, 2736, 3196, 4266, 5333
+```
+
+각 값을 3초씩 유지하면서 순서대로 반복합니다.
+
+```bash
+./stressapptest \
+  -M 1024 -m 4 -i 4 -s 600 \
+  --printsec 10 \
+  -P OneZero256 \
+  --ddr-sweep all \
+  --ddr-step 3
+```
+
+## 선택한 DDR 주파수만 sweep
+
+쉼표 사이에 공백을 넣지 않습니다.
+
+```bash
+./stressapptest \
+  -M 1024 -m 4 -i 4 -s 600 \
+  --printsec 10 \
+  -P OneZero256 \
+  --ddr-sweep 547,1017,2092,3196,5333 \
+  --ddr-step 3
+```
+
+`--ddr`와 `--ddr-sweep`은 동시에 사용할 수 없습니다.
+
+## 로그 확인
+
+주파수 요청에 성공하면 다음 로그가 기록됩니다. 첫 값은 초기 pattern 기록 전과 Worker 시작 전에 각각 요청되므로 같은 값이 두 번 표시됩니다.
+
+```text
+Log: DDR_FREQ request=3196 monotonic_us=... node=/sys/kernel/debug/aoss_send_message
+Log: DDR_FREQ active_request=3196 monotonic_us=...
+```
+
+Memory mismatch가 발생하면 처음 잘못된 값을 읽은 시점의 요청 주파수가 같은 오류 record에 저장됩니다.
+
+```text
+Hardware Error: miscompare on CPU 3(<-1) at ...: read:0x0000000000000000, reread:0xffffffff00000000 expected:0xffffffff00000000. 'OneZero256' read error. ddr_freq:3196(requested).
+```
+
+`ddr_freq:3196(requested)`는 AOSS에 마지막으로 성공적으로 전달한 요청값입니다. 실제 DDR clock이 3196에 도달했다는 readback 결과는 아닙니다. 제품의 clock readback node가 있다면 별도 계측값과 함께 확인해야 합니다.
+
+주파수 전환 직후 발생한 오류도 로그 출력 시점의 주파수가 아니라 mismatch를 감지한 시점의 요청값으로 기록됩니다. 따라서 Logger queue가 밀려 나중에 출력되더라도 다음 주파수로 잘못 표시되지 않습니다.
+
+## 직접 Android ARM64 빌드
+
+Android NDK 경로를 지정하고 실행합니다. 기본 Android API level은 30입니다.
 
 ```bash
 export ANDROID_NDK_HOME=/path/to/android-ndk
-./scripts/build_android_arm64.sh
-adb push out/android-arm64/stressapptest /data/local/tmp/
-adb shell chmod 755 /data/local/tmp/stressapptest
+./scripts/build_android_arm64.sh 30
 ```
 
-안전한 첫 실행 예시는 메모리 자동 선택을 피하고 명시적으로 크기를 제한합니다.
+결과 파일은 다음 경로에 생성됩니다.
 
-```bash
-adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
+```text
+out/android-arm64/stressapptest
 ```
 
-## 메모리 접근 방식을 구분하는 실행 명령
+빌드 스크립트는 `aarch64-linux-android` target, PIE, pthread, `STRESSAPPTEST_CPU_AARCH64`를 사용합니다. C++ runtime은 실행 파일에 정적으로 연결하므로 휴대폰에 `libc++_shared.so`를 별도로 복사하지 않습니다.
 
-```bash
-# 읽기와 검사 중심: 테스트 데이터 쓰기 Worker 없음
-stressapptest -M 512 -s 60 -m 0 -c 4
+## GitHub Actions 자동 빌드와 Release
 
-# 기본 복사: 읽기 + 쓰기 + checksum 검사
-stressapptest -M 512 -s 60 -m 4
+`.github/workflows/android-arm64-release.yml`은 다음 순서로 실행됩니다.
 
-# libc memcpy 처리량 중심: 복사 중 checksum 생략
-stressapptest -M 512 -s 60 -m 4 -F
+1. PR에서 Android AArch64 빌드 가능 여부를 확인합니다.
+2. `master`에 소스 변경이 반영되면 해당 commit을 Android API 30용으로 빌드합니다.
+3. ELF architecture가 AArch64인지 확인합니다.
+4. `libc++_shared.so` 의존성이 없는지 확인합니다.
+5. source commit으로 `android-<commit>` tag와 GitHub Release를 만듭니다.
+6. 실행 파일, SHA-256 checksum, 압축 파일을 Release 자산으로 등록합니다.
+7. README 상단 다운로드 버튼이 가장 최신 Release의 실행 파일을 내려받습니다.
 
-# Read-Modify-Write와 접근 방향 전환
-stressapptest -M 512 -s 60 -m 0 -i 4
+GitHub Actions 화면에서 `Build Android ARM64 release` workflow를 수동 실행할 수도 있습니다. Release는 `master` commit에서 실행했을 때만 게시됩니다.
 
-# CPU 계산 부하를 병행
-stressapptest -M 512 -s 60 -m 4 -C 4
-```
+## 상세 설명서
 
-> `-d ... --destructive`는 block device를 실제로 덮어쓸 수 있습니다. 개인 데이터가 있는 휴대폰에서는 사용하지 마십시오.
+기존 소스 구조와 worker, queue, cache, physical mapping 설명은 [StressAppTest 설명 사이트](https://stpcoder.github.io/stressapptest/)에서 확인할 수 있습니다.
 
-## Upstream과 라이선스
-
-- Upstream: <https://github.com/stressapptest/stressapptest>
-- 원본 README: <https://github.com/stressapptest/stressapptest/blob/73b9df227e89cd52b09852056843610722b7b7ae/README.md>
-- License: Apache License 2.0. 기존 `COPYING`, `NOTICE`를 유지합니다.
-
-특정 SoC의 channel/bank/row mapping과 DMC counter 정의에는 해당 SoC TRM 및 vendor 자료를 적용합니다. 이 문서의 generic 분석 범위는 public stressapptest 소스 구현입니다.
+License: Apache License 2.0

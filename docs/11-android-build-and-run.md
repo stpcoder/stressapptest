@@ -2,6 +2,17 @@
 
 이 장에서는 현재 저장소의 소스 코드를 Android ARM64 실행 파일로 빌드하고 휴대폰의 Android shell에서 실행하는 방법을 설명합니다.
 
+## 빌드 없이 다운로드
+
+[최신 Android ARM64 실행 파일](https://github.com/stpcoder/stressapptest/releases/latest/download/stressapptest-android-arm64)은 GitHub Actions가 `master`의 source commit을 빌드한 결과입니다.
+
+```bash
+adb push stressapptest-android-arm64 /data/local/tmp/stressapptest
+adb shell chmod 0755 /data/local/tmp/stressapptest
+```
+
+Release에는 SHA-256 checksum과 `BUILD-INFO.txt`를 포함한 압축 파일도 함께 게시됩니다.
+
 ## 이 저장소의 Android 빌드 방식
 
 현재 GitHub master에는 단독으로 사용할 수 있는 `Android.bp`가 없습니다. 이 fork는 Android NDK로 소스 코드를 직접 cross-compile하는 `scripts/build_android_arm64.sh`를 제공합니다.
@@ -57,6 +68,7 @@ STRESSAPPTEST_CPU_AARCH64
   -fPIE \
   -pie \
   -pthread \
+  -static-libstdc++ \
   -DHAVE_CONFIG_H \
   -DANDROID \
   -DNDEBUG \
@@ -67,9 +79,12 @@ STRESSAPPTEST_CPU_AARCH64
   -I"${repo_root}/src" \
   "${source_paths[@]}" \
   -o "${output_dir}/stressapptest"
+
+"${toolchain}/bin/llvm-strip" --strip-unneeded \
+  "${output_dir}/stressapptest"
 ```
 
-**코드 설명:** NDK의 `aarch64-linux-android<API>-clang++`로 공개 소스 파일을 하나의 PIE 실행 파일로 연결합니다. `STRESSAPPTEST_CPU_AARCH64`는 ARM64용 timestamp, cache 관리 명령, NEON 복사 코드를 선택합니다.
+**코드 설명:** NDK의 `aarch64-linux-android<API>-clang++`로 공개 소스 파일을 하나의 PIE 실행 파일로 연결합니다. C++ runtime은 실행 파일에 정적으로 연결하므로 휴대폰에 `libc++_shared.so`를 별도로 복사하지 않습니다. `STRESSAPPTEST_CPU_AARCH64`는 ARM64용 timestamp, cache 관리 명령, NEON 복사 코드를 선택합니다.
 
 <sub><em>PIE: Position-Independent Executable의 약어이며 ASLR 적용을 위해 고정 virtual address에 의존하지 않도록 생성한 실행 파일입니다.</em></sub>
 <sub><em>Conditional compilation: compile-time macro 값에 따라 특정 architecture 또는 platform 구현만 binary에 포함하는 방식입니다.</em></sub>

@@ -109,6 +109,19 @@ namespace {
 
 // A struct to hold captured errors, for later reporting.
 struct ErrorRecord {
+  ErrorRecord()
+      : actual(0),
+        reread(0),
+        expected(0),
+        vaddr(NULL),
+        vbyteaddr(NULL),
+        paddr(0),
+        tagvaddr(NULL),
+        tagpaddr(0),
+        lastcpu(0),
+        patternname(NULL),
+        dram_frequency(-1) {}
+
   uint64 actual;  // This is the actual value read.
   uint64 reread;  // This is the actual value, reread.
   uint64 expected;  // This is what it should have been.
@@ -119,7 +132,23 @@ struct ErrorRecord {
   uint64 tagpaddr;  // This holds the physical address corresponding to the tag.
   uint32 lastcpu;  // This holds the CPU recorded as probably writing this data.
   const char *patternname;  // This holds the pattern name of the expected data.
+  // Qualcomm DDR frequency request captured at the first mismatching read.
+  int dram_frequency;
 };
+
+static void FormatDramFrequency(class Sat *sat,
+                                struct ErrorRecord *error,
+                                char *buffer,
+                                size_t buffer_size) {
+  int frequency = error->dram_frequency;
+  if (frequency < 0)
+    frequency = sat->current_dram_frequency();
+  if (frequency >= 0) {
+    snprintf(buffer, buffer_size, "%d(requested)", frequency);
+  } else {
+    snprintf(buffer, buffer_size, "uncontrolled");
+  }
+}
 
 // This is a helper function to create new threads with pthreads.
 static void *ThreadSpawnerGeneric(void *ptr) {
@@ -593,6 +622,8 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
                                 int priority,
                                 const char *message) {
   char dimm_string[256] = "";
+  char dram_frequency[64];
+  FormatDramFrequency(sat_, error, dram_frequency, sizeof(dram_frequency));
 
   int core_id = sched_getcpu();
 
@@ -627,7 +658,8 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
 
     logprintf(priority,
               "%s: miscompare on CPU %d(<-%d) at %p(0x%llx:%s): "
-              "read:0x%016llx, reread:0x%016llx expected:0x%016llx. '%s'%s.\n",
+              "read:0x%016llx, reread:0x%016llx expected:0x%016llx. "
+              "'%s'%s. ddr_freq:%s.\n",
               message,
               core_id,
               error->lastcpu,
@@ -638,7 +670,8 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
               error->reread,
               error->expected,
               (error->patternname) ? error->patternname : "None",
-              (error->reread == error->expected) ? " read error" : "");
+              (error->reread == error->expected) ? " read error" : "",
+              dram_frequency);
   }
 
 
@@ -655,6 +688,8 @@ void FileThread::ProcessError(struct ErrorRecord *error,
                               int priority,
                               const char *message) {
   char dimm_string[256] = "";
+  char dram_frequency[64];
+  FormatDramFrequency(sat_, error, dram_frequency, sizeof(dram_frequency));
 
   // Determine if this is a write or read error.
   os_->Flush(error->vaddr);
@@ -697,7 +732,7 @@ void FileThread::ProcessError(struct ErrorRecord *error,
 
   logprintf(priority,
             "%s: miscompare on %s at %p(0x%llx:%s): read:0x%016llx, "
-            "reread:0x%016llx expected:0x%016llx\n",
+            "reread:0x%016llx expected:0x%016llx. '%s'. ddr_freq:%s.\n",
             message,
             devicename_.c_str(),
             error->vaddr,
@@ -706,7 +741,8 @@ void FileThread::ProcessError(struct ErrorRecord *error,
             error->actual,
             error->reread,
             error->expected,
-            (error->patternname) ? error->patternname : "None");
+            (error->patternname) ? error->patternname : "None",
+            dram_frequency);
 
   // Overwrite incorrect data with correct data to prevent
   // future miscompares when this data is reused.
@@ -734,6 +770,7 @@ int WorkerThread::CheckRegion(void *addr,
 
   // For each word in the data region.
   for (int i = 0; i < length / wordsize_; i++) {
+    int dram_frequency = sat_->current_dram_frequency();
     uint64 actual = memblock[i];
     uint64 expected;
 
@@ -757,6 +794,7 @@ int WorkerThread::CheckRegion(void *addr,
         recorded[errors].vaddr = &memblock[i];
         recorded[errors].patternname = pattern->name();
         recorded[errors].lastcpu = lastcpu;
+        recorded[errors].dram_frequency = dram_frequency;
         errors++;
       } else {
         page_error = true;
@@ -862,6 +900,7 @@ int WorkerThread::CheckRegion(void *addr,
   if (page_error) {
     // For each word in the data region.
     for (int i = 0; i < length / wordsize_; i++) {
+      int dram_frequency = sat_->current_dram_frequency();
       uint64 actual = memblock[i];
       uint64 expected;
       datacast_t data;
@@ -884,6 +923,9 @@ int WorkerThread::CheckRegion(void *addr,
         er.actual = actual;
         er.expected = expected;
         er.vaddr = &memblock[i];
+        er.patternname = pattern->name();
+        er.lastcpu = lastcpu;
+        er.dram_frequency = dram_frequency;
 
         // Do the error printout. This will take a long time and
         // likely change the machine state.
@@ -963,6 +1005,8 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
                                    const char *message) {
   char dimm_string[256] = "";
   char tag_dimm_string[256] = "";
+  char dram_frequency[64];
+  FormatDramFrequency(sat_, error, dram_frequency, sizeof(dram_frequency));
   bool read_error = false;
 
   int core_id = sched_getcpu();
@@ -994,7 +1038,8 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
     logprintf(priority,
               "%s: Tag from %p(0x%llx:%s) (%s) "
               "miscompare on CPU %d(0x%s) at %p(0x%llx:%s): "
-              "read:0x%016llx, reread:0x%016llx expected:0x%016llx\n",
+              "read:0x%016llx, reread:0x%016llx expected:0x%016llx. "
+              "ddr_freq:%s.\n",
               message,
               error->tagvaddr, error->tagpaddr,
               tag_dimm_string,
@@ -1006,7 +1051,8 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
               dimm_string,
               error->actual,
               error->reread,
-              error->expected);
+              error->expected,
+              dram_frequency);
   }
 
   errorcount_ += 1;
@@ -1028,6 +1074,7 @@ bool WorkerThread::ReportTagError(
 
   er.expected = tag;
   er.vaddr = mem64;
+  er.dram_frequency = sat_->current_dram_frequency();
 
   // Generate vaddr from tag.
   er.tagvaddr = reinterpret_cast<uint64*>(actual);
@@ -1269,6 +1316,7 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
                       crc.ToHexString().c_str(),
                       expectedcrc->ToHexString().c_str());
             struct ErrorRecord er;
+            er.dram_frequency = sat_->current_dram_frequency();
             er.actual = sourcemem[0];
             er.expected = 0xbad00000ull << 32;
             er.vaddr = sourcemem;
@@ -1426,6 +1474,7 @@ int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
                       crc.ToHexString().c_str(),
                       expectedcrc->ToHexString().c_str());
             struct ErrorRecord er;
+            er.dram_frequency = sat_->current_dram_frequency();
             er.actual = sourcemem[0];
             er.expected = 0xbad;
             er.vaddr = sourcemem;
@@ -3353,6 +3402,8 @@ void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
     // bad-dimm error
     WorkerThread::ProcessError(error, priority, message);
   } else if (phase_ == kPhaseCheck) {
+    char dram_frequency[64];
+    FormatDramFrequency(sat_, error, dram_frequency, sizeof(dram_frequency));
     // A error on the Check Phase means that the memory region tested
     // has an error. Gathering more information and then reporting
     // the error.
@@ -3377,7 +3428,7 @@ void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
     logprintf(priority,
               "%s: miscompare on %s, CRC check at %p(0x%llx), "
               "offset %llx: read:0x%016llx, reread:0x%016llx "
-              "expected:0x%016llx\n",
+              "expected:0x%016llx. ddr_freq:%s.\n",
               message,
               identifier_.c_str(),
               error->vaddr,
@@ -3385,7 +3436,8 @@ void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
               buffer_offset,
               error->actual,
               error->reread,
-              error->expected);
+              error->expected,
+              dram_frequency);
   } else {
     logprintf(0, "Process Error: memory region thread raised an "
               "unexpected error.");

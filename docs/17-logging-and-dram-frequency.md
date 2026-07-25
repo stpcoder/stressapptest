@@ -1,6 +1,37 @@
 # 로그 출력과 DRAM 주파수 전환 오류를 분석하는 방법
 
-이 장에서는 stressapptest가 메모리 오류 로그를 만드는 과정과 외부 DRAM 주파수 변경 스크립트의 기록을 같은 시간축에서 분석하는 방법을 설명합니다. 설명은 public stressapptest 기준 소스에 적용됩니다. Qualcomm·MediaTek·단말 제조사가 Logger 또는 오류 처리 코드를 변경한 경우에는 실제 binary와 해당 소스를 추가로 확인해야 합니다.
+이 장에서는 stressapptest가 메모리 오류 로그를 만드는 과정과 DRAM 주파수 변경 기록을 같은 시간축에서 분석하는 방법을 설명합니다. Public upstream의 Logger 구조와 이 fork에 추가한 Qualcomm DDR 제어 기능을 구분하여 설명합니다.
+
+## 이 fork의 통합 DDR 로그
+
+외부 script 대신 다음 옵션을 사용하면 stressapptest가 Qualcomm AOSS node에 직접 fixed DDR 요청을 전달합니다.
+
+```bash
+# 한 주파수 고정
+stressapptest -M 1024 -m 4 -i 4 -s 600 \
+  -P OneZero256 --ddr 3196
+
+# 전체 주파수 3초 sweep
+stressapptest -M 1024 -m 4 -i 4 -s 600 \
+  -P OneZero256 --ddr-sweep all --ddr-step 3
+```
+
+주파수 요청 로그는 다음 두 단계로 구분됩니다.
+
+```text
+Log: DDR_FREQ request=3196 monotonic_us=... node=/sys/kernel/debug/aoss_send_message
+Log: DDR_FREQ active_request=3196 monotonic_us=...
+```
+
+`request`는 쓰기를 시도하기 직전이고 `active_request`는 debugfs node에 전체 메시지를 쓴 직후입니다. `active_request`는 hardware readback이 아니라 마지막으로 성공한 요청값입니다.
+
+`CheckRegion()`은 첫 mismatching read를 발견할 때 현재 요청값을 오류 record에 함께 저장합니다. 따라서 Logger queue에서 출력이 지연되고 다음 주파수로 전환되더라도 오류 로그에는 검출 시점의 값이 유지됩니다.
+
+```text
+Hardware Error: ... read:0x..., reread:0x... expected:0x.... 'OneZero256' read error. ddr_freq:3196(requested).
+```
+
+이 값은 실제 DDR clock 측정값이 아닙니다. 제품에 readback node가 있으면 같은 시간축의 측정값과 함께 확인해야 합니다.
 
 ## 먼저 구분해야 하는 시각
 

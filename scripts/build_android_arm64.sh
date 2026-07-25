@@ -67,6 +67,7 @@ done
   -fPIE \
   -pie \
   -pthread \
+  -static-libstdc++ \
   -DHAVE_CONFIG_H \
   -DANDROID \
   -DNDEBUG \
@@ -77,5 +78,8 @@ done
   -I"${repo_root}/src" \
   "${source_paths[@]}" \
   -o "${output_dir}/stressapptest"
+
+"${toolchain}/bin/llvm-strip" --strip-unneeded \
+  "${output_dir}/stressapptest"
 
 echo "Android ARM64 binary: ${output_dir}/stressapptest"

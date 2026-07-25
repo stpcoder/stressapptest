@@ -1,0 +1,177 @@
+name: Build Android ARM64 release
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - "src/**"
+      - "scripts/build_android_arm64.sh"
+      - ".github/workflows/android-arm64-release.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "src/**"
+      - "scripts/build_android_arm64.sh"
+      - ".github/workflows/android-arm64-release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ANDROID_API: "30"
+  ANDROID_NDK_VERSION: "27.2.12479018"
+  RELEASE_BINARY: stressapptest-android-arm64
+
+jobs:
+  build:
+    name: Build executable for aarch64-linux-android
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source commit
+        uses: actions/checkout@v7
+
+      - name: Build Linux smoke-test executable
+        shell: bash
+        run: |
+          CXXFLAGS="-std=gnu++11 -O2 -DNDEBUG -DCHECKOPTS" \
+            ./configure --disable-default-optimizations
+          make -j"$(nproc)"
+
+      - name: Verify pattern selection and DDR sweep options
+        shell: bash
+        run: |
+          set -euo pipefail
+          ddr_node="${RUNNER_TEMP}/aoss_send_message"
+          : > "${ddr_node}"
+
+          ./src/stressapptest \
+            -M 64 -m 1 -i 0 -s 3 -A --no_errors -v 5 \
+            -P 27 \
+            --ddr-sweep 547,768 \
+            --ddr-step 1 \
+            --ddr-node "${ddr_node}" \
+            | tee "${RUNNER_TEMP}/numeric-pattern.log"
+
+          grep -q "Fixed pattern: id=27 name=OneZero256" \
+            "${RUNNER_TEMP}/numeric-pattern.log"
+          grep -q "DDR_FREQ active_request=547" \
+            "${RUNNER_TEMP}/numeric-pattern.log"
+          grep -q "DDR_FREQ active_request=768" \
+            "${RUNNER_TEMP}/numeric-pattern.log"
+
+          ./src/stressapptest \
+            -M 64 -m 1 -i 0 -s 1 -A --no_errors -v 5 \
+            -P OneZero256 \
+            | tee "${RUNNER_TEMP}/named-pattern.log"
+
+          grep -q "Fixed pattern: id=27 name=OneZero256" \
+            "${RUNNER_TEMP}/named-pattern.log"
+
+      - name: Install pinned Android NDK
+        shell: bash
+        run: |
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;${ANDROID_NDK_VERSION}"
+
+      - name: Build Android ARM64 executable
+        shell: bash
+        run: |
+          ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" \
+            ./scripts/build_android_arm64.sh \
+            "${ANDROID_API}" \
+            "${RUNNER_TEMP}/android-arm64"
+
+      - name: Verify Android ABI and runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="${RUNNER_TEMP}/android-arm64/stressapptest"
+          readelf_tool="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+
+          file "${binary}" | tee "${RUNNER_TEMP}/file.txt"
+          "${readelf_tool}" -h "${binary}" | tee "${RUNNER_TEMP}/elf-header.txt"
+          "${readelf_tool}" -d "${binary}" | tee "${RUNNER_TEMP}/elf-dynamic.txt"
+
+          grep -q "ARM aarch64" "${RUNNER_TEMP}/file.txt"
+          grep -q "Machine:.*AArch64" "${RUNNER_TEMP}/elf-header.txt"
+          if grep -q "libc++_shared.so" "${RUNNER_TEMP}/elf-dynamic.txt"; then
+            echo "The release must not depend on libc++_shared.so" >&2
+            exit 1
+          fi
+
+      - name: Prepare downloadable files
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_dir="${RUNNER_TEMP}/release-package"
+          mkdir -p "${package_dir}"
+          install -m 0755 \
+            "${RUNNER_TEMP}/android-arm64/stressapptest" \
+            "${package_dir}/${RELEASE_BINARY}"
+          install -m 0644 COPYING "${package_dir}/COPYING"
+
+          release_tag="android-${GITHUB_SHA::7}"
+          {
+            echo "source_commit=${GITHUB_SHA}"
+            echo "android_api=${ANDROID_API}"
+            echo "android_ndk=${ANDROID_NDK_VERSION}"
+            echo "target=aarch64-linux-android"
+          } > "${package_dir}/BUILD-INFO.txt"
+
+          sha256sum "${package_dir}/${RELEASE_BINARY}" \
+            > "${package_dir}/${RELEASE_BINARY}.sha256"
+          tar -C "${package_dir}" -czf \
+            "${RUNNER_TEMP}/${RELEASE_BINARY}.tar.gz" \
+            "${RELEASE_BINARY}" \
+            "${RELEASE_BINARY}.sha256" \
+            "BUILD-INFO.txt" \
+            "COPYING"
+
+          echo "release_tag=${release_tag}" >> "${GITHUB_OUTPUT}"
+          echo "package_dir=${package_dir}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-arm64-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            ${{ steps.package.outputs.package_dir }}/stressapptest-android-arm64
+            ${{ steps.package.outputs.package_dir }}/stressapptest-android-arm64.sha256
+            ${{ runner.temp }}/stressapptest-android-arm64.tar.gz
+
+      - name: Publish GitHub Release for the master commit
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.package.outputs.release_tag }}
+          PACKAGE_DIR: ${{ steps.package.outputs.package_dir }}
+        run: |
+          set -euo pipefail
+          assets=(
+            "${PACKAGE_DIR}/${RELEASE_BINARY}"
+            "${PACKAGE_DIR}/${RELEASE_BINARY}.sha256"
+            "${RUNNER_TEMP}/${RELEASE_BINARY}.tar.gz"
+          )
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
+            gh release edit "${RELEASE_TAG}" --latest
+          else
+            gh release create "${RELEASE_TAG}" \
+              "${assets[@]}" \
+              --target "${GITHUB_SHA}" \
+              --title "Android ARM64 ${GITHUB_SHA::7}" \
+              --notes "Android API ${ANDROID_API} 이상에서 실행할 수 있는 AArch64 빌드입니다. 소스 commit: ${GITHUB_SHA}." \
+              --latest
+          fi

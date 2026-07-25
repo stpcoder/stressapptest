@@ -21,6 +21,7 @@
 // stressapptest can be run using memory only, or using many system components.
 
 #include <errno.h>
+#include <limits.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -38,6 +39,7 @@
 
 #include <list>
 #include <string>
+#include <vector>
 
 // This file must work with autoconf on its public version,
 // so these includes are correct.
@@ -59,6 +61,53 @@ static const char* kVersion = PACKAGE_VERSION;
 // This makes Sat objects not safe for multiple instances.
 namespace {
   Sat *g_sat = NULL;
+
+  static const char kDefaultDramFrequencyNode[] =
+      "/sys/kernel/debug/aoss_send_message";
+  static const int kAllDramFrequencies[] = {
+    547, 768, 1017, 1353, 1555, 1708, 2092, 2736, 3196, 4266, 5333
+  };
+
+  bool ParsePositiveInt(const string &value, int *result) {
+    errno = 0;
+    char *end = NULL;
+    long parsed = strtol(value.c_str(), &end, 10);
+    if (errno != 0 || end == value.c_str() || *end != '\0' ||
+        parsed <= 0 || parsed > INT_MAX) {
+      return false;
+    }
+    *result = static_cast<int>(parsed);
+    return true;
+  }
+
+  bool ParseDramFrequencyList(const string &value,
+                              vector<int> *frequencies) {
+    frequencies->clear();
+    if (value == "all") {
+      frequencies->assign(
+          kAllDramFrequencies,
+          kAllDramFrequencies +
+              sizeof(kAllDramFrequencies) / sizeof(kAllDramFrequencies[0]));
+      return true;
+    }
+
+    size_t start = 0;
+    while (start <= value.size()) {
+      size_t comma = value.find(',', start);
+      string item = value.substr(start, comma == string::npos
+                                    ? string::npos : comma - start);
+      int frequency = 0;
+      if (!ParsePositiveInt(item, &frequency)) {
+        frequencies->clear();
+        return false;
+      }
+      frequencies->push_back(frequency);
+      if (comma == string::npos)
+        break;
+      start = comma + 1;
+    }
+    return !frequencies->empty();
+  }
 
   // Signal handler for catching break or kill.
   //
@@ -239,6 +288,11 @@ bool Sat::InitializePatterns() {
   }
   if (!patternlist_->Initialize()) {
     logprintf(0, "Process Error: failed to initialize patternlist\n");
+    bad_status();
+    return false;
+  }
+  if (!pattern_selector_.empty() &&
+      !patternlist_->SetFixedPattern(pattern_selector_)) {
     bad_status();
     return false;
   }
@@ -632,6 +686,14 @@ bool Sat::Initialize() {
   if (!InitializePatterns())
     return false;
 
+  // Put the initial pattern fill under the first requested DDR frequency.
+  // Sweep timing is restarted when Run() begins.
+  if (!dram_frequencies_.empty() &&
+      !ApplyDramFrequency(dram_frequencies_[0])) {
+    bad_status();
+    return false;
+  }
+
   // Initialize memory allocation.
   pages_ = size_ / page_length_;
 
@@ -672,6 +734,12 @@ Sat::Sat() {
   paddr_base_ = 0;
   channel_hash_ = kCacheLineSize;
   channel_width_ = 64;
+  pattern_selector_ = "";
+  dram_frequencies_.clear();
+  dram_sweep_ = false;
+  dram_step_seconds_ = 3;
+  dram_frequency_node_ = kDefaultDramFrequencyNode;
+  current_dram_frequency_.store(-1, std::memory_order_relaxed);
 
   user_break_ = false;
   verbosity_ = 8;
@@ -811,6 +879,75 @@ bool Sat::ParseArgs(int argc, char **argv) {
 
     // Set number of seconds to run.
     ARG_IVALUE("-s", runtime_seconds_);
+
+    // Select one pattern by zero-based ID or name.
+    if (!strcmp(argv[i], "-P")) {
+      if (++i >= argc) {
+        logprintf(0, "Process Error: -P requires a pattern ID or name\n");
+        return false;
+      }
+      pattern_selector_ = argv[i];
+      continue;
+    }
+
+    // Hold one Qualcomm DDR frequency for the complete test.
+    if (!strcmp(argv[i], "--ddr")) {
+      if (++i >= argc) {
+        logprintf(0, "Process Error: --ddr requires one frequency\n");
+        return false;
+      }
+      if (!dram_frequencies_.empty()) {
+        logprintf(0, "Process Error: Use either --ddr or --ddr-sweep\n");
+        return false;
+      }
+      int frequency = 0;
+      if (!ParsePositiveInt(argv[i], &frequency)) {
+        logprintf(0, "Process Error: Invalid DDR frequency '%s'\n", argv[i]);
+        return false;
+      }
+      dram_frequencies_.push_back(frequency);
+      dram_sweep_ = false;
+      continue;
+    }
+
+    // Sweep all known frequencies or a comma-separated selection.
+    if (!strcmp(argv[i], "--ddr-sweep")) {
+      if (++i >= argc) {
+        logprintf(0,
+                  "Process Error: --ddr-sweep requires 'all' or a list\n");
+        return false;
+      }
+      if (!dram_frequencies_.empty()) {
+        logprintf(0, "Process Error: Use either --ddr or --ddr-sweep\n");
+        return false;
+      }
+      if (!ParseDramFrequencyList(argv[i], &dram_frequencies_)) {
+        logprintf(0, "Process Error: Invalid DDR sweep list '%s'\n", argv[i]);
+        return false;
+      }
+      dram_sweep_ = true;
+      continue;
+    }
+
+    // Set the number of seconds between DDR sweep requests.
+    if (!strcmp(argv[i], "--ddr-step")) {
+      if (++i >= argc || !ParsePositiveInt(argv[i], &dram_step_seconds_)) {
+        logprintf(0,
+                  "Process Error: --ddr-step requires positive seconds\n");
+        return false;
+      }
+      continue;
+    }
+
+    // Override the Qualcomm AOSS debugfs node for device variants or testing.
+    if (!strcmp(argv[i], "--ddr-node")) {
+      if (++i >= argc || argv[i][0] == '\0') {
+        logprintf(0, "Process Error: --ddr-node requires a path\n");
+        return false;
+      }
+      dram_frequency_node_ = argv[i];
+      continue;
+    }
 
     // Set number of memory copy threads.
     ARG_IVALUE("-m", memory_threads_);
@@ -1099,6 +1236,11 @@ void Sat::PrintHelp() {
          " reserve for the system\n"
          " -H mbytes        minimum megabytes of hugepages to require\n"
          " -s seconds       number of seconds to run\n"
+         " -P id|name       use only one pattern (zero-based ID or name)\n"
+         " --ddr freq       hold one Qualcomm DDR frequency\n"
+         " --ddr-sweep list sweep 'all' or comma-separated DDR frequencies\n"
+         " --ddr-step secs  seconds per sweep frequency (default 3)\n"
+         " --ddr-node path  Qualcomm AOSS message node\n"
          " -m threads       number of memory copy threads to run\n"
          " -i threads       number of memory invert threads to run\n"
          " -C threads       number of memory CPU stress threads to run\n"
@@ -1499,6 +1641,69 @@ int Sat::ReadInt(const char *filename, int *value) {
   return err;
 }
 
+// Submit one fixed DDR frequency request through Qualcomm's AOSS debugfs
+// message interface.  A successful write records the requested frequency so
+// memory errors can capture it at the time of the first mismatching read.
+bool Sat::ApplyDramFrequency(int frequency) {
+  char message[128];
+  int message_length = snprintf(message, sizeof(message),
+                                "{class:ddr, res:fixed, val:%d}\n",
+                                frequency);
+  if (message_length <= 0 ||
+      static_cast<size_t>(message_length) >= sizeof(message)) {
+    logprintf(0, "Process Error: Failed to format DDR frequency %d\n",
+              frequency);
+    return false;
+  }
+
+  logprintf(5,
+            "Log: DDR_FREQ request=%d monotonic_us=%lld node=%s\n",
+            frequency, sat_get_time_us(), dram_frequency_node_.c_str());
+
+  int open_flags = O_WRONLY;
+#ifdef O_CLOEXEC
+  open_flags |= O_CLOEXEC;
+#endif
+  int fd = open(dram_frequency_node_.c_str(), open_flags);
+  if (fd < 0) {
+    logprintf(0,
+              "Process Error: DDR_FREQ open failed: request=%d node=%s "
+              "errno=%d (%s)\n",
+              frequency, dram_frequency_node_.c_str(), errno,
+              strerror(errno));
+    return false;
+  }
+
+  ssize_t written;
+  do {
+    written = write(fd, message, message_length);
+  } while (written < 0 && errno == EINTR);
+  int write_errno = errno;
+  int close_result = close(fd);
+  if (written != message_length) {
+    logprintf(0,
+              "Process Error: DDR_FREQ write failed: request=%d node=%s "
+              "written=%lld expected=%d errno=%d (%s)\n",
+              frequency, dram_frequency_node_.c_str(),
+              static_cast<int64>(written), message_length, write_errno,
+              strerror(write_errno));
+    return false;
+  }
+  if (close_result != 0) {
+    logprintf(0,
+              "Process Error: DDR_FREQ close failed: request=%d node=%s "
+              "errno=%d (%s)\n",
+              frequency, dram_frequency_node_.c_str(), errno,
+              strerror(errno));
+    return false;
+  }
+
+  current_dram_frequency_.store(frequency, std::memory_order_release);
+  logprintf(5, "Log: DDR_FREQ active_request=%d monotonic_us=%lld\n",
+            frequency, sat_get_time_us());
+  return true;
+}
+
 // Return the worst case (largest) cache line size of the various levels of
 // cache actually prsent in the machine.
 int Sat::CacheLineSize() {
@@ -1882,6 +2087,13 @@ inline time_t NextOccurance(time_t frequency, time_t start, time_t now) {
 
 // Run the actual test.
 bool Sat::Run() {
+  size_t dram_frequency_index = 0;
+  if (!dram_frequencies_.empty() &&
+      !ApplyDramFrequency(dram_frequencies_[dram_frequency_index])) {
+    bad_status();
+    return false;
+  }
+
   // Install signal handlers to gracefully exit in the middle of a run.
   //
   // Why go through this whole rigmarole?  It's the only standards-compliant
@@ -1920,7 +2132,9 @@ bool Sat::Run() {
   logprintf(12, "Log: Starting countdown with %d seconds\n", runtime_seconds_);
 
   // In seconds.
-  static const time_t kSleepFrequency = 5;
+  const bool dram_sweep_active =
+      dram_sweep_ && dram_frequencies_.size() > 1;
+  const time_t sleep_frequency = dram_sweep_active ? 1 : 5;
   // All of these are in seconds.  You probably want them to be >=
   // kSleepFrequency and multiples of kSleepFrequency, but neither is necessary.
   static const time_t kInjectionFrequency = 10;
@@ -1932,6 +2146,8 @@ bool Sat::Run() {
   time_t next_print = start + print_delay_;
   time_t next_pause = start + pause_delay_;
   time_t next_resume = 0;
+  time_t next_dram_frequency =
+      dram_sweep_active ? start + dram_step_seconds_ : 0;
   time_t next_injection;
   if (crazy_error_injection_) {
     next_injection = start + kInjectionFrequency;
@@ -1939,6 +2155,7 @@ bool Sat::Run() {
     next_injection = 0;
   }
 
+  bool run_ok = true;
   while (now < end) {
     // This is an int because it's for logprintf().
     const int seconds_remaining = end - now;
@@ -1979,6 +2196,18 @@ bool Sat::Run() {
       next_injection = NextOccurance(kInjectionFrequency, start, now);
     }
 
+    if (next_dram_frequency && now >= next_dram_frequency) {
+      dram_frequency_index =
+          (dram_frequency_index + 1) % dram_frequencies_.size();
+      if (!ApplyDramFrequency(dram_frequencies_[dram_frequency_index])) {
+        bad_status();
+        run_ok = false;
+        break;
+      }
+      next_dram_frequency =
+          NextOccurance(dram_step_seconds_, start, now);
+    }
+
     if (next_pause && now >= next_pause) {
       // Tell worker threads to pause in preparation for a power spike.
       logprintf(4, "Log: Pausing worker threads in preparation for power spike "
@@ -1999,7 +2228,7 @@ bool Sat::Run() {
       next_resume = 0;
     }
 
-    sat_sleep(NextOccurance(kSleepFrequency, start, now) - now);
+    sat_sleep(NextOccurance(sleep_frequency, start, now) - now);
     now = time(NULL);
   }
 
@@ -2012,11 +2241,17 @@ bool Sat::Run() {
 
   DeleteThreads();
 
+  if (current_dram_frequency() >= 0) {
+    logprintf(5,
+              "Log: DDR_FREQ retained_request=%d after test completion\n",
+              current_dram_frequency());
+  }
+
   logprintf(12, "Log: Uninstalling signal handlers\n");
   signal(SIGINT, prev_sigint_handler);
   signal(SIGTERM, prev_sigterm_handler);
 
-  return true;
+  return run_ok;
 }
 
 // Clean up all resources.
@@ -2116,4 +2351,3 @@ void logprintf(int priority, const char *format, ...) {
 void logstop() {
   Logger::GlobalLogger()->StopThread();
 }
-

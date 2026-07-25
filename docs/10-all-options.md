@@ -34,6 +34,28 @@ ARG_IVALUE("-c", check_threads_);
 
 <sub><em>Base 0 integer parsing: 숫자 prefix에 따라 `0x`는 16진수, 앞의 `0`은 8진수, 그 외에는 10진수로 해석하는 C library 변환 방식입니다.</em></sub>
 
+## 이 fork에서 추가한 Android 시험 옵션
+
+아래 옵션은 upstream `73b9df2`에 없으며 이 저장소에서 추가했습니다.
+
+| 옵션 | 기본값 | 동작 |
+|---|---:|---|
+| `-P <ID\|이름>` | 무작위 선택 | 0부터 시작하는 ID 또는 pattern 이름으로 하나의 pattern만 선택 |
+| `--ddr <주파수>` | 사용 안 함 | 초기 pattern 기록 전과 Worker 시작 전에 Qualcomm AOSS fixed DDR 요청 전송 |
+| `--ddr-sweep all` | 사용 안 함 | 등록된 전체 DDR 주파수를 순서대로 반복 |
+| `--ddr-sweep <a,b,...>` | 사용 안 함 | 지정한 주파수만 순서대로 반복 |
+| `--ddr-step <seconds>` | 3 | sweep 주파수 전환 간격 |
+| `--ddr-node <path>` | `/sys/kernel/debug/aoss_send_message` | Qualcomm AOSS debugfs node 변경 |
+
+ID `27`과 이름 `OneZero256`은 같은 pattern을 선택합니다. lowercase `-p`는 기존 SAT block 크기 옵션이므로 구분해야 합니다.
+
+```bash
+stressapptest -M 1024 -m 4 -i 4 -s 600 \
+  -P OneZero256 --ddr-sweep all --ddr-step 3
+```
+
+`--ddr`와 `--ddr-sweep`은 동시에 사용할 수 없습니다. DDR 요청을 사용하려면 해당 debugfs node의 쓰기 권한과 SELinux 허용이 필요합니다.
+
 ## 메모리 크기와 실행 시간
 
 | 옵션 | 기본값 | 실제 동작과 모바일 환경에서의 의미 |

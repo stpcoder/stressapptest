@@ -94,6 +94,10 @@ class PatternList {
 
   // Return the pattern designated by index i.
   Pattern *GetPattern(int i);
+  // Select one pattern by zero-based ID or exact pattern name.
+  bool SetFixedPattern(const string &selector);
+  // Return the selected pattern ID, or -1 when random selection is active.
+  int fixed_pattern_id() const {return fixed_pattern_id_;}
   // Return a random pattern according to the specified weighted probability.
   Pattern *GetRandomPattern();
   // Return the number of patterns available.
@@ -104,6 +108,7 @@ class PatternList {
   int weightcount_;  // Total count of pattern weights.
   unsigned int size_;
   int initialized_;
+  int fixed_pattern_id_;
   DISALLOW_COPY_AND_ASSIGN(PatternList);
 };
 

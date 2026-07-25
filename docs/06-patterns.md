@@ -113,6 +113,19 @@ if (i < size_) {
 
 **코드 설명:** 임의 값을 전체 선택 비율의 합인 160 안의 값으로 바꿉니다. 각 pattern의 선택 비율을 차례로 빼다가 0 이하가 되는 `Pattern` 객체를 선택합니다. 선택 비율이 10인 pattern은 5인 pattern보다 선택 확률이 두 배입니다.
 
+## 하나의 Pattern으로 고정하는 방법
+
+이 fork의 `-P` 옵션은 `GetRandomPattern()`이 항상 선택한 하나의 `Pattern` 객체를 반환하도록 설정합니다. 초기 FillThread와 오류 복구 과정에서 다시 채우는 block에도 같은 pattern이 적용됩니다.
+
+ID는 0부터 시작합니다. `OneZero256`의 ID는 27입니다.
+
+```bash
+stressapptest -M 1024 -m 4 -i 4 -s 600 -P 27
+stressapptest -M 1024 -m 4 -i 4 -s 600 -P OneZero256
+```
+
+두 명령은 동일하게 작동합니다. 이름 비교는 대소문자를 구분하지 않습니다. `-P`를 생략하면 upstream의 가중치 기반 무작위 선택을 그대로 사용합니다.
+
 ## Width별 선택 비율
 
 | 반복 범위 | 선택 확률 |

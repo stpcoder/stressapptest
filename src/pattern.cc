@@ -16,6 +16,11 @@
 
 #include <sys/types.h>
 
+#include <errno.h>
+#include <limits.h>
+#include <stdlib.h>
+#include <strings.h>
+
 // This file must work with autoconf on its public version,
 // so these includes are correct.
 #include "pattern.h"
@@ -327,6 +332,7 @@ int Pattern::Initialize(const struct PatternData &pattern_init,
 PatternList::PatternList() {
   size_= 0;
   initialized_ = 0;
+  fixed_pattern_id_ = -1;
 }
 
 PatternList::~PatternList() {
@@ -387,6 +393,7 @@ int PatternList::Destroy() {
   patterns_.clear();
   size_ = 0;
   initialized_ = 0;
+  fixed_pattern_id_ = -1;
 
   return 1;
 }
@@ -401,8 +408,48 @@ Pattern *PatternList::GetPattern(int i) {
   return 0;
 }
 
+// Select a single pattern by zero-based numeric ID or pattern name.
+bool PatternList::SetFixedPattern(const string &selector) {
+  if (!initialized_ || selector.empty())
+    return false;
+
+  errno = 0;
+  char *end = NULL;
+  long pattern_id = strtol(selector.c_str(), &end, 10);
+  if (errno == 0 && end != selector.c_str() && *end == '\0') {
+    if (pattern_id < 0 || pattern_id > INT_MAX ||
+        static_cast<unsigned int>(pattern_id) >= size_) {
+      logprintf(0,
+                "Process Error: Pattern ID %s is outside the valid range "
+                "0-%d\n",
+                selector.c_str(), static_cast<int>(size_) - 1);
+      return false;
+    }
+    fixed_pattern_id_ = static_cast<int>(pattern_id);
+  } else {
+    fixed_pattern_id_ = -1;
+    for (unsigned int i = 0; i < size_; ++i) {
+      if (strcasecmp(selector.c_str(), patterns_[i].name()) == 0) {
+        fixed_pattern_id_ = static_cast<int>(i);
+        break;
+      }
+    }
+    if (fixed_pattern_id_ < 0) {
+      logprintf(0, "Process Error: Unknown pattern '%s'\n", selector.c_str());
+      return false;
+    }
+  }
+
+  logprintf(5, "Log: Fixed pattern: id=%d name=%s\n",
+            fixed_pattern_id_, patterns_[fixed_pattern_id_].name());
+  return true;
+}
+
 // Return a randomly selected pattern.
 Pattern *PatternList::GetRandomPattern() {
+  if (fixed_pattern_id_ >= 0)
+    return &patterns_[fixed_pattern_id_];
+
   int target = random();
   unsigned int i = 0;
   target = (target % weightcount_) + 1;
