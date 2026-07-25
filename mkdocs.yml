@@ -79,7 +79,7 @@ nav:
       - 목적에 따른 테스트 명령: 12-test-recipes.md
       - 명령행 옵션 정리: 10-all-options.md
       - 부하와 오류를 측정하는 방법: 13-measurement.md
-      - 로그와 DRAM 주파수 전환 오류 분석: 17-logging-and-dram-frequency.md
+      - 오류 로그 생성 과정과 DRAM 주파수 기록: 17-logging-and-dram-frequency.md
   - 참고:
       - 분석 기준과 버전: 00-scope-and-version.md
       - 모바일 환경에서 알아둘 제한사항: 14-limitations.md
