@@ -21,13 +21,14 @@
 
 ## 권장 읽기 순서
 
-처음 읽을 때는 다음 다섯 장을 먼저 보면 전체 흐름을 이해할 수 있습니다.
+처음 읽을 때는 다음 여섯 장을 먼저 보면 전체 흐름을 이해할 수 있습니다.
 
 1. [stressapptest의 작동 원리](01-overview.md)
 2. [실행 순서 한눈에 보기](02-execution-flow.md)
 3. [메모리를 복사하고 오류를 찾는 과정](09-copy-and-verification.md)
 4. [Cache에서 LPDDR까지 데이터가 이동하는 과정](04-cache-and-arm64.md)
 5. [목적별 테스트 명령](12-test-recipes.md)
+6. [로그 출력과 DRAM 주파수 전환 오류를 분석하는 방법](17-logging-and-dram-frequency.md)
 
 세부 구현을 찾을 때는 [소스 코드 찾아보기](15-source-map.md), 어려운 용어는 [용어 설명](16-glossary.md)을 사용합니다.
 

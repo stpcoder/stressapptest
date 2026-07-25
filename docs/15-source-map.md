@@ -78,6 +78,20 @@
 | `src/os.cc:263` | 실행 중 `Flush()` 적용 조건 |
 | `src/os.h:147` | architecture별 FastFlush |
 
+## 로그 출력과 오류 시각
+
+| 위치 | 내용 |
+|---|---|
+| `src/logger.cc:36` | Timestamp와 로그 문자열 생성 후 queue에 삽입 |
+| `src/logger.cc:101` | 최대 250개 queue와 Worker 대기 조건 |
+| `src/logger.cc:119` | Logfile과 stdout에 직접 `write()` |
+| `src/logger.cc:137` | 전용 Logger thread의 queue 처리 |
+| `src/sat.cc:75` | `-l` logfile의 동기 쓰기 flag |
+| `src/worker.cc:592` | Reread, 상세 miscompare 출력과 기대값 복구 |
+| `src/worker.cc:720` | 4 KiB 구간의 word 단위 검사와 128개 record 제한 |
+| `src/os.cc:363` | Parse 가능한 `Report Error`와 time-to-failure |
+| `src/sat.cc:1953` | `--max_errors`를 확인하는 5초 control loop |
+
 ## Worker 생성 위치
 
 | 위치 | 내용 |

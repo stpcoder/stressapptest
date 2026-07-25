@@ -113,6 +113,8 @@ dstpe->lastcpu = sched_getcpu();
 
 따라서 실제 오류가 발생한 시각과 로그에 오류가 기록된 시각은 다를 수 있습니다.
 
+Logger queue, `read`·`reread`·`expected`, `OneZero`와 외부 DRAM frequency 변경 시각을 함께 분석하는 방법은 [로그 출력과 DRAM 주파수 전환 오류를 분석하는 방법](17-logging-and-dram-frequency.md)에서 설명합니다.
+
 ## Checksum 불일치가 발생했을 때의 재검사
 
 Checksum이 다르면 `CheckRegion()`이 해당 4 KiB 구간을 64-bit word 단위로 다시 읽습니다.

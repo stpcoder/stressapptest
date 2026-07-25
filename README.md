@@ -36,6 +36,7 @@
 5. [메모리 Worker 종류와 동작](docs/07-memory-workers.md)
 6. [목적별 테스트 명령](docs/12-test-recipes.md)
 7. [부하와 오류를 측정하는 방법](docs/13-measurement.md)
+8. [로그 출력과 DRAM 주파수 전환 오류를 분석하는 방법](docs/17-logging-and-dram-frequency.md)
 
 사이트 메뉴와 화면 설정은 [`mkdocs.yml`](mkdocs.yml), 세부 색상과 본문 스타일은 [`docs/stylesheets/extra.css`](docs/stylesheets/extra.css)에 있습니다.
 
