@@ -10,13 +10,13 @@
 
 | 기능 | 옵션 | 설명 |
 |---|---|---|
-| 패턴 고정 | `-P <ID\|이름>` | 모든 초기 memory block을 지정한 패턴으로 채우고 해당 패턴만 사용 |
-| DDR 주파수 고정 | `--ddr <주파수>` | 초기 pattern 기록 전과 Worker 시작 전에 Qualcomm AOSS에 요청 |
-| 전체 주파수 sweep | `--ddr-sweep all` | 등록된 전체 주파수를 순서대로 반복 |
-| 선택 주파수 sweep | `--ddr-sweep <목록>` | 쉼표로 지정한 주파수만 순서대로 반복 |
+| 패턴 선택 | `-P <ID\|이름[,ID\|이름...]>` | 하나 또는 여러 pattern을 지정한 순서대로 block에 순환 배정 |
+| DDR 주파수 고정 | `--ddr-freq <주파수>` | 하나의 Qualcomm DDR 주파수를 시험 종료까지 유지 |
+| 전체 주파수 sweep | `--ddr-freq all` | 등록된 전체 주파수를 순서대로 반복 |
+| 선택 주파수 sweep | `--ddr-freq <목록>` | 쉼표로 지정한 주파수만 입력 순서대로 반복 |
 | 전환 간격 | `--ddr-step <초>` | sweep 주파수 유지 시간. 기본값은 3초 |
 | AOSS node 변경 | `--ddr-node <경로>` | 기본 debugfs node가 다른 제품에서 사용 |
-| 오류 주파수 기록 | 자동 | `read`, `reread`, `expected` 오류에 mismatch 감지 시점의 요청 주파수 출력 |
+| 오류 주파수 기록 | 자동 | expected data의 마지막 write, 최초 mismatch read, cache flush 후 reread 시점의 값을 각각 출력 |
 
 기본 Qualcomm AOSS node는 다음 경로입니다.
 
@@ -51,7 +51,7 @@ cd /data/local/tmp
 
 상용 `user` build에서는 root 권한과 SELinux 정책이 별도로 준비되어야 합니다.
 
-## 패턴 하나만 실행
+## 패턴 선택
 
 패턴 번호는 0부터 시작합니다. 이 fork에서 ID `27`은 `OneZero256`입니다.
 
@@ -75,6 +75,17 @@ cd /data/local/tmp
 
 lowercase `-p`는 기존 memory block 크기 옵션입니다. 패턴 선택에는 반드시 uppercase `-P`를 사용합니다.
 
+여러 패턴은 쉼표로 연결합니다. 각 Worker가 새 block의 pattern을 선택할 때 목록의 다음 항목을 가져오며, 마지막 항목 다음에는 첫 항목으로 돌아갑니다.
+
+```bash
+./stressapptest \
+  -M 1024 -m 4 -i 4 -s 600 \
+  --printsec 10 \
+  -P OneZero256,FiveA256,walkingOnes128
+```
+
+Pattern 선택 호출 순서는 보존됩니다. 여러 Fill Worker가 block을 병렬로 가져오므로 메모리 주소의 증가 순서와 pattern 순서는 일치하지 않을 수 있습니다. 이 기능은 각 pattern을 일정 시간씩 실행하는 단계 전환 방식이 아니라 block별 순환 배정 방식입니다.
+
 ## DDR 주파수 하나로 고정
 
 OneZero256 패턴을 3196 요청값으로 10분 동안 실행합니다.
@@ -84,7 +95,7 @@ OneZero256 패턴을 3196 요청값으로 10분 동안 실행합니다.
   -M 1024 -m 4 -i 4 -s 600 \
   --printsec 10 \
   -P OneZero256 \
-  --ddr 3196
+  --ddr-freq 3196
 ```
 
 ## 전체 DDR 주파수 sweep
@@ -102,8 +113,7 @@ OneZero256 패턴을 3196 요청값으로 10분 동안 실행합니다.
   -M 1024 -m 4 -i 4 -s 600 \
   --printsec 10 \
   -P OneZero256 \
-  --ddr-sweep all \
-  --ddr-step 3
+  --ddr-freq all
 ```
 
 ## 선택한 DDR 주파수만 sweep
@@ -115,30 +125,31 @@ OneZero256 패턴을 3196 요청값으로 10분 동안 실행합니다.
   -M 1024 -m 4 -i 4 -s 600 \
   --printsec 10 \
   -P OneZero256 \
-  --ddr-sweep 547,1017,2092,3196,5333 \
+  --ddr-freq 547,1017,2092,3196,5333 \
   --ddr-step 3
 ```
 
-`--ddr`와 `--ddr-sweep`은 동시에 사용할 수 없습니다.
+`--ddr-step`은 선택 옵션이며 기본값은 3초입니다. `--ddr-freq`를 생략하면 DDR 제어 기능은 비활성화되고 AOSS node를 열거나 쓰지 않습니다. `--ddr-step`만 지정해도 DDR 주파수는 변경되지 않습니다.
 
 ## 로그 확인
 
-주파수 요청에 성공하면 다음 로그가 기록됩니다. 첫 값은 초기 pattern 기록 전과 Worker 시작 전에 각각 요청되므로 같은 값이 두 번 표시됩니다.
+주파수 값을 AOSS node에 성공적으로 쓰면 다음 로그가 기록됩니다. 초기 pattern 기록 전과 Worker 시작 전에 첫 값을 각각 쓰므로 같은 값이 두 번 표시됩니다.
 
 ```text
-Log: DDR_FREQ request=3196 monotonic_us=... node=/sys/kernel/debug/aoss_send_message
-Log: DDR_FREQ active_request=3196 monotonic_us=...
+Log: DDR_FREQ write=3196 monotonic_us=... node=/sys/kernel/debug/aoss_send_message
 ```
 
-Memory mismatch가 발생하면 처음 잘못된 값을 읽은 시점의 요청 주파수가 같은 오류 record에 저장됩니다.
+Memory mismatch가 발생하면 세 시점의 DDR 값이 같은 오류 record에 저장됩니다.
 
 ```text
-Hardware Error: miscompare on CPU 3(<-1) at ...: read:0x0000000000000000, reread:0xffffffff00000000 expected:0xffffffff00000000. 'OneZero256' read error. ddr_freq:3196(requested).
+Hardware Error: miscompare on CPU 3(<-1) at ...: read:0x0000000000000000, reread:0xffffffff00000000 expected:0xffffffff00000000. 'OneZero256' read error. ddr_freq(write=3196 read=4266 reread=5333).
 ```
 
-`ddr_freq:3196(requested)`는 AOSS에 마지막으로 성공적으로 전달한 요청값입니다. 실제 DDR clock이 3196에 도달했다는 readback 결과는 아닙니다. 제품의 clock readback node가 있다면 별도 계측값과 함께 확인해야 합니다.
+`write`는 해당 block의 expected data를 마지막으로 전체 기록하기 직전에 저장한 값, `read`는 mismatch가 발생한 최초 load 직전에 저장한 값, `reread`는 cache flush 뒤 다시 load하기 직전에 저장한 값입니다. Sweep 전환이 이 동작 사이에 발생하면 세 값이 서로 다를 수 있습니다.
 
-주파수 전환 직후 발생한 오류도 로그 출력 시점의 주파수가 아니라 mismatch를 감지한 시점의 요청값으로 기록됩니다. 따라서 Logger queue가 밀려 나중에 출력되더라도 다음 주파수로 잘못 표시되지 않습니다.
+각 숫자는 AOSS node에 마지막으로 성공적으로 쓴 내부 기록값이며 실제 DDR clock readback 결과가 아닙니다. DDR 제어를 사용하지 않았거나 write metadata가 없는 경로는 `unknown`으로 표시됩니다. 제품의 clock readback node가 있다면 별도 계측값과 함께 확인해야 합니다.
+
+최초 read 뒤에는 한 번의 `CheckRegion()`에서 최대 128개 오류를 먼저 수집하고 각 주소를 순차적으로 reread합니다. 따라서 오류 출력이 많으면 `read`와 `reread` 사이에 다음 3초 sweep 전환이 발생할 수 있습니다. Logger queue에서 출력이 지연되어도 세 값은 각 동작 시점에 이미 record에 저장되어 있습니다.
 
 ## 직접 Android ARM64 빌드
 

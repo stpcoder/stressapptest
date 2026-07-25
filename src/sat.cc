@@ -292,7 +292,7 @@ bool Sat::InitializePatterns() {
     return false;
   }
   if (!pattern_selector_.empty() &&
-      !patternlist_->SetFixedPattern(pattern_selector_)) {
+      !patternlist_->SetPatternSequence(pattern_selector_)) {
     bad_status();
     return false;
   }
@@ -364,6 +364,7 @@ bool Sat::PutEmpty(struct page_entry *pe) {
   if (pe->addr != 0)
     os_->ReleaseTestMem(pe->addr, pe->offset, page_length_);  // Unmap the page.
   pe->addr = 0;
+  pe->write_dram_frequency = -1;
 
   // Put empty page depending on implementation.
   if (pe_q_implementation_ == SAT_FINELOCK)
@@ -880,52 +881,36 @@ bool Sat::ParseArgs(int argc, char **argv) {
     // Set number of seconds to run.
     ARG_IVALUE("-s", runtime_seconds_);
 
-    // Select one pattern by zero-based ID or name.
+    // Select one or more patterns by zero-based ID or name.
     if (!strcmp(argv[i], "-P")) {
       if (++i >= argc) {
-        logprintf(0, "Process Error: -P requires a pattern ID or name\n");
+        logprintf(0,
+                  "Process Error: -P requires IDs or names separated by "
+                  "commas\n");
         return false;
       }
       pattern_selector_ = argv[i];
       continue;
     }
 
-    // Hold one Qualcomm DDR frequency for the complete test.
-    if (!strcmp(argv[i], "--ddr")) {
-      if (++i >= argc) {
-        logprintf(0, "Process Error: --ddr requires one frequency\n");
-        return false;
-      }
-      if (!dram_frequencies_.empty()) {
-        logprintf(0, "Process Error: Use either --ddr or --ddr-sweep\n");
-        return false;
-      }
-      int frequency = 0;
-      if (!ParsePositiveInt(argv[i], &frequency)) {
-        logprintf(0, "Process Error: Invalid DDR frequency '%s'\n", argv[i]);
-        return false;
-      }
-      dram_frequencies_.push_back(frequency);
-      dram_sweep_ = false;
-      continue;
-    }
-
-    // Sweep all known frequencies or a comma-separated selection.
-    if (!strcmp(argv[i], "--ddr-sweep")) {
+    // Hold one Qualcomm DDR frequency, or sweep a list in input order.
+    if (!strcmp(argv[i], "--ddr-freq")) {
       if (++i >= argc) {
         logprintf(0,
-                  "Process Error: --ddr-sweep requires 'all' or a list\n");
+                  "Process Error: --ddr-freq requires one frequency, "
+                  "a comma-separated list, or 'all'\n");
         return false;
       }
       if (!dram_frequencies_.empty()) {
-        logprintf(0, "Process Error: Use either --ddr or --ddr-sweep\n");
+        logprintf(0, "Process Error: --ddr-freq may be specified once\n");
         return false;
       }
       if (!ParseDramFrequencyList(argv[i], &dram_frequencies_)) {
-        logprintf(0, "Process Error: Invalid DDR sweep list '%s'\n", argv[i]);
+        logprintf(0, "Process Error: Invalid --ddr-freq value '%s'\n",
+                  argv[i]);
         return false;
       }
-      dram_sweep_ = true;
+      dram_sweep_ = dram_frequencies_.size() > 1;
       continue;
     }
 
@@ -1236,9 +1221,8 @@ void Sat::PrintHelp() {
          " reserve for the system\n"
          " -H mbytes        minimum megabytes of hugepages to require\n"
          " -s seconds       number of seconds to run\n"
-         " -P id|name       use only one pattern (zero-based ID or name)\n"
-         " --ddr freq       hold one Qualcomm DDR frequency\n"
-         " --ddr-sweep list sweep 'all' or comma-separated DDR frequencies\n"
+         " -P list          pattern IDs or names, used in the given order\n"
+         " --ddr-freq list  hold one frequency or sweep 'all'/comma list\n"
          " --ddr-step secs  seconds per sweep frequency (default 3)\n"
          " --ddr-node path  Qualcomm AOSS message node\n"
          " -m threads       number of memory copy threads to run\n"
@@ -1641,8 +1625,8 @@ int Sat::ReadInt(const char *filename, int *value) {
   return err;
 }
 
-// Submit one fixed DDR frequency request through Qualcomm's AOSS debugfs
-// message interface.  A successful write records the requested frequency so
+// Submit one fixed DDR frequency through Qualcomm's AOSS debugfs message
+// interface. A successful write records the selected frequency so
 // memory errors can capture it at the time of the first mismatching read.
 bool Sat::ApplyDramFrequency(int frequency) {
   char message[128];
@@ -1656,10 +1640,6 @@ bool Sat::ApplyDramFrequency(int frequency) {
     return false;
   }
 
-  logprintf(5,
-            "Log: DDR_FREQ request=%d monotonic_us=%lld node=%s\n",
-            frequency, sat_get_time_us(), dram_frequency_node_.c_str());
-
   int open_flags = O_WRONLY;
 #ifdef O_CLOEXEC
   open_flags |= O_CLOEXEC;
@@ -1667,7 +1647,7 @@ bool Sat::ApplyDramFrequency(int frequency) {
   int fd = open(dram_frequency_node_.c_str(), open_flags);
   if (fd < 0) {
     logprintf(0,
-              "Process Error: DDR_FREQ open failed: request=%d node=%s "
+              "Process Error: DDR_FREQ open failed: value=%d node=%s "
               "errno=%d (%s)\n",
               frequency, dram_frequency_node_.c_str(), errno,
               strerror(errno));
@@ -1682,7 +1662,7 @@ bool Sat::ApplyDramFrequency(int frequency) {
   int close_result = close(fd);
   if (written != message_length) {
     logprintf(0,
-              "Process Error: DDR_FREQ write failed: request=%d node=%s "
+              "Process Error: DDR_FREQ write failed: value=%d node=%s "
               "written=%lld expected=%d errno=%d (%s)\n",
               frequency, dram_frequency_node_.c_str(),
               static_cast<int64>(written), message_length, write_errno,
@@ -1691,7 +1671,7 @@ bool Sat::ApplyDramFrequency(int frequency) {
   }
   if (close_result != 0) {
     logprintf(0,
-              "Process Error: DDR_FREQ close failed: request=%d node=%s "
+              "Process Error: DDR_FREQ close failed: value=%d node=%s "
               "errno=%d (%s)\n",
               frequency, dram_frequency_node_.c_str(), errno,
               strerror(errno));
@@ -1699,8 +1679,8 @@ bool Sat::ApplyDramFrequency(int frequency) {
   }
 
   current_dram_frequency_.store(frequency, std::memory_order_release);
-  logprintf(5, "Log: DDR_FREQ active_request=%d monotonic_us=%lld\n",
-            frequency, sat_get_time_us());
+  logprintf(5, "Log: DDR_FREQ write=%d monotonic_us=%lld node=%s\n",
+            frequency, sat_get_time_us(), dram_frequency_node_.c_str());
   return true;
 }
 
@@ -2243,7 +2223,7 @@ bool Sat::Run() {
 
   if (current_dram_frequency() >= 0) {
     logprintf(5,
-              "Log: DDR_FREQ retained_request=%d after test completion\n",
+              "Log: DDR_FREQ retained=%d after test completion\n",
               current_dram_frequency());
   }
 

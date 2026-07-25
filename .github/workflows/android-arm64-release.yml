@@ -45,7 +45,7 @@ jobs:
             ./configure --disable-default-optimizations
           make -j"$(nproc)"
 
-      - name: Verify pattern selection and DDR sweep options
+      - name: Verify pattern sequence and DDR frequency options
         shell: bash
         run: |
           set -euo pipefail
@@ -54,26 +54,31 @@ jobs:
 
           ./src/stressapptest \
             -M 64 -m 1 -i 0 -s 3 -A --no_errors -v 5 \
-            -P 27 \
-            --ddr-sweep 547,768 \
+            -P 27,FiveA256 \
+            --ddr-freq 547,768 \
             --ddr-step 1 \
             --ddr-node "${ddr_node}" \
             | tee "${RUNNER_TEMP}/numeric-pattern.log"
 
-          grep -q "Fixed pattern: id=27 name=OneZero256" \
+          grep -q "Pattern sequence\[0\] id=27 name=OneZero256" \
             "${RUNNER_TEMP}/numeric-pattern.log"
-          grep -q "DDR_FREQ active_request=547" \
+          grep -q "Pattern sequence\[1\] id=67 name=FiveA256" \
             "${RUNNER_TEMP}/numeric-pattern.log"
-          grep -q "DDR_FREQ active_request=768" \
+          grep -q "DDR_FREQ write=547" \
+            "${RUNNER_TEMP}/numeric-pattern.log"
+          grep -q "DDR_FREQ write=768" \
             "${RUNNER_TEMP}/numeric-pattern.log"
 
           ./src/stressapptest \
             -M 64 -m 1 -i 0 -s 1 -A --no_errors -v 5 \
             -P OneZero256 \
+            --ddr-step 1 \
+            --ddr-node "${RUNNER_TEMP}/unused-aoss-node" \
             | tee "${RUNNER_TEMP}/named-pattern.log"
 
-          grep -q "Fixed pattern: id=27 name=OneZero256" \
+          grep -q "Pattern sequence\[0\] id=27 name=OneZero256" \
             "${RUNNER_TEMP}/named-pattern.log"
+          test ! -e "${RUNNER_TEMP}/unused-aoss-node"
 
       - name: Install pinned Android NDK
         shell: bash

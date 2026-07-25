@@ -4,34 +4,45 @@
 
 ## 이 fork의 통합 DDR 로그
 
-외부 script 대신 다음 옵션을 사용하면 stressapptest가 Qualcomm AOSS node에 직접 fixed DDR 요청을 전달합니다.
+외부 script 대신 다음 옵션을 사용하면 stressapptest가 Qualcomm AOSS node에 직접 fixed DDR 값을 전달합니다.
 
 ```bash
 # 한 주파수 고정
 stressapptest -M 1024 -m 4 -i 4 -s 600 \
-  -P OneZero256 --ddr 3196
+  -P OneZero256 --ddr-freq 3196
 
 # 전체 주파수 3초 sweep
 stressapptest -M 1024 -m 4 -i 4 -s 600 \
-  -P OneZero256 --ddr-sweep all --ddr-step 3
+  -P OneZero256 --ddr-freq all
 ```
 
-주파수 요청 로그는 다음 두 단계로 구분됩니다.
+`--ddr-freq` 뒤에 값 하나를 쓰면 고정하고, `all` 또는 쉼표 목록을 쓰면 순서대로 sweep합니다. `--ddr-step`은 선택 옵션이며 기본값은 3초입니다. `--ddr-freq`를 생략하면 AOSS node에 접근하지 않습니다.
+
+주파수 값을 AOSS node에 성공적으로 쓰면 다음 로그를 기록합니다.
 
 ```text
-Log: DDR_FREQ request=3196 monotonic_us=... node=/sys/kernel/debug/aoss_send_message
-Log: DDR_FREQ active_request=3196 monotonic_us=...
+Log: DDR_FREQ write=3196 monotonic_us=... node=/sys/kernel/debug/aoss_send_message
 ```
 
-`request`는 쓰기를 시도하기 직전이고 `active_request`는 debugfs node에 전체 메시지를 쓴 직후입니다. `active_request`는 hardware readback이 아니라 마지막으로 성공한 요청값입니다.
+`write`는 전체 메시지 쓰기가 성공한 직후에 기록됩니다. Hardware readback이 아니라 프로그램이 마지막으로 성공적으로 쓴 값입니다.
 
-`CheckRegion()`은 첫 mismatching read를 발견할 때 현재 요청값을 오류 record에 함께 저장합니다. 따라서 Logger queue에서 출력이 지연되고 다음 주파수로 전환되더라도 오류 로그에는 검출 시점의 값이 유지됩니다.
+오류 record는 expected data의 마지막 whole-block write, 첫 mismatching read, cache flush 뒤의 reread 시점 값을 각각 저장합니다.
 
 ```text
-Hardware Error: ... read:0x..., reread:0x... expected:0x.... 'OneZero256' read error. ddr_freq:3196(requested).
+Hardware Error: ... read:0x..., reread:0x... expected:0x.... 'OneZero256' read error. ddr_freq(write=3196 read=4266 reread=5333).
 ```
 
-이 값은 실제 DDR clock 측정값이 아닙니다. 제품에 readback node가 있으면 같은 시간축의 측정값과 함께 확인해야 합니다.
+| 필드 | 저장 시점 |
+|---|---|
+| `write` | 해당 block을 pattern fill, copy, invert, file read 또는 network receive로 마지막 전체 기록하기 직전 |
+| `read` | `CheckRegion()`이 잘못된 actual 값을 읽기 직전 |
+| `reread` | `ProcessError()`가 해당 주소의 cache flush를 호출한 뒤 다시 읽기 직전 |
+
+Pattern fill과 최초 read 사이에 여러 sweep 전환이 발생할 수 있으므로 `write`와 `read`가 달라질 수 있습니다. `CheckRegion()`은 한 번에 최대 128개의 오류 record를 저장한 뒤 각 주소를 순차 처리하므로, 오류가 많으면 최초 read와 reread 사이에도 다음 sweep 전환이 발생할 수 있습니다.
+
+세 값은 각 동작 시점에 record에 저장되므로 Logger queue에서 출력이 지연되어도 출력 시점의 값으로 바뀌지 않습니다. `unknown`은 DDR 옵션을 사용하지 않았거나 해당 write 경로의 metadata가 없다는 뜻입니다.
+
+이 값은 실제 DDR clock 측정값이 아닙니다. 프로그램이 AOSS node에 성공적으로 쓴 마지막 값을 기록합니다. 제품에 readback node가 있으면 같은 시간축의 측정값과 함께 확인해야 합니다.
 
 ## 먼저 구분해야 하는 시각
 
@@ -237,6 +248,7 @@ at 0x7abc0000(0x12340000:DIMM Unknown):
 read:0x00000000ffffffff,
 reread:0xffffffff00000000
 expected:0xffffffff00000000. 'OneZero128' read error.
+ddr_freq(write=3196 read=4266 reread=5333).
 ```
 
 | 필드 | 의미 |
@@ -250,6 +262,9 @@ expected:0xffffffff00000000. 'OneZero128' read error.
 | `expected` | pattern에서 계산한 기대값 |
 | `OneZero128` | 검사한 block에 지정된 기대 pattern |
 | `read error` | `reread == expected`일 때 추가되는 분류 문자열 |
+| `ddr_freq(write=...)` | expected data를 해당 block에 마지막으로 전체 기록하기 직전의 내부 DDR 값 |
+| `ddr_freq(read=...)` | 최초 mismatch load 직전의 내부 DDR 값 |
+| `ddr_freq(reread=...)` | cache flush 호출 뒤 reread load 직전의 내부 DDR 값 |
 
 `lastcpu`는 software가 기록한 마지막 writer CPU 후보입니다. CPU migration, vendor 수정, DMA와 다른 device의 접근을 포함하는 hardware trace가 아니므로 보조 정보로 사용합니다.
 
@@ -260,7 +275,10 @@ Physical address가 `0`, 제한된 값 또는 `DIMM Unknown`으로 표시되면 
 `ProcessError()`는 불일치가 발견된 주소에 대해 다음 순서로 처리합니다.
 
 ```text
-OsLayer::Flush(vaddr)
+최초 mismatch load 직전에 read 주파수 저장
+ → ErrorRecord에 actual·expected·write·read 저장
+ → OsLayer::Flush(vaddr)
+ → reread 주파수 저장
  → 같은 주소를 reread
  → physical address와 위치 문자열 계산
  → 오류 로그 기록
@@ -338,7 +356,7 @@ DRAM frequency 변경 interface는 AOSP 공통 규격이 아닙니다. Qualcomm,
 주파수 변경 script는 최소한 다음 세 상태를 기록합니다.
 
 ```text
-REQUEST: 변경 command를 쓰기 직전
+COMMAND: 변경 command를 쓰기 직전
 WRITE_DONE: control node의 write가 반환된 직후
 READBACK: 실제 또는 요청 상태를 읽은 결과
 ```
@@ -361,7 +379,7 @@ stamp() {
 apply_frequency() {
     freq="$1"
 
-    printf '%s REQUEST freq=%s\n' \
+    printf '%s COMMAND freq=%s\n' \
         "$(stamp)" "$freq" >> "$FREQ_LOG"
 
     # Target의 실제 vendor command 형식으로 교체합니다.
@@ -372,7 +390,7 @@ apply_frequency() {
         "$(stamp)" "$freq" "$write_rc" >> "$FREQ_LOG"
 
     actual=$(cat "$READBACK_NODE" 2>/dev/null)
-    printf '%s READBACK request=%s value=%s\n' \
+    printf '%s READBACK selected=%s value=%s\n' \
         "$(stamp)" "$freq" "$actual" >> "$FREQ_LOG"
 }
 
@@ -405,15 +423,15 @@ Stressapptest 기본 timestamp는 초 단위입니다. 3초 전환 시험에서�
 
 ```text
 이전 주파수 안정 구간
- → REQUEST
+ → COMMAND
  → WRITE_DONE
  → READBACK
  → settling 구간
  → 현재 주파수 안정 구간
- → 다음 REQUEST
+ → 다음 COMMAND
 ```
 
-오류 timestamp가 `REQUEST` 전후 또는 settling 구간에 있으면 `transition-associated`로 분류합니다. 현재 주파수가 충분히 안정된 구간 안에 있는 경우에만 해당 고정 주파수와의 연관성을 평가합니다.
+오류 timestamp가 `COMMAND` 전후 또는 settling 구간에 있으면 `transition-associated`로 분류합니다. 현재 주파수가 충분히 안정된 구간 안에 있는 경우에만 해당 고정 주파수와의 연관성을 평가합니다.
 
 3초 간격이 hardware 전환 시간과 software detection latency에 비해 짧으면 failure가 어느 주파수에서 생성되었는지 분리하기 어렵습니다. 다음 두 시험을 별도로 수행합니다.
 
@@ -430,7 +448,7 @@ Stressapptest 기본 timestamp는 초 단위입니다. 3초 전환 시험에서�
 ### 주파수 전환 시험
 
 - 기존 3초 cycle을 별도 시험으로 유지
-- REQUEST·READBACK·settling 구간 기록
+- COMMAND·READBACK·settling 구간 기록
 - 낮은 주파수→높은 주파수와 높은 주파수→낮은 주파수 구분
 - 동일한 전환 방향에서 failure가 반복되는지 확인
 - 고정 주파수에서는 통과하고 전환 구간에서만 실패하는지 확인

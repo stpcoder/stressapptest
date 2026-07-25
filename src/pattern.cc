@@ -329,11 +329,11 @@ int Pattern::Initialize(const struct PatternData &pattern_init,
 }
 
 
-PatternList::PatternList() {
-  size_= 0;
-  initialized_ = 0;
-  fixed_pattern_id_ = -1;
-}
+PatternList::PatternList()
+    : weightcount_(0),
+      size_(0),
+      initialized_(0),
+      selected_pattern_cursor_(0) {}
 
 PatternList::~PatternList() {
   if (initialized_) {
@@ -391,9 +391,10 @@ int PatternList::Destroy() {
     return 0;
 
   patterns_.clear();
+  selected_pattern_ids_.clear();
+  selected_pattern_cursor_.store(0, std::memory_order_relaxed);
   size_ = 0;
   initialized_ = 0;
-  fixed_pattern_id_ = -1;
 
   return 1;
 }
@@ -408,47 +409,81 @@ Pattern *PatternList::GetPattern(int i) {
   return 0;
 }
 
-// Select a single pattern by zero-based numeric ID or pattern name.
-bool PatternList::SetFixedPattern(const string &selector) {
-  if (!initialized_ || selector.empty())
+// Select patterns by zero-based numeric ID or pattern name. Multiple entries
+// are consumed in the same order as the comma-separated command-line list.
+bool PatternList::SetPatternSequence(const string &selectors) {
+  if (!initialized_ || selectors.empty())
     return false;
 
-  errno = 0;
-  char *end = NULL;
-  long pattern_id = strtol(selector.c_str(), &end, 10);
-  if (errno == 0 && end != selector.c_str() && *end == '\0') {
-    if (pattern_id < 0 || pattern_id > INT_MAX ||
-        static_cast<unsigned int>(pattern_id) >= size_) {
-      logprintf(0,
-                "Process Error: Pattern ID %s is outside the valid range "
-                "0-%d\n",
-                selector.c_str(), static_cast<int>(size_) - 1);
+  vector<int> selected_ids;
+  size_t start = 0;
+  while (start <= selectors.size()) {
+    size_t comma = selectors.find(',', start);
+    string selector = selectors.substr(
+        start, comma == string::npos ? string::npos : comma - start);
+    size_t first = selector.find_first_not_of(" \t");
+    size_t last = selector.find_last_not_of(" \t");
+    if (first == string::npos) {
+      logprintf(0, "Process Error: Empty pattern in -P list\n");
       return false;
     }
-    fixed_pattern_id_ = static_cast<int>(pattern_id);
-  } else {
-    fixed_pattern_id_ = -1;
-    for (unsigned int i = 0; i < size_; ++i) {
-      if (strcasecmp(selector.c_str(), patterns_[i].name()) == 0) {
-        fixed_pattern_id_ = static_cast<int>(i);
-        break;
+    selector = selector.substr(first, last - first + 1);
+
+    int selected_id = -1;
+    errno = 0;
+    char *end = NULL;
+    long pattern_id = strtol(selector.c_str(), &end, 10);
+    if (errno == 0 && end != selector.c_str() && *end == '\0') {
+      if (pattern_id < 0 || pattern_id > INT_MAX ||
+          static_cast<unsigned int>(pattern_id) >= size_) {
+        logprintf(0,
+                  "Process Error: Pattern ID %s is outside the valid range "
+                  "0-%d\n",
+                  selector.c_str(), static_cast<int>(size_) - 1);
+        return false;
+      }
+      selected_id = static_cast<int>(pattern_id);
+    } else {
+      for (unsigned int i = 0; i < size_; ++i) {
+        if (strcasecmp(selector.c_str(), patterns_[i].name()) == 0) {
+          selected_id = static_cast<int>(i);
+          break;
+        }
       }
     }
-    if (fixed_pattern_id_ < 0) {
+
+    if (selected_id < 0) {
       logprintf(0, "Process Error: Unknown pattern '%s'\n", selector.c_str());
       return false;
     }
+    selected_ids.push_back(selected_id);
+
+    if (comma == string::npos)
+      break;
+    start = comma + 1;
   }
 
-  logprintf(5, "Log: Fixed pattern: id=%d name=%s\n",
-            fixed_pattern_id_, patterns_[fixed_pattern_id_].name());
+  selected_pattern_ids_.swap(selected_ids);
+  selected_pattern_cursor_.store(0, std::memory_order_relaxed);
+  logprintf(5, "Log: Pattern sequence count=%d\n",
+            static_cast<int>(selected_pattern_ids_.size()));
+  for (unsigned int i = 0; i < selected_pattern_ids_.size(); ++i) {
+    int pattern_id = selected_pattern_ids_[i];
+    logprintf(5, "Log: Pattern sequence[%d] id=%d name=%s\n",
+              i, pattern_id, patterns_[pattern_id].name());
+  }
   return true;
 }
 
 // Return a randomly selected pattern.
 Pattern *PatternList::GetRandomPattern() {
-  if (fixed_pattern_id_ >= 0)
-    return &patterns_[fixed_pattern_id_];
+  if (!selected_pattern_ids_.empty()) {
+    unsigned int cursor = selected_pattern_cursor_.fetch_add(
+        1, std::memory_order_relaxed);
+    int pattern_id =
+        selected_pattern_ids_[cursor % selected_pattern_ids_.size()];
+    return &patterns_[pattern_id];
+  }
 
   int target = random();
   unsigned int i = 0;

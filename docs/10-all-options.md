@@ -40,10 +40,10 @@ ARG_IVALUE("-c", check_threads_);
 
 | 옵션 | 기본값 | 동작 |
 |---|---:|---|
-| `-P <ID\|이름>` | 무작위 선택 | 0부터 시작하는 ID 또는 pattern 이름으로 하나의 pattern만 선택 |
-| `--ddr <주파수>` | 사용 안 함 | 초기 pattern 기록 전과 Worker 시작 전에 Qualcomm AOSS fixed DDR 요청 전송 |
-| `--ddr-sweep all` | 사용 안 함 | 등록된 전체 DDR 주파수를 순서대로 반복 |
-| `--ddr-sweep <a,b,...>` | 사용 안 함 | 지정한 주파수만 순서대로 반복 |
+| `-P <ID\|이름[,ID\|이름...]>` | 무작위 선택 | 하나 또는 여러 pattern을 지정하고 block 선택마다 입력 순서로 순환 |
+| `--ddr-freq <주파수>` | 사용 안 함 | 하나의 Qualcomm DDR 주파수 유지 |
+| `--ddr-freq all` | 사용 안 함 | 등록된 전체 DDR 주파수를 순서대로 반복 |
+| `--ddr-freq <a,b,...>` | 사용 안 함 | 지정한 주파수만 입력 순서대로 반복 |
 | `--ddr-step <seconds>` | 3 | sweep 주파수 전환 간격 |
 | `--ddr-node <path>` | `/sys/kernel/debug/aoss_send_message` | Qualcomm AOSS debugfs node 변경 |
 
@@ -51,10 +51,10 @@ ID `27`과 이름 `OneZero256`은 같은 pattern을 선택합니다. lowercase `
 
 ```bash
 stressapptest -M 1024 -m 4 -i 4 -s 600 \
-  -P OneZero256 --ddr-sweep all --ddr-step 3
+  -P OneZero256,FiveA256 --ddr-freq all
 ```
 
-`--ddr`와 `--ddr-sweep`은 동시에 사용할 수 없습니다. DDR 요청을 사용하려면 해당 debugfs node의 쓰기 권한과 SELinux 허용이 필요합니다.
+`--ddr-step`을 생략하면 3초마다 다음 값으로 전환합니다. `--ddr-freq`를 생략하면 DDR 제어 기능은 비활성화되며 `--ddr-step`이나 `--ddr-node`만 지정해도 node를 열거나 쓰지 않습니다. DDR 제어를 사용하려면 해당 debugfs node의 쓰기 권한과 SELinux 허용이 필요합니다.
 
 ## 메모리 크기와 실행 시간
 

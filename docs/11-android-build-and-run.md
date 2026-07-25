@@ -129,6 +129,27 @@ adb shell /data/local/tmp/stressapptest --help
 adb shell '/data/local/tmp/stressapptest -M 256 -s 30 -m 2 -v 8'
 ```
 
+특정 pattern과 DDR 주파수 sweep을 함께 사용할 때에는 다음 형식을 사용합니다.
+
+```bash
+adb shell '/data/local/tmp/stressapptest \
+  -M 1024 -m 4 -i 4 -s 600 --printsec 10 \
+  -P OneZero256,FiveA256 \
+  --ddr-freq all'
+```
+
+`-P`에 여러 pattern을 쓰면 새 block의 pattern을 선택할 때 입력 순서대로 순환합니다. `--ddr-freq all`은 내장된 전체 목록을 순환하며 기본 전환 간격은 3초입니다. 다른 간격이 필요할 때만 `--ddr-step <초>`를 추가합니다.
+
+```bash
+adb shell '/data/local/tmp/stressapptest \
+  -M 1024 -m 4 -i 4 -s 600 \
+  -P OneZero256 \
+  --ddr-freq 547,1017,2092,3196,5333 \
+  --ddr-step 5'
+```
+
+`--ddr-freq 3196`처럼 값 하나만 지정하면 sweep하지 않고 같은 값을 유지합니다. `--ddr-freq`를 지정하지 않으면 AOSS node에 접근하지 않습니다.
+
 초기 결과와 시스템 상태를 확인한 뒤 다음 순서로 부하를 늘립니다.
 
 ```text

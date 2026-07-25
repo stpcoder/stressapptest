@@ -428,6 +428,7 @@ bool FineLockPEQueue::PutEmpty(struct page_entry *pe) {
   pages_[index] = *pe;
   // Enforce that page entry is indeed empty.
   pages_[index].pattern = 0;
+  pages_[index].write_dram_frequency = -1;
   return (pthread_mutex_unlock(&(pagelocks_[index])) == 0);
 }
 

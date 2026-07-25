@@ -120,7 +120,9 @@ struct ErrorRecord {
         tagpaddr(0),
         lastcpu(0),
         patternname(NULL),
-        dram_frequency(-1) {}
+        write_dram_frequency(-1),
+        read_dram_frequency(-1),
+        reread_dram_frequency(-1) {}
 
   uint64 actual;  // This is the actual value read.
   uint64 reread;  // This is the actual value, reread.
@@ -132,22 +134,36 @@ struct ErrorRecord {
   uint64 tagpaddr;  // This holds the physical address corresponding to the tag.
   uint32 lastcpu;  // This holds the CPU recorded as probably writing this data.
   const char *patternname;  // This holds the pattern name of the expected data.
-  // Qualcomm DDR frequency request captured at the first mismatching read.
-  int dram_frequency;
+  // DDR values captured at the latest whole-block write, first mismatching
+  // read, and cache-flushed reread.
+  int write_dram_frequency;
+  int read_dram_frequency;
+  int reread_dram_frequency;
 };
 
-static void FormatDramFrequency(class Sat *sat,
-                                struct ErrorRecord *error,
-                                char *buffer,
-                                size_t buffer_size) {
-  int frequency = error->dram_frequency;
-  if (frequency < 0)
-    frequency = sat->current_dram_frequency();
-  if (frequency >= 0) {
-    snprintf(buffer, buffer_size, "%d(requested)", frequency);
-  } else {
-    snprintf(buffer, buffer_size, "uncontrolled");
-  }
+static void FormatDramFrequencyValue(int frequency,
+                                     char *buffer,
+                                     size_t buffer_size) {
+  if (frequency >= 0)
+    snprintf(buffer, buffer_size, "%d", frequency);
+  else
+    snprintf(buffer, buffer_size, "unknown");
+}
+
+static void FormatDramFrequencies(struct ErrorRecord *error,
+                                  char *buffer,
+                                  size_t buffer_size) {
+  char write_frequency[32];
+  char read_frequency[32];
+  char reread_frequency[32];
+  FormatDramFrequencyValue(error->write_dram_frequency,
+                           write_frequency, sizeof(write_frequency));
+  FormatDramFrequencyValue(error->read_dram_frequency,
+                           read_frequency, sizeof(read_frequency));
+  FormatDramFrequencyValue(error->reread_dram_frequency,
+                           reread_frequency, sizeof(reread_frequency));
+  snprintf(buffer, buffer_size, "write=%s read=%s reread=%s",
+           write_frequency, read_frequency, reread_frequency);
 }
 
 // This is a helper function to create new threads with pthreads.
@@ -508,6 +524,8 @@ bool WorkerThread::FillPage(struct page_entry *pe) {
     return 0;
   }
 
+  int write_dram_frequency = sat_->current_dram_frequency();
+
   // Tag this page as written from the current CPU.
   pe->lastcpu = sched_getcpu();
 
@@ -540,6 +558,7 @@ bool WorkerThread::FillPage(struct page_entry *pe) {
     }
   }
 
+  pe->write_dram_frequency = write_dram_frequency;
   return 1;
 }
 
@@ -622,14 +641,15 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
                                 int priority,
                                 const char *message) {
   char dimm_string[256] = "";
-  char dram_frequency[64];
-  FormatDramFrequency(sat_, error, dram_frequency, sizeof(dram_frequency));
+  char dram_frequencies[128];
 
   int core_id = sched_getcpu();
 
   // Determine if this is a write or read error.
   os_->Flush(error->vaddr);
+  error->reread_dram_frequency = sat_->current_dram_frequency();
   error->reread = *(error->vaddr);
+  FormatDramFrequencies(error, dram_frequencies, sizeof(dram_frequencies));
 
   char *good = reinterpret_cast<char*>(&(error->expected));
   char *bad = reinterpret_cast<char*>(&(error->actual));
@@ -659,7 +679,7 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
     logprintf(priority,
               "%s: miscompare on CPU %d(<-%d) at %p(0x%llx:%s): "
               "read:0x%016llx, reread:0x%016llx expected:0x%016llx. "
-              "'%s'%s. ddr_freq:%s.\n",
+              "'%s'%s. ddr_freq(%s).\n",
               message,
               core_id,
               error->lastcpu,
@@ -671,7 +691,7 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
               error->expected,
               (error->patternname) ? error->patternname : "None",
               (error->reread == error->expected) ? " read error" : "",
-              dram_frequency);
+              dram_frequencies);
   }
 
 
@@ -688,12 +708,13 @@ void FileThread::ProcessError(struct ErrorRecord *error,
                               int priority,
                               const char *message) {
   char dimm_string[256] = "";
-  char dram_frequency[64];
-  FormatDramFrequency(sat_, error, dram_frequency, sizeof(dram_frequency));
+  char dram_frequencies[128];
 
   // Determine if this is a write or read error.
   os_->Flush(error->vaddr);
+  error->reread_dram_frequency = sat_->current_dram_frequency();
   error->reread = *(error->vaddr);
+  FormatDramFrequencies(error, dram_frequencies, sizeof(dram_frequencies));
 
   char *good = reinterpret_cast<char*>(&(error->expected));
   char *bad = reinterpret_cast<char*>(&(error->actual));
@@ -732,7 +753,7 @@ void FileThread::ProcessError(struct ErrorRecord *error,
 
   logprintf(priority,
             "%s: miscompare on %s at %p(0x%llx:%s): read:0x%016llx, "
-            "reread:0x%016llx expected:0x%016llx. '%s'. ddr_freq:%s.\n",
+            "reread:0x%016llx expected:0x%016llx. '%s'. ddr_freq(%s).\n",
             message,
             devicename_.c_str(),
             error->vaddr,
@@ -742,7 +763,7 @@ void FileThread::ProcessError(struct ErrorRecord *error,
             error->reread,
             error->expected,
             (error->patternname) ? error->patternname : "None",
-            dram_frequency);
+            dram_frequencies);
 
   // Overwrite incorrect data with correct data to prevent
   // future miscompares when this data is reused.
@@ -758,7 +779,8 @@ int WorkerThread::CheckRegion(void *addr,
                               uint32 lastcpu,
                               int64 length,
                               int offset,
-                              int64 pattern_offset) {
+                              int64 pattern_offset,
+                              int write_dram_frequency) {
   uint64 *memblock = static_cast<uint64*>(addr);
   const int kErrorLimit = 128;
   int errors = 0;
@@ -770,7 +792,7 @@ int WorkerThread::CheckRegion(void *addr,
 
   // For each word in the data region.
   for (int i = 0; i < length / wordsize_; i++) {
-    int dram_frequency = sat_->current_dram_frequency();
+    int read_dram_frequency = sat_->current_dram_frequency();
     uint64 actual = memblock[i];
     uint64 expected;
 
@@ -794,7 +816,8 @@ int WorkerThread::CheckRegion(void *addr,
         recorded[errors].vaddr = &memblock[i];
         recorded[errors].patternname = pattern->name();
         recorded[errors].lastcpu = lastcpu;
-        recorded[errors].dram_frequency = dram_frequency;
+        recorded[errors].write_dram_frequency = write_dram_frequency;
+        recorded[errors].read_dram_frequency = read_dram_frequency;
         errors++;
       } else {
         page_error = true;
@@ -900,7 +923,7 @@ int WorkerThread::CheckRegion(void *addr,
   if (page_error) {
     // For each word in the data region.
     for (int i = 0; i < length / wordsize_; i++) {
-      int dram_frequency = sat_->current_dram_frequency();
+      int read_dram_frequency = sat_->current_dram_frequency();
       uint64 actual = memblock[i];
       uint64 expected;
       datacast_t data;
@@ -925,7 +948,8 @@ int WorkerThread::CheckRegion(void *addr,
         er.vaddr = &memblock[i];
         er.patternname = pattern->name();
         er.lastcpu = lastcpu;
-        er.dram_frequency = dram_frequency;
+        er.write_dram_frequency = write_dram_frequency;
+        er.read_dram_frequency = read_dram_frequency;
 
         // Do the error printout. This will take a long time and
         // likely change the machine state.
@@ -974,7 +998,8 @@ int WorkerThread::CrcCheckPage(struct page_entry *srcpe) {
                                    srcpe->pattern,
                                    srcpe->lastcpu,
                                    blocksize,
-                                   currentblock * blocksize, 0);
+                                   currentblock * blocksize, 0,
+                                   srcpe->write_dram_frequency);
       if (errorcount == 0) {
         logprintf(0, "Log: CrcCheckPage CRC mismatch %s != %s, "
                      "but no miscompares found.\n",
@@ -993,7 +1018,8 @@ int WorkerThread::CrcCheckPage(struct page_entry *srcpe) {
                           srcpe->pattern,
                           srcpe->lastcpu,
                           leftovers,
-                          blocks * blocksize, 0);
+                          blocks * blocksize, 0,
+                          srcpe->write_dram_frequency);
   }
   return errors;
 }
@@ -1005,15 +1031,16 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
                                    const char *message) {
   char dimm_string[256] = "";
   char tag_dimm_string[256] = "";
-  char dram_frequency[64];
-  FormatDramFrequency(sat_, error, dram_frequency, sizeof(dram_frequency));
+  char dram_frequencies[128];
   bool read_error = false;
 
   int core_id = sched_getcpu();
 
   // Determine if this is a write or read error.
   os_->Flush(error->vaddr);
+  error->reread_dram_frequency = sat_->current_dram_frequency();
   error->reread = *(error->vaddr);
+  FormatDramFrequencies(error, dram_frequencies, sizeof(dram_frequencies));
 
   // Distinguish read and write errors.
   if (error->actual != error->reread) {
@@ -1039,7 +1066,7 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
               "%s: Tag from %p(0x%llx:%s) (%s) "
               "miscompare on CPU %d(0x%s) at %p(0x%llx:%s): "
               "read:0x%016llx, reread:0x%016llx expected:0x%016llx. "
-              "ddr_freq:%s.\n",
+              "ddr_freq(%s).\n",
               message,
               error->tagvaddr, error->tagpaddr,
               tag_dimm_string,
@@ -1052,7 +1079,7 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
               error->actual,
               error->reread,
               error->expected,
-              dram_frequency);
+              dram_frequencies);
   }
 
   errorcount_ += 1;
@@ -1068,13 +1095,16 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
 bool WorkerThread::ReportTagError(
     uint64 *mem64,
     uint64 actual,
-    uint64 tag) {
+    uint64 tag,
+    int write_dram_frequency,
+    int read_dram_frequency) {
   struct ErrorRecord er;
   er.actual = actual;
 
   er.expected = tag;
   er.vaddr = mem64;
-  er.dram_frequency = sat_->current_dram_frequency();
+  er.write_dram_frequency = write_dram_frequency;
+  er.read_dram_frequency = read_dram_frequency;
 
   // Generate vaddr from tag.
   er.tagvaddr = reinterpret_cast<uint64*>(actual);
@@ -1110,15 +1140,19 @@ bool WorkerThread::AdlerAddrMemcpyC(uint64 *dstmem64,
   while (i < count) {
     // Process 64 bits at a time.
     if ((i & 0x7) == 0) {
+      int src_read_frequency = sat_->current_dram_frequency();
       data.l64 = srcmem64[i];
+      int dst_read_frequency = sat_->current_dram_frequency();
       dstdata.l64 = dstmem64[i];
       uint64 src_tag = addr_to_tag(&srcmem64[i]);
       uint64 dst_tag = addr_to_tag(&dstmem64[i]);
       // Detect if tags have been corrupted.
       if (data.l64 != src_tag)
-        ReportTagError(&srcmem64[i], data.l64, src_tag);
+        ReportTagError(&srcmem64[i], data.l64, src_tag,
+                       pe->write_dram_frequency, src_read_frequency);
       if (dstdata.l64 != dst_tag)
-        ReportTagError(&dstmem64[i], dstdata.l64, dst_tag);
+        ReportTagError(&dstmem64[i], dstdata.l64, dst_tag,
+                       -1, dst_read_frequency);
 
       data.l32.l = pattern->pattern(i << 1);
       data.l32.h = pattern->pattern((i << 1) + 1);
@@ -1224,11 +1258,13 @@ bool WorkerThread::AdlerAddrCrcC(uint64 *srcmem64,
   while (i < count) {
     // Process 64 bits at a time.
     if ((i & 0x7) == 0) {
+      int read_dram_frequency = sat_->current_dram_frequency();
       data.l64 = srcmem64[i];
       uint64 src_tag = addr_to_tag(&srcmem64[i]);
       // Check that tags match expected.
       if (data.l64 != src_tag)
-        ReportTagError(&srcmem64[i], data.l64, src_tag);
+        ReportTagError(&srcmem64[i], data.l64, src_tag,
+                       pe->write_dram_frequency, read_dram_frequency);
 
       data.l32.l = pattern->pattern(i << 1);
       data.l32.h = pattern->pattern((i << 1) + 1);
@@ -1261,6 +1297,7 @@ bool WorkerThread::AdlerAddrCrcC(uint64 *srcmem64,
 int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
                               struct page_entry *srcpe) {
   int errors = 0;
+  int destination_write_frequency = sat_->current_dram_frequency();
   const int blocksize = 4096;
   const int blockwords = blocksize / wordsize_;
   int blocks = sat_->page_length() / blocksize;
@@ -1291,7 +1328,8 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
                                    srcpe->pattern,
                                    srcpe->lastcpu,
                                    blocksize,
-                                   currentblock * blocksize, 0);
+                                   currentblock * blocksize, 0,
+                                   srcpe->write_dram_frequency);
       if (errorcount == 0) {
         logprintf(0, "Log: CrcCopyPage CRC mismatch %s != %s, "
                      "but no miscompares found. Retrying with fresh data.\n",
@@ -1301,12 +1339,14 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
           // Copy the data originally read from this region back again.
           // This data should have any corruption read originally while
           // calculating the CRC.
+          int repair_write_frequency = sat_->current_dram_frequency();
           memcpy(sourcemem, targetmem, blocksize);
           errorcount = CheckRegion(sourcemem,
                                    srcpe->pattern,
                                    srcpe->lastcpu,
                                    blocksize,
-                                   currentblock * blocksize, 0);
+                                   currentblock * blocksize, 0,
+                                   repair_write_frequency);
           if (errorcount == 0) {
             int core_id = sched_getcpu();
             logprintf(0, "Process Error: CPU %d(0x%s) CrcCopyPage "
@@ -1316,7 +1356,8 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
                       crc.ToHexString().c_str(),
                       expectedcrc->ToHexString().c_str());
             struct ErrorRecord er;
-            er.dram_frequency = sat_->current_dram_frequency();
+            er.write_dram_frequency = repair_write_frequency;
+            er.read_dram_frequency = sat_->current_dram_frequency();
             er.actual = sourcemem[0];
             er.expected = 0xbad00000ull << 32;
             er.vaddr = sourcemem;
@@ -1343,7 +1384,8 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
                           srcpe->pattern,
                           srcpe->lastcpu,
                           leftovers,
-                          blocks * blocksize, 0);
+                          blocks * blocksize, 0,
+                          srcpe->write_dram_frequency);
     int leftoverwords = leftovers / wordsize_;
     for (int i = 0; i < leftoverwords; i++) {
       targetmem[i] = sourcemem[i];
@@ -1353,6 +1395,7 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
   // Update pattern reference to reflect new contents.
   dstpe->pattern = srcpe->pattern;
   dstpe->lastcpu = sched_getcpu();
+  dstpe->write_dram_frequency = destination_write_frequency;
 
   // Clean clean clean the errors away.
   if (errors) {
@@ -1367,6 +1410,7 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
 
 // Invert a block of memory quickly, traversing downwards.
 int InvertThread::InvertPageDown(struct page_entry *srcpe) {
+  int write_dram_frequency = sat_->current_dram_frequency();
   const int invert_flush_interval = kCacheLineSize / sizeof(unsigned int);
   const int blocksize = 4096;
   const int blockwords = blocksize / wordsize_;
@@ -1386,11 +1430,13 @@ int InvertThread::InvertPageDown(struct page_entry *srcpe) {
   }
   OsLayer::FastFlushSync();
   srcpe->lastcpu = sched_getcpu();
+  srcpe->write_dram_frequency = write_dram_frequency;
   return 0;
 }
 
 // Invert a block of memory, traversing upwards.
 int InvertThread::InvertPageUp(struct page_entry *srcpe) {
+  int write_dram_frequency = sat_->current_dram_frequency();
   const int invert_flush_interval = kCacheLineSize / sizeof(unsigned int);
   const int blocksize = 4096;
   const int blockwords = blocksize / wordsize_;
@@ -1411,6 +1457,7 @@ int InvertThread::InvertPageUp(struct page_entry *srcpe) {
   OsLayer::FastFlushSync();
 
   srcpe->lastcpu = sched_getcpu();
+  srcpe->write_dram_frequency = write_dram_frequency;
   return 0;
 }
 
@@ -1419,6 +1466,7 @@ int InvertThread::InvertPageUp(struct page_entry *srcpe) {
 int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
                                   struct page_entry *srcpe) {
   int errors = 0;
+  int destination_write_frequency = sat_->current_dram_frequency();
   const int blocksize = 4096;
   const int blockwords = blocksize / wordsize_;
   int blocks = sat_->page_length() / blocksize;
@@ -1449,7 +1497,8 @@ int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
                                    srcpe->pattern,
                                    srcpe->lastcpu,
                                    blocksize,
-                                   currentblock * blocksize, 0);
+                                   currentblock * blocksize, 0,
+                                   srcpe->write_dram_frequency);
       if (errorcount == 0) {
         logprintf(0, "Log: CrcWarmCopyPage CRC mismatch expected: %s != actual: %s, "
                      "but no miscompares found. Retrying with fresh data.\n",
@@ -1459,12 +1508,14 @@ int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
           // Copy the data originally read from this region back again.
           // This data should have any corruption read originally while
           // calculating the CRC.
+          int repair_write_frequency = sat_->current_dram_frequency();
           memcpy(sourcemem, targetmem, blocksize);
           errorcount = CheckRegion(sourcemem,
                                    srcpe->pattern,
                                    srcpe->lastcpu,
                                    blocksize,
-                                   currentblock * blocksize, 0);
+                                   currentblock * blocksize, 0,
+                                   repair_write_frequency);
           if (errorcount == 0) {
             int core_id = sched_getcpu();
             logprintf(0, "Process Error: CPU %d(0x%s) CrciWarmCopyPage "
@@ -1474,7 +1525,8 @@ int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
                       crc.ToHexString().c_str(),
                       expectedcrc->ToHexString().c_str());
             struct ErrorRecord er;
-            er.dram_frequency = sat_->current_dram_frequency();
+            er.write_dram_frequency = repair_write_frequency;
+            er.read_dram_frequency = sat_->current_dram_frequency();
             er.actual = sourcemem[0];
             er.expected = 0xbad;
             er.vaddr = sourcemem;
@@ -1500,7 +1552,8 @@ int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
                           srcpe->pattern,
                           srcpe->lastcpu,
                           leftovers,
-                          blocks * blocksize, 0);
+                          blocks * blocksize, 0,
+                          srcpe->write_dram_frequency);
     int leftoverwords = leftovers / wordsize_;
     for (int i = 0; i < leftoverwords; i++) {
       targetmem[i] = sourcemem[i];
@@ -1510,6 +1563,7 @@ int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
   // Update pattern reference to reflect new contents.
   dstpe->pattern = srcpe->pattern;
   dstpe->lastcpu = sched_getcpu();
+  dstpe->write_dram_frequency = destination_write_frequency;
 
 
   // Clean clean clean the errors away.
@@ -1606,9 +1660,11 @@ bool CopyThread::Work() {
     } else if (sat_->strict()) {
       CrcCopyPage(&dst, &src);
     } else {
+      int destination_write_frequency = sat_->current_dram_frequency();
       memcpy(dst.addr, src.addr, sat_->page_length());
       dst.pattern = src.pattern;
       dst.lastcpu = sched_getcpu();
+      dst.write_dram_frequency = destination_write_frequency;
     }
 
     result = result && sat_->PutValid(&dst);
@@ -1785,6 +1841,7 @@ bool FileThread::WritePages(int fd) {
 // Copy data from file into memory block.
 bool FileThread::ReadPageFromFile(int fd, struct page_entry *dst) {
   int page_length = sat_->page_length();
+  int write_dram_frequency = sat_->current_dram_frequency();
 
   // Do the actual read.
   int64 size = read(fd, dst->addr, page_length);
@@ -1795,6 +1852,7 @@ bool FileThread::ReadPageFromFile(int fd, struct page_entry *dst) {
     errorcount_++;
     return false;
   }
+  dst->write_dram_frequency = write_dram_frequency;
   return true;
 }
 
@@ -1946,6 +2004,7 @@ bool FileThread::GetEmptyPage(struct page_entry *dst) {
     dst->offset = 0;
     dst->pattern = 0;
     dst->lastcpu = 0;
+    dst->write_dram_frequency = -1;
   }
   return true;
 }
@@ -2238,6 +2297,7 @@ bool NetworkThread::SendPage(int sock, struct page_entry *src) {
 bool NetworkThread::ReceivePage(int sock, struct page_entry *dst) {
   int page_length = sat_->page_length();
   char *address = static_cast<char*>(dst->addr);
+  int write_dram_frequency = sat_->current_dram_frequency();
 
   // Maybe we will get our data back again, maybe not.
   int size = page_length;
@@ -2279,6 +2339,7 @@ bool NetworkThread::ReceivePage(int sock, struct page_entry *dst) {
     }
     size = size - transferred;
   }
+  dst->write_dram_frequency = write_dram_frequency;
   return true;
 }
 
@@ -3402,14 +3463,15 @@ void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
     // bad-dimm error
     WorkerThread::ProcessError(error, priority, message);
   } else if (phase_ == kPhaseCheck) {
-    char dram_frequency[64];
-    FormatDramFrequency(sat_, error, dram_frequency, sizeof(dram_frequency));
+    char dram_frequencies[128];
     // A error on the Check Phase means that the memory region tested
     // has an error. Gathering more information and then reporting
     // the error.
     // Determine if this is a write or read error.
     os_->Flush(error->vaddr);
+    error->reread_dram_frequency = sat_->current_dram_frequency();
     error->reread = *(error->vaddr);
+    FormatDramFrequencies(error, dram_frequencies, sizeof(dram_frequencies));
     char *good = reinterpret_cast<char*>(&(error->expected));
     char *bad = reinterpret_cast<char*>(&(error->actual));
     sat_assert(error->expected != error->actual);
@@ -3428,7 +3490,7 @@ void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
     logprintf(priority,
               "%s: miscompare on %s, CRC check at %p(0x%llx), "
               "offset %llx: read:0x%016llx, reread:0x%016llx "
-              "expected:0x%016llx. ddr_freq:%s.\n",
+              "expected:0x%016llx. ddr_freq(%s).\n",
               message,
               identifier_.c_str(),
               error->vaddr,
@@ -3437,7 +3499,7 @@ void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
               error->actual,
               error->reread,
               error->expected,
-              dram_frequency);
+              dram_frequencies);
   } else {
     logprintf(0, "Process Error: memory region thread raised an "
               "unexpected error.");
