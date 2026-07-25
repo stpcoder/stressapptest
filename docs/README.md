@@ -20,7 +20,7 @@
 - 큰 메모리 영역을 여러 core가 반복해서 처리하면 cache miss와 write-back이 증가합니다.
 - 대상 block에 쓴 데이터는 그 block이 다음 복사의 원본으로 선택되거나 마지막 전체 검사를 수행할 때 확인합니다.
 
-<sub><em>Queue: Worker가 사용할 SAT block의 상태를 관리하고, 여러 Worker가 같은 block을 동시에 사용하지 않도록 제어하는 구조입니다.</em></sub>
+<sub><em>Queue: SAT block 상태와 mutex를 관리하여 Worker마다 배타적인 block 소유권을 제공하는 구조입니다.</em></sub>
 <sub><em>Checksum: 읽은 데이터에서 계산한 값을 기대값과 비교하여 데이터가 바뀌었는지 확인하는 값입니다.</em></sub>
 
 ## 권장 읽기 순서
@@ -59,7 +59,7 @@ Worker가 처리하는 메모리 영역이 cache보다 크면 cache miss가 늘�
 - `physical address`: 주소 변환 후 CPU와 NoC가 사용하는 시스템 주소입니다.
 - `DRAM 좌표`: DMC가 physical address를 해석하여 선택하는 channel, rank, bank, row, column입니다.
 - 코드 위치는 현재 기준 commit의 `파일:줄`로 적습니다.
-- “일반적으로”라고 적은 microarchitecture 동작은 ARM architecture가 허용하는 대표 동작이며, 특정 SoC 구현을 보장하지 않습니다.
+- “일반적으로”라고 적은 microarchitecture 동작은 ARM architecture가 허용하는 대표 동작입니다. Target SoC의 상세 동작은 제조사 문서와 PMU로 확인합니다.
 
 ## 소스 코드 예제 읽는 방법
 
@@ -95,4 +95,4 @@ sat->PrintResults();
 
 ## 안전 경고
 
-stressapptest는 정상적으로 동작해도 Android foreground/service, LMKD, thermal governor, DVFS, UFS와 다른 subsystem에 큰 영향을 줄 수 있습니다. 처음에는 `-M`과 `-s`를 작게 명시하고, block device 대상 `-d --destructive`는 사용하지 마십시오.
+Stressapptest의 부하는 Android foreground/service, LMKD, thermal governor, DVFS, UFS와 다른 subsystem에 영향을 줍니다. 첫 시험은 작은 `-M`과 `-s`로 시작합니다. `-d --destructive`는 데이터 삭제가 허용된 시험용 block device에만 사용합니다.

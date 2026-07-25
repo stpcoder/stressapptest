@@ -55,7 +55,7 @@ CHECKOPTS
 STRESSAPPTEST_CPU_AARCH64
 ```
 
-Standalone build는 `STRESSAPPTEST_CONFIG_ANDROID`를 정의하여 `src/stressapptest_config_android.h`를 직접 선택합니다. 따라서 같은 source tree에서 Linux host build가 먼저 `src/stressapptest_config.h`를 생성해도 Android architecture 설정을 덮어쓰지 않습니다.
+Standalone build는 `STRESSAPPTEST_CONFIG_ANDROID`를 정의하여 `src/stressapptest_config_android.h`를 선택합니다. 이 설정이 Android architecture macro의 기준이 됩니다.
 
 > **파일:** `scripts/build_android_arm64.sh` · **구간:** AArch64 compiler 호출 · **기준:** 이 fork
 
@@ -85,9 +85,9 @@ Standalone build는 `STRESSAPPTEST_CONFIG_ANDROID`를 정의하여 `src/stressap
   "${output_dir}/stressapptest"
 ```
 
-**코드 설명:** NDK의 `aarch64-linux-android<API>-clang++`로 공개 소스 파일을 하나의 PIE 실행 파일로 연결합니다. C++ runtime은 실행 파일에 정적으로 연결하므로 휴대폰에 `libc++_shared.so`를 별도로 복사하지 않습니다. `STRESSAPPTEST_CPU_AARCH64`는 ARM64용 timestamp, cache 관리 명령, NEON 복사 코드를 선택합니다.
+**코드 설명:** NDK의 `aarch64-linux-android<API>-clang++`로 공개 소스 파일을 하나의 PIE 실행 파일로 연결합니다. C++ runtime은 실행 파일에 정적으로 연결됩니다. `STRESSAPPTEST_CPU_AARCH64`는 ARM64용 timestamp, cache 관리 명령과 NEON 복사 코드를 선택합니다.
 
-<sub><em>PIE: Position-Independent Executable의 약어이며 ASLR 적용을 위해 고정 virtual address에 의존하지 않도록 생성한 실행 파일입니다.</em></sub>
+<sub><em>PIE: Position-Independent Executable의 약어이며 ASLR이 실행 시 virtual address를 배치할 수 있도록 생성한 실행 파일입니다.</em></sub>
 <sub><em>Conditional compilation: compile-time macro 값에 따라 특정 architecture 또는 platform 구현만 binary에 포함하는 방식입니다.</em></sub>
 
 ## 빌드 결과 확인
@@ -148,7 +148,7 @@ adb shell '/data/local/tmp/stressapptest \
   --ddr-step 5'
 ```
 
-`--ddr-freq 3196`처럼 값 하나만 지정하면 sweep하지 않고 같은 값을 유지합니다. `--ddr-freq`를 지정하지 않으면 AOSS node에 접근하지 않습니다.
+`--ddr-freq 3196`은 한 값을 유지합니다. 여러 값 또는 `all`은 sweep을 실행합니다. AOSS node는 `--ddr-freq`를 지정한 실행에서 사용합니다.
 
 초기 결과와 시스템 상태를 확인한 뒤 다음 순서로 부하를 늘립니다.
 
@@ -222,7 +222,7 @@ User build에서는 `dmesg` 접근이 제한될 수 있습니다. 가능한 경�
 adb shell 'pkill -INT stressapptest'
 ```
 
-SIGINT 또는 SIGTERM을 보내면 주 thread가 Worker를 정리하고 마지막 전체 검사를 수행합니다. `kill -9`, LMKD의 SIGKILL, kernel panic으로 종료되면 마지막 검사와 정상 종료 통계가 남지 않습니다.
+SIGINT 또는 SIGTERM은 Worker 정리와 마지막 전체 검사를 실행합니다. `kill -9`, LMKD의 SIGKILL과 kernel panic은 프로세스를 즉시 종료하므로 pstore와 kernel log를 함께 수집합니다.
 
 ## Android에서 주의해야 할 실행 방법
 
@@ -233,7 +233,7 @@ stressapptest -s 3600
 # 실제 block device 파괴 위험
 stressapptest -d /dev/block/by-name/userdata --destructive
 
-# 공통 ARM 구현에서 지원하지 않아 초기화 실패
+# 공통 ARM 구현의 unsupported 결과 확인
 stressapptest --cpu_freq_test --cpu_freq_threshold 1000
 
 # 공통 OsLayer가 paddr_base를 무시하고 일반 메모리 할당 수행

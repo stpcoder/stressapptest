@@ -10,7 +10,7 @@ stressapptest는 전체 테스트 메모리를 `page_length_` 단위로 나눕�
 block 수 = 전체 테스트 메모리 byte / SAT block byte
 ```
 
-소스 코드에서는 이 단위를 `page`라고 부릅니다. 이 문서에서는 Linux의 page와 혼동하지 않도록 `SAT block`으로 표기합니다.
+소스 코드에서는 이 단위를 `page`라고 부릅니다. 이 문서는 Linux page와 구분하기 위해 `SAT block`으로 표기합니다.
 
 <sub><em>SAT block: stressapptest의 queue가 원본, 대상, 검사 상태를 관리하는 메모리 구역입니다.</em></sub>
 <sub><em>Linux page: kernel과 MMU가 virtual-to-physical mapping을 관리하는 최소 page 단위입니다.</em></sub>
@@ -43,7 +43,7 @@ struct page_entry {
 };
 ```
 
-**코드 설명:** 실제 테스트 데이터는 `page_entry` 안에 저장되지 않습니다. `offset`과 `addr`은 테스트 메모리 안에서 해당 block이 위치한 주소를 가리킵니다. `pattern`은 해당 block에 기록되어 있어야 하는 데이터 pattern을 가리킵니다. `pattern == NULL`이면 새 데이터를 쓸 수 있는 empty 상태이고, 값이 있으면 읽고 검사할 수 있는 valid 상태입니다.
+**코드 설명:** `page_entry`는 실제 테스트 데이터의 위치와 상태를 관리합니다. `offset`과 `addr`은 테스트 메모리 안의 block 주소를 가리킵니다. `pattern`은 해당 block의 expected pattern을 가리킵니다. `pattern == NULL`은 새 데이터를 쓸 수 있는 empty 상태이며 pattern 값이 있으면 읽고 검사할 수 있는 valid 상태입니다.
 
 | 항목 | 의미 |
 |---|---|
@@ -109,7 +109,7 @@ for (uint64 i = 0; i < q_size_; i++) {
 }
 ```
 
-**코드 설명:** Worker는 block 번호를 0부터 순서대로 선택하지 않습니다. 임의의 시작 위치를 정한 뒤 linear-congruential 계산으로 다음 후보를 고릅니다. 후보가 valid·empty 상태와 tag 조건을 만족하면 해당 block의 mutex 획득을 시도합니다. Block을 고르는 순서는 pseudo-random이지만, 선택한 block 내부는 앞에서 뒤로 순차 접근합니다.
+**코드 설명:** Worker는 임의의 시작 위치와 linear-congruential 계산으로 block 후보를 선택합니다. 후보가 valid·empty 상태와 tag 조건을 만족하면 해당 block의 mutex 획득을 시도합니다. Block 선택 순서는 pseudo-random이며, 선택한 block 내부는 앞에서 뒤로 순차 접근합니다.
 
 <sub><em>Linear-congruential progression: 이전 정수에 곱셈과 덧셈을 적용하고 modulus 연산으로 다음 후보 index를 생성하는 결정적 순회 방식입니다.</em></sub>
 <sub><em>Predicate: 후보 entry가 valid, empty 또는 특정 tag 조건을 만족하는지 판정하는 함수입니다.</em></sub>
@@ -154,7 +154,7 @@ Block을 가져오는 순서는 다음과 같습니다.
 
 이 방식은 전체 테스트 메모리에서 처리할 block을 분산해서 고르는 동시에, 선택한 block 안에서는 연속된 cache line을 처리합니다. 연속 접근은 hardware prefetch가 다음 데이터를 미리 요청하고 memory controller가 여러 요청을 연속해서 처리할 수 있게 합니다.
 
-따라서 stressapptest는 모든 cache line을 완전히 임의 순서로 접근하는 시험도 아니고, 하나의 큰 buffer를 처음부터 끝까지 순차 접근하는 시험도 아닙니다. PMU 결과는 `block은 분산 선택, block 내부는 순차 접근`이라는 구조를 기준으로 해석해야 합니다.
+Stressapptest의 주소 순서는 `block 분산 선택, block 내부 순차 접근`으로 구성됩니다. PMU 결과는 이 두 접근 단위를 기준으로 해석합니다.
 
 ## 읽을 block과 쓸 block의 비율
 
@@ -166,7 +166,7 @@ empty block이 필요한 이유:
 - 파일·네트워크에서 읽은 데이터를 저장할 대상 block이 필요합니다.
 - 여러 Worker가 대상 block을 얻기 위해 대기하는 시간을 줄입니다.
 
-모든 block에는 초기 단계에서 pattern 데이터가 기록됩니다. Empty 상태로 바꿀 때에는 `pattern` 정보만 제거합니다. 이전 데이터 byte를 지우거나 연결된 physical page를 운영체제에 반환하지는 않습니다.
+초기 단계에서 모든 block에 pattern 데이터를 기록합니다. Empty 상태 전환은 `pattern` metadata를 제거합니다. 데이터 byte와 연결된 physical page는 테스트 메모리 안에 유지됩니다.
 
 ## 전체 queue를 한 번에 잠그는 방식
 
@@ -177,19 +177,19 @@ empty block이 필요한 이유:
 - 각 queue 전체를 보호하는 mutex 하나
 - 임의로 선택한 항목을 꺼낼 위치와 교환한 뒤 queue에서 제거
 
-Block의 상태 관리 규칙은 기본 방식과 같습니다. 그러나 Worker 수가 늘면 여러 Worker가 queue 전체의 mutex를 기다리는 시간이 증가할 수 있습니다. 이 옵션은 두 queue 구현의 성능을 비교할 때 사용합니다.
+Block 상태 관리 규칙은 기본 방식과 같습니다. Worker 수가 늘면 queue 전체 mutex의 대기 시간이 증가할 수 있습니다. 이 옵션은 두 queue 구현의 성능을 비교할 때 사용합니다.
 
 ## Queue 잠금이 필요한 이유
 
-Worker가 block을 가져오면 작업을 끝내고 반환할 때까지 다른 Worker는 그 block을 사용할 수 없습니다. 따라서 정상 동작에서는 두 `CopyThread`가 같은 대상 block에 동시에 쓰지 않습니다.
+Worker가 block을 가져오면 작업을 끝내고 반환할 때까지 mutex를 소유합니다. 이 mutex가 두 `CopyThread`의 동시 destination write를 차단합니다.
 
-Queue 처리 과정에서도 CPU는 `page_entry`, mutex, counter, 로그 정보를 읽고 씁니다. 따라서 `-m 0 -c N`처럼 `CopyThread`를 사용하지 않는 구성에서도 이 관리 정보에 대한 소량의 메모리 접근은 발생합니다.
+Queue 처리 과정에서 CPU는 `page_entry`, mutex, counter와 로그 정보를 읽고 씁니다. `-m 0 -c N` 구성에서도 이 관리 정보에 대한 소량의 메모리 접근이 발생합니다.
 
 ## Tag를 이용한 block 구역 선택
 
 초기화 과정에서 block 첫 physical address를 공통 규칙에 따라 메모리 구역으로 분류하고 bit mask tag를 기록합니다. `--local_numa` 또는 `--remote_numa`를 사용하면 Worker는 조건에 맞는 tag의 block만 선택합니다.
 
-현재 공통 `OsLayer`의 메모리 구역 계산에는 모바일 SoC의 NUMA 또는 LPDDR channel 구조가 포함되어 있지 않습니다. 모바일 ARM에서 CPU와 DRAM의 local·remote 관계를 구분하려면 SoC 제조사의 구조를 반영한 별도 구현이 필요합니다.
+현재 공통 `OsLayer`의 메모리 구역은 Linux NUMA 정보를 기준으로 계산합니다. 모바일 SoC의 LPDDR channel 관계는 제조사의 address map을 반영한 `OsLayer` 구현에서 추가합니다.
 
 <sub><em>Region tag: worker가 local/remote 조건으로 block을 선택할 때 사용하는 software bit mask입니다.</em></sub>
 <sub><em>NUMA locality: CPU와 memory node 사이의 topology에 따라 access latency와 bandwidth가 달라지는 특성입니다.</em></sub>

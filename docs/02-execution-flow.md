@@ -30,14 +30,14 @@ Worker 정지와 종료 대기
 
 ## 1. 실행 옵션 확인
 
-`Sat::ParseArgs()`는 사용자가 입력한 옵션을 앞에서부터 확인합니다 (`src/sat.cc:794`). GNU `getopt`를 사용하지 않고 각 옵션 이름을 문자열로 직접 비교합니다.
+`Sat::ParseArgs()`는 사용자가 입력한 옵션을 앞에서부터 확인하고 각 옵션 이름을 문자열로 비교합니다 (`src/sat.cc:794`).
 
 옵션을 읽는 방식은 다음과 같습니다.
 
 - 숫자는 `strtoull(..., base=0)`로 읽으므로 `0x`로 시작하는 16진수도 입력할 수 있습니다.
 - 일부 signed 변수에도 unsigned 방식으로 변환한 값을 저장합니다.
 - `-f`, `-d`, `-n`, `--memory_channel`은 여러 번 지정할 수 있습니다.
-- 등록되지 않은 옵션을 입력하면 version과 도움말을 출력하고 종료 코드 1을 반환합니다.
+- 옵션 목록 밖의 문자열을 입력하면 version과 도움말을 출력하고 종료 코드 1을 반환합니다.
 - `-h` 또는 `--help`를 입력하면 version과 도움말을 출력하고 종료 코드 0을 반환합니다.
 
 ### 프로그램 초기화 순서
@@ -70,10 +70,10 @@ pages_ = size_ / page_length_;
 - 초기 쓰기 FillThread: 8개
 - CopyThread: 미지정 시 온라인 상태의 논리 CPU 수
 - 복사 중 checksum 검사: 사용
-- `-W` vector 복사: 사용하지 않음
+- `-W` vector 복사: 비활성
 - 주기적 정지: 600초마다 15초
 
-`-M`을 지정하지 않으면 `FindFreeMemSize()`가 전체 physical memory 크기를 기준으로 테스트 크기를 계산합니다. 현재 사용 가능한 메모리는 log에만 표시되고 계산 기준으로 사용되지 않습니다. Android에서는 `-M`을 직접 지정하여 테스트 메모리 크기를 제한해야 합니다.
+`-M`의 기본값은 `FindFreeMemSize()`가 전체 physical memory 크기로 계산합니다. 현재 available memory는 log에 표시됩니다. Android 시험에서는 system process용 여유 공간을 고려한 `-M` 값을 직접 지정합니다.
 
 ## 3. 테스트 메모리 할당
 
@@ -88,7 +88,7 @@ mmap(NULL, length,
 
 `mmap()`이 성공하면 먼저 virtual address 영역이 예약됩니다. 실제 physical page는 FillThread가 각 page에 처음 데이터를 쓸 때 page fault를 거쳐 할당됩니다.
 
-<sub><em>Anonymous mmap: 파일과 연결하지 않고 프로세스가 사용할 virtual address 범위를 확보하는 Linux 메모리 매핑 방식입니다.</em></sub>
+<sub><em>Anonymous mmap: 파일 연결 없이 프로세스용 virtual address 범위를 확보하는 Linux 메모리 매핑 방식입니다.</em></sub>
 <sub><em>First touch: 예약된 virtual page에 처음 접근하여 kernel이 연결할 physical page를 할당하게 하는 동작입니다.</em></sub>
 
 ## 4. 테스트 데이터 pattern 준비
@@ -98,7 +98,7 @@ mmap(NULL, length,
 - 원본과 bit 반전 pattern
 - 32/64/128/256-bit 반복 범위
 
-하나의 pattern 종류에서 8개 조합이 만들어지므로 전체 pattern 객체는 120개입니다. 선택 가중치가 0인 객체도 생성되지만 실제 테스트에서는 선택되지 않습니다.
+하나의 pattern 종류에서 8개 조합이 만들어지므로 전체 pattern 객체는 120개입니다. 시험에서는 양수 가중치를 가진 객체를 선택합니다.
 
 각 pattern 객체는 4 KiB 데이터에 대한 기대 modified-Adler checksum을 미리 계산합니다.
 
@@ -141,7 +141,7 @@ const time_t start = time(NULL);
 const time_t end = start + runtime_seconds_;
 ```
 
-**코드 설명:** `InitializeThreads()`는 C++ Worker 객체를 만들고, `SpawnThreads()`는 각 Worker를 실제 pthread로 실행합니다. `-s` 시간 측정은 pthread를 시작한 이후부터 적용됩니다. 초기 FillThread와 종료 후 CheckThread의 실행 시간은 여기에 포함되지 않습니다.
+**코드 설명:** `InitializeThreads()`는 C++ Worker 객체를 만들고, `SpawnThreads()`는 각 Worker를 실제 pthread로 실행합니다. `-s`는 pthread 실행 구간에 적용됩니다. 초기 FillThread는 이 구간 전에 실행되고 마지막 CheckThread는 이 구간 후에 실행됩니다.
 
 기본 CopyThread는 다음 순서를 반복합니다.
 
@@ -158,7 +158,7 @@ sched_yield()
 
 기본 설정은 `--pause_delay 600 --pause_duration 15`입니다. 실행 시작 후 600초가 지나면 `power_spike_status`에 속한 Worker를 15초 동안 멈춘 후 다시 실행합니다.
 
-`power_spike_status`에는 주로 CopyThread, FileThread, DiskThread, CPU 주파수 확인 Worker가 들어갑니다. `continuous_status`에 속한 Worker는 계속 실행됩니다. 전체 실행 시간이 600초보다 짧으면 기본 설정에서는 정지 동작이 발생하지 않습니다.
+`power_spike_status`에는 주로 CopyThread, FileThread, DiskThread, CPU 주파수 확인 Worker가 들어갑니다. `continuous_status`의 Worker는 계속 실행됩니다. 기본 pause 주기는 600초이므로 더 짧은 시험은 연속 부하로 진행됩니다.
 
 ## 9. 종료 후 전체 데이터 검사
 
@@ -175,4 +175,4 @@ sched_yield()
 - 내부 실행 오류 또는 데이터 오류가 하나라도 있으면 종료 코드 1
 - 오류 없이 정상 완료하면 종료 코드 0
 
-재부팅, kernel panic, watchdog reset, SIGKILL이 발생하면 마지막 결과가 출력되지 않을 수 있습니다. 이 경우 pstore, kernel log, LMKD log에서 종료 원인을 확인해야 합니다.
+재부팅, kernel panic, watchdog reset, SIGKILL은 Logger의 정상 종료 절차를 생략할 수 있습니다. 이 경우 pstore, kernel log와 LMKD log에서 종료 원인을 확인합니다.

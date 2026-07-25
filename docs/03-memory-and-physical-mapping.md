@@ -4,7 +4,7 @@ stressapptest는 먼저 프로세스가 사용할 virtual memory 영역을 확�
 
 ## 테스트할 메모리 크기 정하기
 
-`-M`을 지정하지 않으면 `OsLayer::FindFreeMemSize()`가 테스트할 메모리 크기를 자동으로 계산합니다 (`src/os.cc:411`).
+`-M`의 기본값은 `OsLayer::FindFreeMemSize()`가 자동으로 계산합니다 (`src/os.cc:411`).
 
 일반 page를 사용하는 경우의 계산 기준은 다음과 같습니다.
 
@@ -13,7 +13,7 @@ stressapptest는 먼저 프로세스가 사용할 virtual memory 영역을 확�
 | 2 GiB 미만 | 전체 RAM의 약 85% |
 | 2 GiB 이상 | 전체 RAM의 약 95%에서 192 MiB를 뺀 크기 |
 
-로그에는 현재 사용할 수 있는 physical page 수도 표시됩니다. 그러나 자동 테스트 크기는 전체 RAM의 비율을 기준으로 계산합니다. 이미 메모리를 많이 사용하는 Android 기기에서 자동값을 적용하면 메모리 할당 실패, swap·zram 사용 증가, LMKD에 의한 프로세스 종료, 시스템 응답 저하가 발생할 수 있습니다.
+로그에는 현재 available physical page 수도 표시됩니다. 자동 테스트 크기는 전체 RAM의 비율을 기준으로 계산합니다. 메모리 사용량이 큰 Android 기기에서는 메모리 할당 실패, swap·zram 사용 증가, LMKD 종료와 시스템 응답 저하가 발생할 수 있습니다.
 
 모바일 시험에서는 다음 명령 형식으로 `-M`을 명시한다.
 
@@ -41,7 +41,7 @@ mmap(NULL, length,
      -1, 0)
 ```
 
-이 메모리에는 운영체제가 정한 일반 cacheable userspace memory 속성이 적용됩니다. 특정 physical DRAM 주소를 직접 연결하거나 cache를 사용하지 않도록 바꾸는 동작은 포함되지 않습니다.
+이 메모리에는 운영체제가 정한 일반 cacheable userspace memory 속성이 적용됩니다. Physical page는 kernel page allocator가 배정하며 CPU access는 cache hierarchy를 통과합니다.
 
 ### Android/Linux에서 사용하는 mmap 방식
 
@@ -60,7 +60,7 @@ if (!use_hugepages_ && !use_posix_shm_) {
 }
 ```
 
-**코드 설명:** `mmap()`이 반환하는 값은 프로세스가 사용할 virtual address의 시작 위치입니다. 이 호출은 DRAM channel, bank, row를 지정하지 않습니다. 각 virtual page에 연결할 physical page는 kernel의 page allocator가 선택합니다. 실제 연결은 해당 page에 처음 접근할 때 이루어집니다.
+**코드 설명:** `mmap()`은 프로세스가 사용할 virtual address의 시작 위치를 반환합니다. Kernel page allocator가 각 virtual page의 physical page를 선택합니다. DRAM channel, bank와 row는 이후 memory-controller address mapping에 따라 결정됩니다. 실제 page 연결은 해당 page의 최초 접근 시점에 이루어집니다.
 
 <sub><em>Memory attribute: page table과 MAIR를 통해 memory type, cacheability 및 shareability를 지정하는 속성입니다.</em></sub>
 <sub><em>Normal cacheable memory: CPU cache hierarchy와 coherency protocol을 통해 접근하는 일반 데이터 메모리 유형입니다.</em></sub>
@@ -87,7 +87,7 @@ paddr = ((frame & pfnmask) * pagesize) | ((uintptr_t)vaddr & pagemask);
 return paddr;
 ```
 
-**코드 설명:** `/proc/self/pagemap`에서 해당 page가 RAM에 있는지와 swap으로 이동했는지를 확인합니다. RAM에 있으면 PFN에 page 내부 offset을 더하여 physical address를 계산합니다. Android kernel이 PFN 공개를 제한하면 PFN이 0으로 표시되거나 파일 열기·읽기가 실패할 수 있습니다. 계산 결과는 system physical address이며 LPDDR channel·bank·row 위치는 아닙니다.
+**코드 설명:** `/proc/self/pagemap`에서 page의 RAM·swap 상태를 확인합니다. RAM page는 PFN과 page 내부 offset으로 system physical address를 계산합니다. Android kernel의 PFN 접근 정책에 따라 0 또는 읽기 오류가 반환될 수 있습니다. LPDDR channel·bank·row 변환에는 DMC address map을 추가로 적용합니다.
 
 ## Virtual memory 예약과 physical page 할당
 
@@ -98,7 +98,7 @@ stressapptest의 초기 `FillThread`는 테스트 범위 전체에 데이터를 
 ```text
 mmap 성공
    ↓
-아직 접근하지 않은 virtual page
+최초 접근 전의 virtual page
    ↓ FillThread가 데이터 쓰기
 minor page fault
    ↓
@@ -149,7 +149,7 @@ DMC는 physical address의 bit를 해석하여 channel, rank, bank, row, column�
 
 ## Virtual address와 physical address의 연속성
 
-`-M 1024`로 확보한 1 GiB virtual address 범위는 연속입니다. 그러나 이 범위를 구성하는 각 Linux page는 서로 떨어진 physical page에 연결될 수 있습니다.
+`-M 1024`로 확보한 1 GiB virtual address 범위는 연속입니다. 각 Linux page의 physical 위치는 kernel page allocator가 개별적으로 결정합니다.
 
 SAT block도 virtual address의 offset을 기준으로 나눕니다.
 
@@ -159,26 +159,26 @@ SAT block 1: VA base + 1 MiB
 SAT block 2: VA base + 2 MiB
 ```
 
-각 1 MiB block은 여러 Linux page로 구성되며, 각 page의 PFN은 연속하지 않을 수 있습니다. stressapptest가 임의의 1 MiB block을 고르는 것은 virtual address 범위에서 block을 선택하는 동작입니다. 특정 DRAM row를 직접 선택하는 동작은 아닙니다.
+각 1 MiB block은 여러 Linux page로 구성되며 PFN 배치는 kernel page allocator가 결정합니다. Stressapptest는 virtual address 범위에서 1 MiB block을 선택합니다. DRAM row는 각 page의 physical address와 memory-controller mapping으로 결정됩니다.
 
 ## `/proc/self/pagemap`
 
-`OsLayer::VirtualToPhysical()`은 `/proc/self/pagemap`에서 PFN을 읽어 physical address를 계산합니다 (`src/os.cc:141`). 이 값은 오류 위치를 기록하는 진단 정보로만 사용합니다. Worker가 읽고 쓸 주소를 정하는 데에는 사용하지 않습니다.
+`OsLayer::VirtualToPhysical()`은 `/proc/self/pagemap`에서 PFN을 읽어 physical address를 계산합니다 (`src/os.cc:141`). 이 값은 오류 위치 진단에 사용합니다. Worker의 접근 주소는 queue가 선택한 virtual block으로 결정됩니다.
 
 Linux 4.2 이후에는 `CAP_SYS_ADMIN` 권한이 없을 때 PFN이 0으로 가려질 수 있습니다. Android의 shell 권한과 보안 정책에 따라 다음 문제가 발생할 수 있습니다.
 
 - 파일 열기 실패
 - PFN 값이 0으로 마스킹
 - SELinux 정책으로 접근 제한
-- page가 이동하여 이전 주소 정보가 더 이상 유효하지 않음
+- page migration으로 이전 주소 정보가 만료됨
 
 PFN을 얻더라도 SoC 제조사의 DMC 주소 배치 규칙이 없으면 DRAM channel·bank·row를 계산할 수 없습니다.
 
 ## `--paddr_base`의 의미와 한계
 
-공개 저장소의 공통 `OsLayer::AllocateTestMem()` 구현은 0이 아닌 `paddr_base`를 지원하지 않습니다. 경고를 출력한 뒤 해당 값을 무시합니다 (`src/os.cc:514`).
+공개 저장소의 공통 `OsLayer::AllocateTestMem()`은 `paddr_base == 0` 조건의 anonymous allocation을 지원합니다. 다른 값을 입력하면 경고를 출력하고 anonymous allocation을 계속합니다 (`src/os.cc:514`).
 
-따라서 일반 Android build에서는 다음 명령의 `paddr_base`가 메모리 할당 위치에 반영되지 않습니다.
+일반 Android build에서 다음 명령은 anonymous allocation을 사용합니다.
 
 ```bash
 stressapptest --paddr_base 0x80000000 ...
@@ -195,7 +195,7 @@ stressapptest --paddr_base 0x80000000 ...
 - userspace에서 PFN을 읽을 수 있음
 - 최대 physical address가 프로그램이 예상한 범위 안에 있음
 
-16 KiB page를 사용하는 Android 또는 PFN 공개가 제한된 환경에서는 결과를 신뢰하기 어렵고 프로그램이 중단될 수도 있습니다. 일반 제품 시험에서는 기본 사용을 권장하지 않습니다.
+이 기능은 4 KiB page와 PFN 접근을 전제로 합니다. 16 KiB page 또는 PFN 제한 환경에서는 대상 build의 page 크기 처리와 권한을 먼저 검증합니다.
 
 ## Channel과 DIMM을 추정하는 옵션
 
@@ -207,7 +207,7 @@ stressapptest --paddr_base 0x80000000 ...
 - 지정한 address bit의 parity 또는 XOR로 channel 선택
 - x4 DRAM 미지원
 - DIMM·package 구조가 모바일 LPDDR 구조와 다름
-- SoC 제조사가 적용한 DMC 재배치, rank·bank XOR, interleave 규칙을 반영하지 못함
+- SoC 제조사의 DMC 재배치, rank·bank XOR와 interleave 규칙은 별도 적용
 
 최신 모바일 SoC에서 실제 LPDDR 위치를 출력하려면 SoC 제조사의 address map을 반영하여 `OsLayer::FindDimm()`을 구현해야 합니다. 공통 구현이 출력하는 위치는 일반적인 계산 모형에 따른 추정값입니다.
 

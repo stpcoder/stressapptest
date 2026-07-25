@@ -30,7 +30,7 @@ ARG_IVALUE("-i", invert_threads_);
 ARG_IVALUE("-c", check_threads_);
 ```
 
-**코드 설명:** 옵션은 GNU `getopt` 표가 아니라 문자열을 비교하는 macro로 처리합니다. 정수는 base 0의 `strtoull()`로 읽으므로 10진수와 `0x`로 시작하는 16진수를 사용할 수 있습니다. 이 장의 표는 프로그램 도움말이 아니라 실제 옵션 처리 코드를 기준으로 작성했습니다.
+**코드 설명:** 옵션은 문자열 비교 macro로 처리합니다. 정수는 base 0의 `strtoull()`로 읽으므로 10진수와 `0x`로 시작하는 16진수를 사용할 수 있습니다. 이 장의 표는 실제 옵션 처리 코드를 기준으로 작성했습니다.
 
 <sub><em>Base 0 integer parsing: 숫자 prefix에 따라 `0x`는 16진수, 앞의 `0`은 8진수, 그 외에는 10진수로 해석하는 C library 변환 방식입니다.</em></sub>
 
@@ -54,7 +54,7 @@ stressapptest -M 1024 -m 4 -i 4 -s 600 \
   -P OneZero256,FiveA256 --ddr-freq all
 ```
 
-`--ddr-step`을 생략하면 3초마다 다음 값으로 전환합니다. `--ddr-freq`를 생략하면 DDR 제어 기능은 비활성화되며 `--ddr-step`이나 `--ddr-node`만 지정해도 node를 열거나 쓰지 않습니다. DDR 제어를 사용하려면 해당 debugfs node의 쓰기 권한과 SELinux 허용이 필요합니다.
+`--ddr-step`의 기본값은 3초입니다. DDR 제어는 `--ddr-freq`를 지정한 실행에서 활성화됩니다. 해당 debugfs node의 쓰기 권한과 SELinux 허용이 필요합니다.
 
 ## 메모리 크기와 실행 시간
 
@@ -65,19 +65,19 @@ stressapptest -M 1024 -m 4 -i 4 -s 600 \
 | `-H <MiB>` | 0 | 필요한 최소 huge page 메모리. 공통 코드는 huge page 하나를 2 MiB로 가정 |
 | `-s <seconds>` | 20 | 본 시험의 Worker 실행 시간. 초기 데이터 쓰기와 마지막 전체 검사 시간은 제외 |
 | `-p <bytes>` | 1,048,576 | SAT block 크기. 1,024 B 이상이며 2의 거듭제곱이어야 함 |
-| `-m <N>` | online CPU 수 | `CopyThread` 수. 0이면 복사 Worker를 생성하지 않음 |
+| `-m <N>` | online CPU 수 | `CopyThread` 수. 0은 Copy Worker 비활성 |
 | `-i <N>` | 0 | `InvertThread` 수. 네 번의 read-modify-write와 cache 관리 명령 수행 |
 | `-c <N>` | 0 | `CheckThread` 수. 도움말에는 없지만 실제 코드에서 지원 |
 | `-C <N>` | 0 | `CpuStressThread` 수. 작은 데이터로 부동소수점 연산 부하 생성 |
 | `-W` | 사용 안 함 | Vector 명령과 checksum을 사용하는 복사. ARM64에서는 일반 cacheable NEON `ld1/st1` 사용 |
 | `-F` | 사용 안 함 | 복사 중 checksum을 생략하고 `CopyThread`에서 C library의 `memcpy()` 사용 |
-| `-A` | 사용 안 함 | 호환되지 않는 환경과 debug 환경 검사를 완화. 공개 release build에서는 효과가 제한적 |
+| `-A` | 사용 안 함 | 호환성 및 debug 환경 검사를 완화. 공개 release build에서는 효과가 제한적 |
 
-`CopyThread::Work()`는 `-W`에 해당하는 `warm()` 조건을 먼저 확인합니다. 따라서 `-W -F`를 함께 지정하면 `CrcWarmCopyPage()`가 실행되고 C library의 `memcpy()`는 실행되지 않습니다.
+`CopyThread::Work()`는 `-W`의 `warm()` 조건을 먼저 확인합니다. `-W -F` 조합에서는 `CrcWarmCopyPage()`가 실행됩니다.
 
 ### `--reserve_memory` 철자 주의
 
-`PrintHelp()`는 `--reserve-memory`를 출력하지만 실제 코드는 `--reserve_memory`를 인식합니다. 실행 명령에는 다음과 같이 밑줄을 사용해야 합니다.
+실행 parser가 인식하는 이름은 `--reserve_memory`입니다. 다음과 같이 밑줄을 사용합니다.
 
 ```bash
 stressapptest --reserve_memory 1024
@@ -88,11 +88,11 @@ stressapptest --reserve_memory 1024
 | 옵션 | 기본값 | 실제 동작과 모바일 환경에서의 의미 |
 |---|---:|---|
 | `--coarse_grain_lock` | 사용 안 함 | Empty·valid queue 전체를 각각 하나의 mutex로 보호. 기본 block별 mutex 방식과 비교하는 숨은 옵션 |
-| `--no_affinity` | 사용 안 함 | `sched_setaffinity()`를 적용하지 않음 |
+| `--no_affinity` | 사용 안 함 | OS scheduler가 CPU 배치를 결정하도록 설정 |
 | `--local_numa` | 사용 안 함 | Worker와 같은 공통 메모리 구역 tag의 block 선택 |
 | `--remote_numa` | 사용 안 함 | Worker와 다른 메모리 구역 tag의 block 선택 |
 
-공통 모바일 build의 메모리 구역 tag에는 실제 NUMA 또는 LPDDR channel 구조가 포함되어 있지 않습니다. 실제 위치 관계를 분석하려면 SoC 제조사의 구조를 반영한 `OsLayer` 구현이 필요합니다.
+공통 모바일 build의 메모리 구역 tag는 Linux NUMA 정보를 사용합니다. 실제 LPDDR channel 위치 관계는 SoC 제조사의 address map을 반영한 `OsLayer` 구현에서 제공합니다.
 
 <sub><em>NUMA: CPU와 memory node의 topology에 따라 memory access latency와 bandwidth가 달라지는 구조입니다.</em></sub>
 <sub><em>Region tag: local/remote block 선택에 사용하는 stressapptest 내부 bit mask입니다.</em></sub>
@@ -104,12 +104,12 @@ stressapptest --reserve_memory 1024
 | `--cc_test` | 사용 안 함 | 설정한 CPU 수만큼 cache coherency thread 생성 |
 | `--cc_inc_count <N>` | 1000 | 한 번의 coherency 검사에서 counter를 증가시키는 횟수 |
 | `--cc_line_count <N>` | 2 | 공동으로 사용하는 cache line 크기 구조체 수 |
-| `--cc_line_size <bytes>` | 0/자동 | 자동으로 확인한 cache line 크기 대신 사용할 값 |
+| `--cc_line_size <bytes>` | 0/자동 | Cache line 크기를 직접 지정할 값 |
 | `--cpu_freq_test` | 사용 안 함 | x86 TSC·APERF·MPERF를 이용한 주파수 검사 활성화 |
 | `--cpu_freq_threshold <MHz>` | 0 | 주파수 합격 기준의 최솟값. 검사를 켜면 양수 필요 |
 | `--cpu_freq_round <MHz>` | 10 | 계산한 주파수를 반올림할 단위. 0이면 1 MHz 단위 |
 
-`--cpu_freq_test`는 AArch64에서 지원하지 않으므로 초기화가 실패합니다.
+공통 AArch64 build에서 `--cpu_freq_test`는 unsupported 결과와 함께 초기화를 종료합니다.
 
 ## 검증과 오류 처리
 
@@ -117,12 +117,12 @@ stressapptest --reserve_memory 1024
 |---|---:|---|
 | `--max_errors <N>` | 0 | 0이면 제한 없음. 전체 오류 수가 N을 초과하면 주 실행 반복 종료 |
 | `--stop_on_errors` | 사용 안 함 | 지원되는 오류 처리 경로에서 첫 오류가 발생하면 즉시 중단 |
-| `--no_errors` | 사용 안 함 | `ErrorPollThread`를 생성하지 않음. Pattern checksum 검사는 유지 |
+| `--no_errors` | 사용 안 함 | `ErrorPollThread` 비활성. Pattern checksum 검사는 유지 |
 | `--force_errors` | 사용 안 함 | 프로그램이 의도적으로 오류를 만들어 오류 처리 기능 검사 |
 | `--force_errors_like_crazy` | 사용 안 함 | 데이터와 상태 정보를 반복해서 바꾸어 많은 오류 생성 |
 | `--tag_mode` | 사용 안 함 | 각 64 B cache line의 첫 8 B에 virtual address tag 사용. 파일·네트워크 옵션과 함께 사용 불가 |
 
-`--no_errors`는 `ErrorPollThread`만 생성하지 않게 합니다. 복사 중 checksum 검사는 `-F`로 제어하며 마지막 전체 검사는 유지됩니다.
+`--no_errors`는 `ErrorPollThread` 생성을 생략합니다. 복사 중 checksum은 `-F`로 제어하며 마지막 전체 검사는 유지됩니다.
 
 <sub><em>Error polling: platform error register 또는 kernel interface를 주기적으로 조회하는 동작입니다.</em></sub>
 
@@ -133,8 +133,8 @@ stressapptest --reserve_memory 1024
 | `-l <path>` | 없음 | 동기 쓰기 속성으로 로그 파일을 열고 기존 내용의 끝에 추가 |
 | `-v <0..20>` | 8 | verbosity threshold |
 | `--printsec <seconds>` | 10 | 남은 시간을 출력하는 간격. 내부 계산 문제를 피하려면 0이 아닌 값 사용 |
-| `--no_timestamps` | 사용 안 함 | 로그 앞에 시각을 표시하지 않음 |
-| `--pause_delay <seconds>` | 600 | 부하를 만드는 Worker를 일시 정지하는 주기. 0은 사용하지 않음 |
+| `--no_timestamps` | 사용 안 함 | Timestamp 없는 로그 형식 사용 |
+| `--pause_delay <seconds>` | 600 | 부하 Worker의 일시 정지 주기. 0은 연속 실행 |
 | `--pause_duration <seconds>` | 15 | 일시 정지를 유지하는 시간 |
 
 일시 정지와 재시작은 `power_spike_status` 그룹에 등록된 Worker에 적용됩니다. `continuous_status` 그룹의 Worker는 계속 실행됩니다.
@@ -149,7 +149,7 @@ stressapptest --reserve_memory 1024
 | `--channel_width <bits>` | 64 | channel 폭. power-of-two, 최소 16 |
 | `--memory_channel <a,b,...>` | 없음 | 한 channel에 속한 package 이름. 1~2회 반복 지정 가능 |
 
-`--memory_channel`을 사용할 때에는 channel별 package 수가 같고 그 수가 2의 거듭제곱이어야 합니다. Package당 폭은 x8 이상이어야 합니다. 공통 계산 방식은 최신 모바일 LPDDR 주소 배치를 자동으로 확인하지 못합니다.
+`--memory_channel`은 channel별로 같은 package 수와 2의 거듭제곱 구성을 요구합니다. Package당 폭은 x8 이상입니다. 최신 모바일 LPDDR 주소 배치는 vendor address map으로 확인합니다.
 
 서버형 메모리 구성을 가정한 예시는 다음과 같습니다.
 
@@ -201,7 +201,7 @@ stressapptest \
 stressapptest -d /dev/block/... --destructive
 ```
 
-이 명령은 해당 block device의 일부를 실제로 덮어씁니다. 데이터 폐기가 승인된 전용 시험 partition에서만 사용해야 하며, 실행 전에 image backup과 복구 절차를 준비해야 합니다. Userdata, filesystem, boot, metadata partition에는 사용하면 안 됩니다.
+이 명령은 해당 block device의 일부를 실제로 덮어씁니다. 데이터 폐기가 승인된 전용 시험 partition에서 실행하며 image backup과 복구 절차를 먼저 준비합니다.
 
 현재 `--random-threads` 실행 경로에는 initialized 상태를 설정하는 함수가 빠진 것으로 보이는 문제가 있습니다. 대상 build에서 실제 상태 변경을 확인한 뒤 사용해야 합니다.
 

@@ -37,13 +37,13 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 /sys/kernel/debug/aoss_send_message
 ```
 
-프로그램은 shell의 `echo`를 실행하지 않고 다음 메시지를 debugfs node에 직접 씁니다.
+프로그램은 다음 메시지를 debugfs node에 `write()`로 전달합니다.
 
 ```text
 {class:ddr, res:fixed, val:3196}
 ```
 
-테스트가 끝난 후 마지막 fixed DDR 요청을 별도로 해제하지 않습니다.
+테스트 종료 후에도 마지막 fixed DDR 요청이 유지됩니다.
 
 ## 선택 가능한 옵션 전체 정리
 
@@ -54,18 +54,18 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | 옵션 | 기본값 | 설명 |
 |---|---:|---|
 | `-M <MiB>` | 자동 | 시험에 사용할 메모리 크기입니다. Android에서는 LMKD와 system process를 고려하여 직접 지정하는 것이 안전합니다. |
-| `--reserve_memory <MiB>` | 0 | `-M`을 생략했을 때 운영체제에 남길 메모리입니다. 실제 parser는 하이픈이 아니라 밑줄을 사용합니다. |
+| `--reserve_memory <MiB>` | 0 | `-M` 자동 계산에서 운영체제용으로 남길 메모리입니다. 옵션 이름에는 밑줄을 사용합니다. |
 | `-H <MiB>` | 0 | 시험에 필요한 최소 huge page 용량입니다. |
-| `-s <초>` | 20 | Worker가 동작하는 시험 시간입니다. 초기 pattern 기록 시간과 마지막 정리 시간은 포함하지 않습니다. |
+| `-s <초>` | 20 | Worker가 동작하는 시험 시간입니다. 초기 pattern 기록과 마지막 정리는 이 시간의 앞뒤에서 실행됩니다. |
 | `-p <byte>` | 1 MiB | stressapptest가 queue에서 관리하는 한 memory block의 크기입니다. 1,024 byte 이상의 2의 거듭제곱이어야 합니다. |
 | `-m <개수>` | online CPU 수 | 메모리를 읽고 다른 block에 복사하면서 checksum을 계산하는 Copy Worker 수입니다. |
 | `-i <개수>` | 0 | block 데이터를 반전하여 읽기·쓰기와 cache 관리 동작을 반복하는 Invert Worker 수입니다. |
-| `-c <개수>` | 0 | block을 복사하지 않고 checksum과 pattern을 검사하는 Check Worker 수입니다. |
+| `-c <개수>` | 0 | Block의 checksum과 pattern을 검사하는 Check Worker 수입니다. |
 | `-C <개수>` | 0 | 부동소수점 연산으로 CPU 부하를 추가하는 CPU Stress Worker 수입니다. |
 | `-W` | 사용 안 함 | AArch64에서는 NEON load/store와 checksum을 사용하는 CPU 부하가 큰 복사 경로를 선택합니다. |
 | `-F` | 사용 안 함 | transaction마다 수행하는 checksum 검사를 생략하고 일반 `memcpy()` 경로를 사용합니다. |
-| `-A` | 사용 안 함 | 완전히 지원되지 않는 환경에서도 제한된 기능으로 실행을 허용합니다. |
-| `--coarse_grain_lock` | 사용 안 함 | 기본 block별 lock 대신 queue 전체를 하나의 lock으로 관리합니다. Queue 구현 비교용 옵션입니다. |
+| `-A` | 사용 안 함 | 일부 호환성 검사를 완화하여 제한된 기능으로 실행합니다. |
+| `--coarse_grain_lock` | 사용 안 함 | Queue 전체를 하나의 lock으로 관리합니다. Queue lock 방식 비교에 사용합니다. |
 | `--random-threads <개수>` | 0 | 각 raw disk write thread에 추가할 random disk thread 수입니다. |
 
 ### Pattern과 DDR 제어
@@ -76,7 +76,7 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | `--ddr-freq <주파수>` | 사용 안 함 | 값 하나를 AOSS fixed DDR 값으로 사용합니다. |
 | `--ddr-freq <a,b,...>` | 사용 안 함 | 지정한 값만 입력 순서대로 sweep합니다. |
 | `--ddr-freq all` | 사용 안 함 | 이 fork에 등록된 전체 DDR 값 목록을 순서대로 sweep합니다. |
-| `--ddr-step <초>` | 3 | 다음 DDR 값으로 전환하기까지의 시간입니다. `--ddr-freq`가 없으면 단독으로 동작하지 않습니다. |
+| `--ddr-step <초>` | 3 | DDR sweep에서 각 값을 유지하는 시간입니다. `--ddr-freq`와 함께 사용합니다. |
 | `--ddr-node <경로>` | `/sys/kernel/debug/aoss_send_message` | Qualcomm AOSS control node 경로를 변경합니다. |
 
 ### 로그와 오류 처리
@@ -87,10 +87,10 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | `-v <0-20>` | 8 | 로그 상세도를 지정합니다. 숫자가 클수록 더 많은 로그가 출력됩니다. |
 | `--printsec <초>` | 10 | 남은 실행 시간을 출력하는 간격입니다. |
 | `--no_timestamps` | 사용 안 함 | 각 로그 앞의 wall-clock timestamp를 제거합니다. |
-| `--max_errors <개수>` | 제한 없음 | Main control loop에서 전체 오류 수가 지정값을 초과하면 시험을 조기 종료합니다. 즉시 종료가 아니라 확인 주기만큼 지연될 수 있습니다. |
-| `--stop_on_errors` | 사용 안 함 | 첫 오류 정지를 위한 기존 옵션입니다. 현재 일반 RAM miscompare 경로에서는 모든 Worker의 즉시 종료를 보장하지 않습니다. 철자는 반드시 `errors`입니다. |
-| `--no_errors` | 사용 안 함 | ECC 등 운영체제 오류 polling을 비활성화합니다. Pattern 비교 자체를 끄는 옵션은 아닙니다. |
-| `--force_errors` | 사용 안 함 | 오류 처리 경로 점검을 위해 인위적인 데이터 오류를 삽입합니다. 제품 판정 시험에는 사용하지 않습니다. |
+| `--max_errors <개수>` | 제한 없음 | 전체 오류 수가 지정값을 초과하면 main control loop가 종료 절차를 시작합니다. 확인 주기에 따라 종료 시점이 결정됩니다. |
+| `--stop_on_errors` | 사용 안 함 | 첫 오류 이후 종료 절차를 요청합니다. 일반 RAM miscompare는 Worker별 처리 중인 작업을 마친 뒤 정리됩니다. 옵션 철자는 `errors`입니다. |
+| `--no_errors` | 사용 안 함 | 운영체제 오류를 확인하는 `ErrorPollThread`를 중지합니다. Pattern 비교는 계속 실행됩니다. |
+| `--force_errors` | 사용 안 함 | 오류 처리 경로 점검용 데이터 오류를 삽입합니다. 시험 환경 검증에 사용합니다. |
 | `--force_errors_like_crazy` | 사용 안 함 | 다량의 인위적 오류를 반복 삽입합니다. 로그와 오류 처리 시험용입니다. |
 | `--monitor_mode` | 사용 안 함 | 메모리 부하 없이 ECC 등 오류 상태만 polling합니다. |
 
@@ -104,10 +104,10 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | `--cc_line_size <byte>` | 자동 | 자동 검출한 cache line 크기를 덮어씁니다. |
 | `--no_affinity` | 사용 안 함 | stressapptest 내부 CPU affinity 설정을 비활성화합니다. 외부 `taskset`과 함께 사용할 때 유용합니다. |
 | `--local_numa` | 사용 안 함 | Worker가 실행되는 NUMA node의 메모리를 우선 사용합니다. |
-| `--remote_numa` | 사용 안 함 | Worker와 다른 NUMA node의 메모리를 우선 사용합니다. 일반적인 모바일 SoC에서는 NUMA 정보가 제공되지 않을 수 있습니다. |
+| `--remote_numa` | 사용 안 함 | Worker와 다른 NUMA node의 메모리를 우선 사용합니다. NUMA 정보를 제공하는 target에서 적용됩니다. |
 | `--tag_mode` | 사용 안 함 | 각 cache line의 첫 8 byte에 virtual address 기반 tag를 기록하여 주소 전달 오류를 검사합니다. |
-| `--do_page_map` | 사용 안 함 | 시험에서 접근한 physical page 범위를 출력합니다. Android 권한 정책에 따라 physical address를 얻지 못할 수 있습니다. |
-| `--paddr_base <주소>` | 0 | 지원되는 memory allocator에서 사용할 physical base address를 지정합니다. 일반 Android anonymous memory에서는 그대로 적용되지 않을 수 있습니다. |
+| `--do_page_map` | 사용 안 함 | 시험에서 접근한 physical page 범위를 출력합니다. `/proc/self/pagemap` 접근이 허용된 Android 환경에서 주소를 표시합니다. |
+| `--paddr_base <주소>` | 0 | Physical base 지정 기능을 제공하는 memory allocator에서 시작 주소를 설정합니다. 공통 Android allocator는 anonymous memory를 사용합니다. |
 | `--pause_delay <초>` | 600 | Worker를 일시 정지하여 power spike를 만드는 주기입니다. |
 | `--pause_duration <초>` | 15 | 각 pause 상태를 유지하는 시간입니다. |
 | `--cpu_freq_test` | 사용 안 함 | CPU clock 측정 시험을 추가합니다. DDR sweep 기능과는 별도입니다. |
@@ -115,7 +115,7 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | `--cpu_freq_round <MHz>` | 10 | 측정한 CPU frequency를 반올림하는 단위입니다. |
 | `--channel_hash <mask>` | `0x40` | Physical address를 memory channel로 해석할 때 사용하는 address bit mask입니다. |
 | `--channel_width <bit>` | 64 | Memory channel 폭을 지정합니다. |
-| `--memory_channel <이름,...>` | 사용 안 함 | Channel에 속한 module 이름을 지정합니다. Vendor mapping 정보가 없으면 LPDDR bank·row 위치를 자동으로 계산하지 못합니다. |
+| `--memory_channel <이름,...>` | 사용 안 함 | Channel별 module 이름을 지정합니다. LPDDR bank·row 계산에는 vendor address map이 필요합니다. |
 
 ### File, raw disk와 network 시험
 
@@ -137,7 +137,7 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | `--listen` | 사용 안 함 | 다른 stressapptest Network Worker의 연결을 받는 listener를 실행합니다. |
 | `-h`, `--help` | 해당 없음 | 프로그램 도움말을 출력하고 종료합니다. |
 
-Android 모바일 DRAM 시험의 기본 구성에서는 주로 `-M`, `-s`, `-m`, `-i`, `-c`, `-P`, `--printsec`, `--max_errors`, `--ddr-freq`, `--ddr-step`을 사용합니다. File, raw disk와 network 옵션은 DRAM-only 시험에는 필요하지 않습니다.
+Android 모바일 DRAM 시험은 주로 `-M`, `-s`, `-m`, `-i`, `-c`, `-P`, `--printsec`, `--max_errors`, `--ddr-freq`, `--ddr-step`으로 구성합니다. File, raw disk와 network 옵션은 각 장치의 I/O 시험에 사용합니다.
 
 ## 휴대폰에 설치
 
@@ -178,7 +178,7 @@ cd /data/local/tmp
   -P OneZero256
 ```
 
-패턴 이름은 대소문자를 구분하지 않습니다. `-P`를 생략하면 upstream과 동일하게 가중치 기반 무작위 패턴 선택을 사용합니다.
+패턴 이름은 대소문자를 동일하게 처리합니다. `-P`의 기본 동작은 upstream의 가중치 기반 무작위 선택입니다.
 
 lowercase `-p`는 기존 memory block 크기 옵션입니다. 패턴 선택에는 반드시 uppercase `-P`를 사용합니다.
 
@@ -191,7 +191,7 @@ lowercase `-p`는 기존 memory block 크기 옵션입니다. 패턴 선택에�
   -P OneZero256,FiveA256,walkingOnes128
 ```
 
-Pattern 선택 호출 순서는 보존됩니다. 여러 Fill Worker가 block을 병렬로 가져오므로 메모리 주소의 증가 순서와 pattern 순서는 일치하지 않을 수 있습니다. 이 기능은 각 pattern을 일정 시간씩 실행하는 단계 전환 방식이 아니라 block별 순환 배정 방식입니다.
+Pattern은 입력 목록의 순서대로 선택됩니다. 여러 Fill Worker가 block을 병렬로 처리하므로 주소별 배치 순서는 실행 시점에 결정됩니다. `-P`는 pattern 목록을 block 단위로 순환 배정합니다.
 
 ## DDR 주파수 하나로 고정
 
@@ -225,7 +225,7 @@ OneZero256 패턴을 3196 요청값으로 10분 동안 실행합니다.
 
 ## 선택한 DDR 주파수만 sweep
 
-쉼표 사이에 공백을 넣지 않습니다.
+주파수 값은 공백 없이 쉼표로 연결합니다.
 
 ```bash
 ./stressapptest \
@@ -236,7 +236,7 @@ OneZero256 패턴을 3196 요청값으로 10분 동안 실행합니다.
   --ddr-step 3
 ```
 
-`--ddr-step`은 선택 옵션이며 기본값은 3초입니다. `--ddr-freq`를 생략하면 DDR 제어 기능은 비활성화되고 AOSS node를 열거나 쓰지 않습니다. `--ddr-step`만 지정해도 DDR 주파수는 변경되지 않습니다.
+`--ddr-step`의 기본값은 3초입니다. DDR 제어는 `--ddr-freq`를 지정한 실행에서 활성화됩니다. `--ddr-step`은 해당 주파수 목록의 전환 간격을 설정합니다.
 
 ## 로그 확인
 
@@ -252,11 +252,19 @@ Memory mismatch가 발생하면 세 시점의 DDR 값이 같은 오류 record에
 Hardware Error: miscompare on CPU 3(<-1) at ...: read:0x0000000000000000, reread:0xffffffff00000000 expected:0xffffffff00000000. 'OneZero256' read error. ddr_freq(write=3196 read=4266 reread=5333).
 ```
 
-`write`는 해당 block의 expected data를 마지막으로 전체 기록하기 직전에 저장한 값, `read`는 mismatch가 발생한 최초 load 직전에 저장한 값, `reread`는 `Flush()` 호출 뒤 다시 load하기 직전에 저장한 값입니다. Sweep 전환이 이 동작 사이에 발생하면 세 값이 서로 다를 수 있습니다.
+세 값은 각 memory 동작 직전의 DDR 설정값입니다.
 
-각 숫자는 AOSS node에 마지막으로 성공적으로 쓴 내부 기록값이며 실제 DDR clock readback 결과가 아닙니다. DDR 제어를 사용하지 않았거나 write metadata가 없는 경로는 `unknown`으로 표시됩니다. 제품의 clock readback node가 있다면 별도 계측값과 함께 확인해야 합니다.
+| 필드 | 저장 시점 |
+|---|---|
+| `write` | Block의 expected data를 마지막으로 전체 기록하기 직전 |
+| `read` | `CheckRegion()`의 mismatch load 직전 |
+| `reread` | `Flush()` 호출 후 두 번째 load 직전 |
 
-최초 read 뒤에는 한 번의 `CheckRegion()`에서 최대 128개 오류를 먼저 수집하고 각 주소를 순차적으로 reread합니다. 따라서 오류 출력이 많으면 `read`와 `reread` 사이에 다음 3초 sweep 전환이 발생할 수 있습니다. Logger queue에서 출력이 지연되어도 세 값은 각 동작 시점에 이미 record에 저장되어 있습니다.
+Sweep 전환이 세 동작 사이에 발생하면 각 필드에 서로 다른 값이 저장됩니다.
+
+각 숫자는 AOSS node의 `write()`에 성공한 설정값입니다. Hardware DDR clock은 제품의 readback node 또는 hardware counter로 측정합니다. DDR metadata가 없는 record에는 `unknown`이 표시됩니다.
+
+`CheckRegion()`은 최대 128개 오류를 수집한 후 각 주소를 순차적으로 reread합니다. 이 처리 중 sweep 전환이 발생할 수 있습니다. 각 주파수 값은 memory 동작 시점에 record에 저장되며 Logger 대기 중에도 유지됩니다.
 
 ## Read와 reread를 수행하는 이유
 
@@ -274,40 +282,40 @@ Pattern에 맞는 expected data를 cacheable memory에 기록
  → 해당 주소에 expected 값을 다시 기록
 ```
 
-Reread의 목적은 첫 번째 불일치가 같은 주소를 다시 읽었을 때도 유지되는지 확인하는 것입니다. 원래 설계 의도는 cache line을 정리한 뒤 재검사하여 일시적인 첫 read와 지속되는 잘못된 데이터를 구분하는 것입니다. 그러나 아래 AArch64 제한 때문에 Android ARM64에서는 이를 DRAM read와 DRAM write의 확정 판정으로 사용할 수 없습니다.
+Reread는 같은 주소의 두 번째 관찰값을 수집합니다. `read`와 `reread`의 관계를 사용하여 mismatch의 지속 여부를 확인합니다. Android ARM64에서는 아래 cache 관리 조건을 함께 적용하여 결과를 해석합니다.
 
-### 최초 read는 cache miss가 보장되지 않음
+### 최초 read의 cache 경로
 
-`CheckRegion()`은 최초 word read 전에 cache flush를 실행하지 않습니다. 이전 checksum 계산이나 다른 Worker의 접근으로 같은 line이 cache에 남아 있으면 cache hit가 발생할 수 있습니다. 반대로 working set이 cache보다 크고 다른 Worker가 계속 접근하면 자연스럽게 evict되어 cache miss가 발생할 수도 있습니다.
+`CheckRegion()`의 word read에는 사전 cache flush가 없습니다. 같은 line이 cache에 있으면 cache hit로 처리됩니다. Working set 증가와 다른 Worker의 접근으로 line이 evict된 상태에서는 cache miss가 발생합니다.
 
-따라서 다음과 같이 이해해야 합니다.
+최초 read의 의미는 다음과 같습니다.
 
 ```text
-최초 read = 검사 시점에 CPU load가 관찰한 값
-최초 read ≠ 항상 DRAM에서 직접 가져온 값
+최초 read = 검사 시점의 CPU load가 관찰한 값
+응답 계층 = 현재 cache 상태와 coherency 동작에 따라 결정
 ```
 
 <sub><em>Cache hit: 요청한 cache line이 현재 cache에 있어 하위 cache나 DRAM 접근 없이 값을 반환하는 상태입니다.</em></sub>
 <sub><em>Cache miss: 요청한 line이 현재 cache에 없어 하위 cache 또는 memory hierarchy에서 가져와야 하는 상태입니다.</em></sub>
 <sub><em>Eviction: 다른 cache line을 배치하기 위해 기존 cache line을 cache에서 내보내는 동작입니다.</em></sub>
 
-### Write와 read마다 cache line을 flush하는지
+### 동작별 cache 관리
 
 | 동작 경로 | 명시적인 cache 관리 | AArch64에서의 의미 |
 |---|---|---|
 | 초기 `FillPage()` pattern write | 없음 | 일반 cacheable store입니다. Dirty line은 coherency와 eviction에 따라 이후 write-back됩니다. |
 | 기본 `CrcCopyPage()` | 없음 | Source를 읽고 destination에 쓰면서 checksum을 계산합니다. Cache hit·miss는 현재 cache 상태에 따라 결정됩니다. |
-| `CheckRegion()` 최초 read | 없음 | CRC mismatch 뒤 64-bit word를 비교하지만 DRAM read를 강제하지 않습니다. |
-| `InvertPageUp/Down()` | 각 처리 구간 뒤 `FastFlushHint()` 직접 호출 | AArch64 `FastFlush()`의 `dc cvau`를 실행하여 data cache line을 PoU까지 clean합니다. Data cache invalidate 명령은 아닙니다. |
-| `ProcessError()` reread 직전 | `OsLayer::Flush()` 호출 | 현재 공개 AArch64 경로에서는 실제 cache 관리 명령이 실행되지 않습니다. |
-| 오류 복구 expected write 뒤 | `OsLayer::Flush()` 호출 | 현재 공개 AArch64 경로에서는 실제 cache 관리 명령이 실행되지 않습니다. |
+| `CheckRegion()` 최초 read | 없음 | CRC mismatch 구간을 64-bit 단위로 비교합니다. 응답 계층은 현재 cache 상태에 따라 결정됩니다. |
+| `InvertPageUp/Down()` | 각 처리 구간 뒤 `FastFlushHint()` 호출 | AArch64 `dc cvau`가 data cache line을 PoU까지 clean합니다. Line의 valid 상태는 유지될 수 있습니다. |
+| `ProcessError()` reread 직전 | `OsLayer::Flush()` 호출 | 공개 AArch64 경로의 `has_clflush_` 값이 `false`이므로 함수가 바로 반환합니다. |
+| 오류 복구 expected write 뒤 | `OsLayer::Flush()` 호출 | 공개 AArch64 경로의 `has_clflush_` 값이 `false`이므로 함수가 바로 반환합니다. |
 
 <sub><em>Write-back: CPU가 cache에 수정한 dirty line을 하위 cache 또는 memory hierarchy로 기록하는 동작입니다.</em></sub>
-<sub><em>Clean: dirty cache line의 값을 지정된 coherency 지점까지 기록하지만 해당 line을 cache에서 반드시 무효화하지는 않는 동작입니다.</em></sub>
-<sub><em>Invalidate: cache line을 유효하지 않은 상태로 바꾸어 다음 load가 해당 cache entry를 그대로 사용하지 못하게 하는 동작입니다.</em></sub>
-<sub><em>PoU: Point of Unification의 약어이며 instruction fetch와 data access가 같은 memory 값을 관찰하도록 합쳐지는 지점입니다. DRAM 자체와 동일한 의미가 아닙니다.</em></sub>
+<sub><em>Clean: Dirty cache line의 값을 지정된 coherency 지점까지 기록하는 동작입니다. Cache line의 valid 상태는 유지될 수 있습니다.</em></sub>
+<sub><em>Invalidate: Cache line을 invalid 상태로 변경하여 다음 load가 하위 memory 계층에서 값을 요청하게 하는 동작입니다.</em></sub>
+<sub><em>PoU: Point of Unification의 약어이며 instruction fetch와 data access가 같은 값을 관찰하도록 합쳐지는 지점입니다.</em></sub>
 
-### AArch64에서 `Flush()`가 실제로 동작하지 않는 이유
+### AArch64 `Flush()` 실행 조건
 
 `OsLayer::Flush()`는 `has_clflush_`가 true일 때만 `FastFlush()`를 호출합니다.
 
@@ -319,22 +327,22 @@ void OsLayer::Flush(void *vaddr) {
 }
 ```
 
-현재 `OsLayer::GetFeatures()`의 AArch64 분기는 NEON 사용 여부만 설정하고 `has_clflush_`는 false로 유지합니다. 따라서 Android ARM64에서 `ProcessError()`가 `Flush()` 함수를 호출하더라도 실제 `dc` cache 관리 명령은 실행되지 않습니다.
+현재 `OsLayer::GetFeatures()`의 AArch64 분기는 `has_clflush_`를 `false`로 유지합니다. Android ARM64에서 `ProcessError()`의 `Flush()`는 조건문을 확인한 뒤 반환합니다.
 
-또한 AArch64 `FastFlush()` 구현 자체는 `dc cvau`를 사용합니다. 이 명령은 data cache line을 PoU까지 clean하지만 data cache line을 invalidate하지 않습니다. 그러므로 `FastFlush()`를 직접 호출하는 Invert 경로도 다음 load의 DRAM 접근을 항상 보장하지 않습니다.
+AArch64 `FastFlush()`는 `dc cvau`를 사용하여 data cache line을 PoU까지 clean합니다. Line은 valid 상태로 유지될 수 있습니다. Invert 경로의 다음 load 응답 계층은 해당 시점의 cache 상태에 따라 결정됩니다.
 
-Android ARM64에서 cache를 확실히 clean·invalidate하여 하위 memory access를 유도하려면 EL0 cache-maintenance 권한, SoC coherency 구조와 Point of Coherency를 고려한 별도 구현이 필요합니다. 일반적으로는 검증된 vendor kernel driver 또는 권한이 확인된 AArch64 cache-maintenance 경로를 사용해야 합니다.
+Android ARM64의 강제 clean·invalidate 기능은 EL0 cache-maintenance 권한, SoC coherency 구조와 Point of Coherency를 반영한 경로로 구현합니다. 제품 시험에는 검증된 vendor kernel driver 또는 권한이 확인된 AArch64 cache-maintenance 경로를 사용합니다.
 
 ### Read와 reread 결과 해석
 
 | 결과 | stressapptest 동작 | 올바른 해석 |
 |---|---|---|
-| `read != expected`, `reread == expected` | 일반 miscompare 로그에 `read error` 문자열 추가 | 첫 번째 관찰만 일시적으로 잘못되었음을 의미합니다. Read path 또는 cache 관찰 문제의 근거가 될 수 있지만 DRAM read failure를 확정하지 않습니다. |
-| `read == reread`, 두 값 모두 `expected`와 다름 | 같은 잘못된 값이 두 번 관찰됨 | Data가 검사 전에 잘못 기록되었거나 지속적으로 잘못 저장·전달되는 상태의 근거입니다. Write failure로 단정할 수 없습니다. |
-| `read != reread`, 두 값 모두 `expected`와 다름 | 서로 다른 잘못된 값이 연속 관찰됨 | 반복 read 불안정, cache/coherency 변화 또는 진행 중인 data corruption을 검토해야 합니다. 단일 read/write 분류가 불가능합니다. |
-| `read == expected` | ErrorRecord를 만들지 않음 | 정상 비교이므로 reread를 수행하지 않습니다. |
+| `read != expected`, `reread == expected` | 일반 miscompare 로그에 `read error` 문자열 추가 | 첫 상세 검사와 두 번째 load 사이에서 관찰값이 expected로 변경됐습니다. CPU, cache, coherency와 read data path를 확인합니다. |
+| `read == reread`, 두 값 모두 `expected`와 다름 | 같은 mismatch 값이 두 번 관찰됨 | Mismatch가 두 번의 load 동안 유지됐습니다. 마지막 write 이후의 데이터 상태와 반복 재현성을 확인합니다. |
+| `read != reread`, 두 값 모두 `expected`와 다름 | 서로 다른 mismatch 값이 연속 관찰됨 | 두 load 사이에서 관찰값이 변경됐습니다. CPU migration, cache 상태와 transient data path를 확인합니다. |
+| `read == expected` | 정상 비교로 처리 | 현재 word 검사를 종료하고 다음 word로 이동합니다. |
 
-따라서 `read == reread`이면 무조건 write failure이고 `read != reread`이면 무조건 read failure라는 해석은 정확하지 않습니다. 현재 Android ARM64 구현에서는 reread 전에 data cache invalidate가 보장되지 않기 때문에 이 구분은 더욱 제한적입니다. 가장 강한 software 근거는 `reread == expected`일 때 첫 번째 관찰만 일시적으로 달랐다는 사실까지입니다.
+이 표는 두 load에서 CPU가 관찰한 값의 관계를 나타냅니다. 공개 Android ARM64 경로의 reread는 현재 cache 상태를 유지한 CPU load입니다. Hardware 발생 위치는 CPU·cache PMU, interconnect, memory controller, PHY, DRAM과 RAS 정보를 함께 사용하여 판정합니다.
 
 ## 직접 Android ARM64 빌드
 
@@ -351,7 +359,7 @@ export ANDROID_NDK_HOME=/path/to/android-ndk
 out/android-arm64/stressapptest
 ```
 
-빌드 스크립트는 `aarch64-linux-android` target, PIE, pthread, `STRESSAPPTEST_CPU_AARCH64`를 사용합니다. C++ runtime은 실행 파일에 정적으로 연결하므로 휴대폰에 `libc++_shared.so`를 별도로 복사하지 않습니다.
+빌드 스크립트는 `aarch64-linux-android` target, PIE, pthread, `STRESSAPPTEST_CPU_AARCH64`를 사용합니다. C++ runtime은 실행 파일에 정적으로 포함됩니다.
 
 ## GitHub Actions 자동 빌드와 Release
 
@@ -404,7 +412,7 @@ License: Apache License 2.0
 5. [메모리 Worker 종류와 동작](docs/07-memory-workers.md)
 6. [목적에 따른 테스트 명령](docs/12-test-recipes.md)
 7. [부하와 오류를 측정하는 방법](docs/13-measurement.md)
-8. [오류 로그 생성 과정과 DRAM 주파수 기록](docs/17-logging-and-dram-frequency.md)
+8. [오류 로그 처리 과정과 DRAM 주파수 기록](docs/17-logging-and-dram-frequency.md)
 
 사이트 메뉴는 [`mkdocs.yml`](mkdocs.yml), 본문 style은 [`docs/stylesheets/extra.css`](docs/stylesheets/extra.css)에서 관리합니다.
 
@@ -446,7 +454,7 @@ stressapptest -M 512 -s 60 -m 0 -i 4
 stressapptest -M 512 -s 60 -m 4 -C 4
 ```
 
-`-d ... --destructive`는 지정한 block device를 덮어씁니다. 저장 데이터가 있는 기기에서는 사용하지 않습니다.
+`-d ... --destructive`는 지정한 block device를 덮어씁니다. 데이터 삭제가 허용된 시험용 장치에만 사용합니다.
 
 ### Upstream과 라이선스
 

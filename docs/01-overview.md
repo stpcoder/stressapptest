@@ -76,7 +76,7 @@ for (int i = 0; i < memory_threads_; i++) {
 workers_map_.insert(make_pair(kMemoryType, memory_vector));
 ```
 
-**코드 설명:** `-m N`을 지정하면 `CopyThread` 객체 N개를 만듭니다. `-m`을 지정하지 않으면 온라인 상태의 논리 CPU 수를 사용합니다. File, Network, Check, Invert, Disk 및 CPU Worker도 각 옵션에서 지정한 개수만큼 별도의 목록에 추가됩니다.
+**코드 설명:** `-m N`은 `CopyThread` 객체 N개를 만듭니다. 기본값은 온라인 상태의 논리 CPU 수입니다. File, Network, Check, Invert, Disk와 CPU Worker는 각 옵션에서 지정한 개수만큼 별도 목록에 추가됩니다.
 
 ## 메모리 부하 과정
 
@@ -112,7 +112,7 @@ CopyThread는 queue에서 읽을 원본 block과 쓸 대상 block을 하나씩 �
 
 ## Worker 종류
 
-별도의 옵션을 지정하지 않았을 때 각 작동 단계에서 생성되는 Worker는 다음과 같습니다.
+기본 옵션에서 각 작동 단계에 생성되는 Worker는 다음과 같습니다.
 
 | 작동 단계 | 생성되는 Worker와 역할 |
 |---|---|
@@ -122,11 +122,11 @@ CopyThread는 queue에서 읽을 원본 block과 쓸 대상 block을 하나씩 �
 | 오류 상태 확인 | ErrorPollThread 1개 생성. Generic ARM에서는 항상 오류 0개 반환 |
 | 마지막 전체 검사 | CheckThread 8개가 남은 valid block 검사 |
 
-초기 데이터 쓰기와 마지막 전체 검사는 `-s`로 지정한 실행 시간에 포함되지 않습니다. 전체 실행 시간은 초기 데이터 쓰기, 설정 시간 동안의 Worker 실행, 마지막 전체 검사 시간을 모두 합한 값입니다.
+초기 데이터 쓰기는 `-s` 구간 전에, 마지막 전체 검사는 `-s` 구간 후에 실행됩니다. 전체 실행 시간은 세 구간의 합입니다.
 
 ## CPU 수와 Worker 배치
 
-`OsLayer::Initialize()`는 `_SC_NPROCESSORS_ONLN`으로 온라인 상태의 논리 CPU 수를 확인합니다. `-m`을 지정하지 않으면 이 값을 CopyThread 수로 사용합니다 (`src/os.cc:108`, `src/sat.cc:148`).
+`OsLayer::Initialize()`는 `_SC_NPROCESSORS_ONLN`으로 온라인 상태의 논리 CPU 수를 확인하고 `-m`의 기본값으로 사용합니다 (`src/os.cc:108`, `src/sat.cc:148`).
 
 CopyThread 수와 CpuStressThread 수의 합이 사용 가능한 CPU 수 이하이면 각 Worker를 특정 CPU에 고정합니다. Worker 수가 더 많으면 CPU 고정을 생략하고 Android/Linux scheduler가 여러 Worker를 번갈아 실행합니다.
 
@@ -152,6 +152,6 @@ Worker 하나가 CPU 하나에서 계속 실행되는지는 온라인 CPU 수, �
 
 이 조건이 겹치면 L1/L2/SLC cache miss, cache refill, dirty line write-back, NoC 데이터 이동, DMC 요청이 증가합니다. 테스트 메모리는 운영체제가 설정한 일반 cacheable 속성을 그대로 사용합니다.
 
-<sub><em>Cache miss: 요청한 cache line이 현재 cache level에 존재하지 않아 하위 계층 조회가 필요한 상태입니다.</em></sub>
+<sub><em>Cache miss: 현재 cache level에서 요청한 line을 찾지 못해 하위 계층을 조회하는 상태입니다.</em></sub>
 <sub><em>Refill: cache miss가 발생한 line을 하위 cache 또는 system memory에서 가져와 cache에 채우는 동작입니다.</em></sub>
 <sub><em>Dirty write-back: CPU store로 수정된 cache line을 하위 cache 또는 system memory 방향으로 기록하는 동작입니다.</em></sub>

@@ -183,7 +183,7 @@ stressapptest -M 256 -s 60 -m 0 \
 stressapptest -M 512 -s 60 -m 4 --tag_mode
 ```
 
-각 cache line의 첫 word에 virtual address tag를 기록합니다. 일반 pattern 시험과 데이터 구성이 다르므로 별도 시험 항목으로 관리해야 합니다. 파일·네트워크·저장 장치 옵션과 함께 사용하면 안 됩니다.
+각 cache line의 첫 word에 virtual address tag를 기록합니다. 일반 pattern 시험과 별도 항목으로 실행합니다. 이 항목은 memory Worker 구성으로 단독 실행합니다.
 
 ## 9. 주기적인 부하 정지와 재시작
 
@@ -237,4 +237,4 @@ stressapptest -M 512 -s 120 -m 4 \
 - `InvertThread`: 값을 읽고 bit를 반전한 뒤 같은 주소에 씁니다.
 - `CheckThread`: 테스트 데이터를 읽고 검사합니다.
 
-지속적인 쓰기 전용 접근이 필요하면 별도 Worker를 구현하거나 메모리 bandwidth 전용 도구를 함께 사용해야 합니다. Stressapptest의 기본 목적은 데이터를 이동하면서 정확성을 검사하는 것이므로 쓰기 전용 Worker는 제공하지 않습니다.
+Stressapptest의 기본 Worker는 데이터를 이동하면서 정확성을 검사합니다. 지속적인 write-only 접근은 별도 Worker 또는 memory bandwidth 도구로 구성합니다.
