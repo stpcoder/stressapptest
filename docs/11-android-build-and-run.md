@@ -55,7 +55,7 @@ CHECKOPTS
 STRESSAPPTEST_CPU_AARCH64
 ```
 
-`src/stressapptest_config_android.h`를 출력 경로에 `stressapptest_config.h`라는 이름으로 준비하여 공개 소스의 autoconf include 방식을 맞춥니다.
+Standalone build는 `STRESSAPPTEST_CONFIG_ANDROID`를 정의하여 `src/stressapptest_config_android.h`를 직접 선택합니다. 따라서 같은 source tree에서 Linux host build가 먼저 `src/stressapptest_config.h`를 생성해도 Android architecture 설정을 덮어쓰지 않습니다.
 
 > **파일:** `scripts/build_android_arm64.sh` · **구간:** AArch64 compiler 호출 · **기준:** 이 fork
 
@@ -70,6 +70,7 @@ STRESSAPPTEST_CPU_AARCH64
   -pthread \
   -static-libstdc++ \
   -DHAVE_CONFIG_H \
+  -DSTRESSAPPTEST_CONFIG_ANDROID \
   -DANDROID \
   -DNDEBUG \
   -UDEBUG \

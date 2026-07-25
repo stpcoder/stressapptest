@@ -34,9 +34,6 @@ if [[ ! -x "${cxx}" ]]; then
 fi
 
 mkdir -p "${output_dir}"
-install -m 0644 \
-  "${repo_root}/src/stressapptest_config_android.h" \
-  "${output_dir}/stressapptest_config.h"
 
 sources=(
   src/main.cc
@@ -69,6 +66,7 @@ done
   -pthread \
   -static-libstdc++ \
   -DHAVE_CONFIG_H \
+  -DSTRESSAPPTEST_CONFIG_ANDROID \
   -DANDROID \
   -DNDEBUG \
   -UDEBUG \
