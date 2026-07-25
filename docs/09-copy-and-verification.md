@@ -4,7 +4,7 @@
 
 ## 검증에 사용하는 checksum
 
-`CrcCopyPage`와 `CrcCheckPage`가 사용하는 checksum은 `src/adler32memcpy.cc`에 구현된 modified Adler 방식입니다. 함수 이름에 `Crc`가 포함되어 있지만 CRC polynomial 연산은 사용하지 않습니다.
+`CrcCopyPage`와 `CrcCheckPage`는 `src/adler32memcpy.cc`의 modified Adler checksum을 사용합니다. `Crc`는 함수 이름에 유지된 명칭입니다.
 
 32-bit 데이터 word를 네 개의 누산기에 번갈아 반영합니다.
 
@@ -13,7 +13,7 @@ a1, a2: 데이터 값을 더하는 누산기
 b1, b2: a 누산기의 값을 다시 더하는 누산기
 ```
 
-이 checksum은 반복 pattern의 데이터 변화를 빠르게 찾는 용도로 사용합니다. 암호학적 checksum과 같은 충돌 방지 성능이나 CRC polynomial 방식의 오류 검출 특성을 제공하지는 않습니다.
+이 checksum은 반복 pattern의 데이터 변화를 빠르게 찾습니다. 네 누산기 기반의 modified Adler 특성과 충돌 확률을 기준으로 검사 결과를 해석합니다.
 
 <sub><em>Modified Adler checksum: 네 개의 누산기로 32-bit data word와 누적합을 계산하는 stressapptest의 고속 검증값입니다.</em></sub>
 <sub><em>Collision: 서로 다른 데이터가 동일한 checksum 결과를 생성하는 경우입니다.</em></sub>
@@ -50,7 +50,7 @@ while (i < count) {
 crc_->Set(a1, a2, b1, b2);
 ```
 
-**코드 설명:** 네 누산기에 pattern으로 만든 4 KiB의 32-bit word를 순서대로 반영합니다. 이 값은 실제 메모리를 읽은 결과가 아니라, 이후 검사에 사용할 기대값입니다.
+**코드 설명:** Pattern으로 만든 4 KiB의 32-bit word를 네 누산기에 순서대로 반영하여 expected checksum을 계산합니다. 이후 실제 memory checksum과 비교합니다.
 
 기본 1 MiB SAT block은 4 KiB 검사 구간 256개로 나뉩니다. Pattern이 주기적으로 반복되므로 각 구간을 같은 기대 checksum과 비교합니다.
 
@@ -129,7 +129,7 @@ Checksum이 다르면 `CheckRegion()`이 해당 4 KiB 구간을 64-bit word 단�
 
 ## 일시적인 원본 읽기 오류 확인
 
-첫 checksum은 다르지만 자세한 재검사에서 word 불일치가 발견되지 않으면 일시적인 원본 읽기 오류 처리 경로를 실행합니다.
+Checksum mismatch 후 상세 비교에서 모든 word가 일치하면 일시적인 원본 읽기 오류 처리 경로를 실행합니다.
 
 이 결과는 첫 번째 읽기와 두 번째 읽기의 값이 달랐을 가능성을 의미합니다. 대상에는 첫 복사에서 읽은 값이 저장되어 있으므로 다음 절차로 다시 확인합니다.
 
@@ -155,9 +155,9 @@ Checksum이 다르면 `CheckRegion()`이 해당 4 KiB 구간을 64-bit word 단�
 - pattern name
 - 옵션을 설정한 경우 DIMM·channel 추정값
 
-그 후 잘못된 word를 기대값으로 복구하여 오류 데이터가 다음 복사 작업으로 계속 전달되지 않게 합니다.
+그 후 해당 word에 expected 값을 기록하여 후속 복사 작업의 source 데이터를 복구합니다.
 
-공통 ARM64 구현에서는 다시 읽기 전에 호출하는 cache flush가 실제 cache 관리 명령을 실행하지 않을 수 있습니다. 실제값과 재검사값의 차이로 읽기 오류와 쓰기 오류를 분류할 때에는 `has_clflush_` 상태와 `Flush()` 실행 여부를 함께 확인해야 합니다.
+공통 ARM64 구현의 `has_clflush_` 값은 `false`입니다. 이 조건에서 reread 전 `Flush()`는 바로 반환합니다. 실제값과 reread 값은 현재 cache 상태에서 수행한 두 CPU load의 관찰값으로 해석합니다.
 
 ## 다른 주소의 데이터가 읽힌 경우
 
@@ -167,7 +167,7 @@ Checksum이 다르면 `CheckRegion()`이 해당 4 KiB 구간을 64-bit word 단�
 
 ```text
 데이터 pattern 일부는 우연히 일치할 수 있음
-주소 tag는 현재 대상 주소와 일치하지 않음
+주소 tag와 현재 대상 주소의 mismatch
 ```
 
 따라서 다른 주소의 데이터가 전달된 오류를 더 직접적으로 확인할 수 있습니다.
@@ -188,7 +188,7 @@ Checksum이 다르면 `CheckRegion()`이 해당 4 KiB 구간을 64-bit word 단�
 - 설정한 시험 시간 종료 후 `CheckThread`의 마지막 전체 검사
 - Sector·network protocol 자체의 일부 오류 검사
 
-즉, `-F`는 복사 작업 중의 원본·대상 checksum 검사를 생략하지만 마지막 전체 검사는 유지합니다.
+`-F`는 복사 작업에 `memcpy()`를 사용하고 마지막 전체 검사는 그대로 실행합니다.
 
 ## 오류 검증 기능을 시험하는 옵션
 
@@ -204,7 +204,7 @@ Checksum이 다르면 `CheckRegion()`이 해당 4 KiB 구간을 64-bit word 단�
 - `--stop_on_errors`: 지원되는 오류 처리 경로에서 첫 오류가 발생하면 즉시 프로그램을 종료합니다.
 - `--max_errors N`: 전체 오류 수가 N을 초과하면 주 실행 반복을 조기에 끝냅니다.
 
-현재 주 실행 반복문의 종료 조건은 `errors > max_errorcount_`입니다. 따라서 누적 오류 수가 N과 같을 때가 아니라 N을 초과했을 때 종료 절차가 시작됩니다.
+현재 주 실행 반복문의 종료 조건은 `errors > max_errorcount_`입니다. `--max_errors N`은 누적 오류 수가 N을 초과하는 확인 주기에 종료 절차를 시작합니다.
 
 ## 출력되는 처리량 해석
 
@@ -218,4 +218,4 @@ Worker는 처리한 block 수와 block 크기를 사용하여 논리적 처리�
 | File | 메모리와 저장 장치를 별도로 계산 |
 | Network | 송신과 수신을 합하여 장치 처리량 × 2 |
 
-논리적 처리량에는 checksum 재검사, write allocate, cache refill·write-back, prefetch, queue 상태 정보, filesystem·socket 내부 복사가 직접 반영되지 않습니다. LPDDR bandwidth는 DMC counter로 측정해야 합니다.
+논리적 처리량은 Worker가 보고한 처리 byte를 사용합니다. LPDDR bandwidth에는 checksum 재검사, write allocate, cache refill·write-back과 prefetch가 추가로 반영되므로 DMC counter에서 측정합니다.

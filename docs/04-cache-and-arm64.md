@@ -1,10 +1,10 @@
 # Cache에서 LPDDR까지 데이터가 이동하는 과정
 
-stressapptest는 Android가 제공한 일반 cacheable memory를 사용합니다. cache를 끄거나 LPDDR을 직접 읽고 쓰지는 않습니다. 테스트 영역을 cache 용량보다 크게 설정하고 여러 Worker가 반복해서 접근하면 cache miss와 dirty cache line의 교체가 늘어납니다. 그 결과 하위 cache와 LPDDR로 전달되는 읽기·쓰기 요청이 증가합니다.
+Stressapptest는 Android가 제공한 일반 cacheable memory를 사용합니다. CPU load와 store는 cache hierarchy와 coherency interconnect를 거쳐 처리됩니다. 테스트 영역을 cache 용량보다 크게 설정하고 여러 Worker가 반복 접근하면 cache miss와 dirty cache line 교체가 증가합니다. 이 동작이 하위 cache와 LPDDR의 읽기·쓰기 요청을 만듭니다.
 
 ## Stressapptest의 cache 사용 방식
 
-stressapptest는 테스트 메모리의 page table에 설정된 cache 속성을 변경하지 않습니다. 실제 cache 동작은 다음 세 가지 요소로 결정됩니다.
+테스트 메모리에는 kernel page table의 일반 cacheable 속성이 유지됩니다. 실제 cache 동작은 다음 세 가지 요소로 결정됩니다.
 
 1. **운영체제가 정하는 메모리 속성**: kernel의 page table과 MAIR가 Normal, Cacheable, Write-Back, Shareable 속성을 정합니다.
 2. **CPU가 정하는 cache 내부 동작**: CPU가 cache line 교체, prefetch, write allocation, streaming 최적화, write-back 시점을 정합니다.
@@ -30,7 +30,7 @@ stressapptest가 직접 구성하는 부분은 세 번째 항목입니다.
 #endif
 ```
 
-**코드 설명:** `dc cvau`는 해당 virtual address의 data cache line을 Point of Unification 방향으로 clean합니다. `ic ivau`는 같은 주소의 instruction cache line을 무효화합니다. 이 조합은 data cache line을 Point of Coherency까지 clean한 뒤 무효화하는 `dc civac`와 다릅니다. 따라서 ARM64의 `FastFlush()`가 데이터를 LPDDR까지 즉시 쓰거나 data cache를 완전히 비운다고 해석하면 안 됩니다.
+**코드 설명:** `dc cvau`는 해당 virtual address의 data cache line을 Point of Unification 방향으로 clean합니다. `ic ivau`는 같은 주소의 instruction cache line을 무효화합니다. `dc civac`는 data cache line을 Point of Coherency까지 clean하고 invalidate합니다. 현재 `FastFlush()`의 효과 범위는 `dc cvau`의 Point of Unification입니다.
 
 <sub><em>Point of Unification, PoU: instruction fetch와 data access가 동일한 memory copy를 관찰하도록 합류하는 cache hierarchy 지점입니다.</em></sub>
 <sub><em>Point of Coherency, PoC: 해당 shareability domain의 CPU와 coherent observer가 동일한 memory copy를 관찰하는 지점입니다.</em></sub>
@@ -55,20 +55,20 @@ DMC write queue
 LPDDR 쓰기 명령
 ```
 
-L1에서 dirty cache line을 내보내더라도 데이터가 즉시 LPDDR에 기록되는 것은 아닙니다. 데이터는 L2 또는 SLC에서 계속 dirty 상태로 남을 수 있습니다. LPDDR에 최종 기록되는 시점은 하위 cache의 교체 동작과 memory controller 정책에 따라 정해집니다.
+L1에서 내보낸 dirty cache line은 L2 또는 SLC에 dirty 상태로 유지될 수 있습니다. LPDDR 기록 시점은 하위 cache 교체와 memory controller 정책으로 결정됩니다.
 
-Write-back은 dirty cache line 교체, 명시적인 cache clean, 다른 CPU의 소유권 요청, 전원 상태 전환, CPU 내부의 선제 처리에서 발생할 수 있습니다. 수정하지 않은 clean cache line은 데이터를 다시 쓰지 않고 제거할 수 있습니다.
+Write-back은 dirty cache line 교체, 명시적인 cache clean, 다른 CPU의 소유권 요청, 전원 상태 전환과 CPU 내부의 선제 처리에서 발생할 수 있습니다. Clean cache line은 data write 없이 제거할 수 있습니다.
 
 <sub><em>Write-back: dirty cache line의 최신 데이터를 하위 cache 또는 system memory 방향으로 기록하는 동작입니다.</em></sub>
 <sub><em>Dirty line: CPU store 이후 현재 cache가 하위 계층보다 최신 데이터를 보유한 cache line입니다.</em></sub>
 <sub><em>Eviction: 새로운 line을 배치하기 위해 기존 cache line을 해당 cache level에서 제거하는 동작입니다.</em></sub>
-<sub><em>Clean eviction: 수정되지 않은 cache line을 data write 없이 해당 cache level에서 제거하는 동작입니다.</em></sub>
+<sub><em>Clean eviction: 하위 계층과 같은 값을 가진 cache line을 data write 없이 해당 cache level에서 제거하는 동작입니다.</em></sub>
 
 ## Cache와 DRAM의 데이터가 일치하는 시점
 
 Write-Back memory에서는 dirty cache line이 해당 주소의 최신 데이터를 보유합니다. Write-back이 완료되기 전에는 LPDDR에 이전 값이 남아 있을 수 있습니다. 다른 coherent CPU가 같은 physical address를 읽으면 coherency 회로가 최신 데이터를 보유한 cache를 찾아 데이터를 전달하거나 write-back을 수행합니다.
 
-Coherency가 보장하는 것은 같은 coherency 영역에 속한 CPU와 장치가 규칙에 따라 최신 값을 읽는다는 점입니다. 모든 cache와 LPDDR의 저장 값이 항상 같다는 의미는 아닙니다. 두 값은 해당 cache line의 clean 또는 write-back이 완료된 뒤에 같아집니다.
+Coherency는 같은 영역의 CPU와 장치에 최신 값을 전달합니다. Cache와 LPDDR의 저장값은 clean 또는 write-back 완료 시점에 일치합니다.
 
 <sub><em>Coherency: 여러 CPU 또는 coherent device가 동일한 physical address의 최신 데이터를 일관되게 관찰하도록 관리하는 protocol입니다.</em></sub>
 <sub><em>Coherent observer: 동일 coherency domain에 참여하여 cache 상태와 최신 데이터를 protocol에 따라 조회하는 CPU 또는 device입니다.</em></sub>
@@ -125,7 +125,7 @@ Worker는 임의로 선택한 1 MiB 원본 block과 대상 block을 계속 바�
 - 여러 CPU core가 동시에 접근하면 NoC와 DMC에서 대기하는 요청 수가 증가합니다.
 - DMC는 대기 중인 요청의 순서를 조정하고 읽기·쓰기를 묶어서 처리합니다.
 
-따라서 CPU 명령의 실행 순서와 LPDDR 명령의 처리 순서는 같지 않을 수 있습니다.
+CPU 명령은 cache, write buffer, interconnect와 memory controller의 queue를 거쳐 LPDDR 명령으로 변환됩니다. 각 계층의 scheduling에 따라 두 순서가 달라질 수 있습니다.
 
 ## `-W` 옵션의 ARM64 복사 방식
 
@@ -151,7 +151,7 @@ asm volatile (
 );
 ```
 
-**코드 설명:** 반복 한 번에 원본 64 B를 NEON register로 읽고 대상 64 B에 씁니다. `prfm pldl1strm`은 원본 데이터를 L1 cache로 미리 가져오도록 CPU에 전달하는 참고 정보입니다. Cache를 우회하거나 LPDDR 접근을 강제하는 명령은 아닙니다. 실제 LPDDR 접근량은 테스트 메모리 크기, cache 용량, prefetch 구현, 동시에 실행되는 Worker 수에 따라 달라집니다.
+**코드 설명:** 반복 한 번에 원본 64 B를 NEON register로 읽고 대상 64 B에 씁니다. `prfm pldl1strm`은 원본 데이터를 L1 cache로 가져오는 prefetch hint입니다. 일반 cacheable memory 경로가 적용됩니다. 실제 LPDDR 접근량은 테스트 메모리 크기, cache 용량, prefetch 구현과 Worker 수에 따라 달라집니다.
 
 핵심 명령은 다음과 같습니다.
 
@@ -167,13 +167,13 @@ add  ... checksum accumulators ...
 - `st1`: vector register의 64 B를 대상 주소에 쓰기
 - vector add: modified-Adler checksum 계산
 
-이 `st1`은 일반 cacheable memory에 대한 보통의 vector 쓰기 명령입니다. AArch64 명령 자체에는 x86 `movntdq`와 같은 non-temporal store 의미가 없으며 cache 우회 속성도 지정하지 않습니다.
+이 `st1`은 일반 cacheable memory에 대한 vector store입니다. Memory page의 cacheable 속성과 ARM coherency 규칙이 적용됩니다.
 
 <sub><em>Non-temporal store: cache 오염을 줄이기 위해 일반 cache allocation을 최소화하도록 설계된 store 방식입니다.</em></sub>
 
 ## `-F` 옵션의 복사 방식
 
-`-F`를 지정하면 `CrcCopyPage()`를 사용하지 않고 C library의 `memcpy()`로 block을 복사합니다.
+`-F`는 block 복사 함수로 C library의 `memcpy()`를 선택합니다.
 
 장점:
 
@@ -207,7 +207,7 @@ isb
 - `ic ivau`: instruction cache의 해당 line을 무효화합니다.
 - 명령 순서는 프로그램 코드를 실행 중에 변경할 때 사용하는 data·instruction cache 동기화 과정과 유사합니다.
 - Data cache clean의 완료 지점은 PoU입니다.
-- `ic ivau`는 data cache가 아니라 instruction cache에 적용됩니다.
+- `ic ivau`는 instruction cache에 적용됩니다.
 
 `-i`는 데이터 반전, 접근 방향 전환, PoU까지의 cache 관리 명령, barrier 실행으로 구성됩니다. LPDDR 요청은 이러한 동작이 cache 계층을 거치는 과정에서 필요할 때 발생합니다.
 
@@ -219,9 +219,9 @@ isb
 
 오류 처리 코드는 기대값과 실제값이 다르면 cache line을 정리한 뒤 같은 주소를 다시 읽어, 일시적인 읽기 오류와 저장된 데이터 오류를 구분하려고 합니다.
 
-공통 AArch64 기능 확인 코드는 `has_vector_ = true`를 설정하지만 `has_clflush_`는 false로 유지합니다. `OsLayer::Flush()`는 `has_clflush_`가 true일 때만 `FastFlush()`를 호출합니다 (`src/os.cc:263`).
+공통 AArch64 기능 확인 코드는 `has_vector_ = true`, `has_clflush_ = false` 상태를 사용합니다. `OsLayer::Flush()`는 `has_clflush_ == true` 조건에서 `FastFlush()`를 호출합니다 (`src/os.cc:263`).
 
-따라서 공통 ARM64 build에서는 오류 데이터를 다시 읽기 전에 `Flush()`가 cache 관리 명령을 실행하지 않을 수 있습니다. Checksum 불일치 자체는 유효한 오류 결과로 기록하되, 첫 번째 값과 다시 읽은 값의 차이로 읽기 오류와 쓰기 오류를 분류할 때에는 이 구현 조건을 함께 고려해야 합니다.
+공통 ARM64 build의 `has_clflush_` 값은 `false`이며 `Flush()`는 조건 확인 후 반환합니다. Checksum 불일치는 오류 record로 저장됩니다. 첫 번째 값과 reread 값은 현재 cache 상태에서 수행한 두 CPU load의 관찰값으로 해석합니다.
 
 ## CPU cache와 파일 page cache 구분
 
@@ -240,7 +240,7 @@ CPU cache와 Linux의 파일 page cache는 서로 다른 계층입니다.
 
 ## 실제 LPDDR 접근량 확인 방법
 
-다음 값은 측정하는 위치가 다르므로 서로 같지 않을 수 있습니다.
+다음 값은 서로 다른 계층과 시점에서 측정합니다.
 
 ```text
 stressapptest가 처리했다고 계산한 byte

@@ -30,7 +30,7 @@ int WorkerThread::SpawnThread() {
 }
 ```
 
-**코드 설명:** Worker 객체 하나가 POSIX thread 하나에 대응합니다. `-m`을 지정하지 않으면 현재 online 상태인 logical CPU 수만큼 `CopyThread`를 만듭니다. 초기화에 사용하는 `FillThread` 8개, `ErrorPollThread`, 다른 옵션으로 추가한 Worker는 별도로 생성됩니다. 따라서 전체 thread 수가 CPU core 수와 항상 같은 것은 아닙니다.
+**코드 설명:** Worker 객체 하나가 POSIX thread 하나에 대응합니다. `CopyThread`의 기본 개수는 online logical CPU 수입니다. 전체 thread 수에는 초기화용 `FillThread` 8개, `ErrorPollThread`와 옵션으로 추가한 Worker가 더해집니다.
 
 <sub><em>WorkerThread: 공통 thread 상태, CPU mask, 오류 수 및 실행 시간을 관리하는 base class입니다.</em></sub>
 <sub><em>CPU affinity: thread가 실행될 수 있는 CPU 집합을 scheduler에 지정하는 속성입니다.</em></sub>
@@ -87,7 +87,7 @@ mem64[i]  = data
 - 일반 cacheable 쓰기를 사용하므로 write allocate와 dirty cache line 교체가 발생할 수 있습니다.
 - 실제 LPDDR 쓰기 명령 수는 cache와 DMC 정책에 따라 달라집니다.
 
-초기 데이터 쓰기 단계는 기존 pattern을 원본으로 읽지 않고 테스트 범위 전체에 새 값을 씁니다. Page fault 처리와 write allocate가 필요한 기기에서는 page table과 cache line을 읽는 요청도 함께 발생할 수 있습니다.
+초기 데이터 쓰기 단계는 테스트 범위 전체에 새 pattern 값을 기록합니다. Page fault 처리와 write allocate가 필요한 기기에서는 page table과 cache line read 요청도 함께 발생할 수 있습니다.
 
 <sub><em>Write-allocate: store miss에서 cache line과 write ownership을 확보한 후 cache에서 수정하는 정책입니다.</em></sub>
 
@@ -117,7 +117,7 @@ while (IsReadyToRun()) {
 
 ### 생성 개수
 
-`-m`을 지정하지 않으면 현재 online 상태인 logical CPU 수만큼 생성합니다. `-m N`으로 개수를 직접 지정할 수 있습니다.
+`-m`의 기본값은 현재 online logical CPU 수입니다. `-m N`으로 개수를 직접 지정할 수 있습니다.
 
 ### 복사 전후의 block 상태
 
@@ -127,7 +127,7 @@ valid 원본(P) + empty 대상
 empty가 된 기존 원본 + valid가 된 대상(P)
 ```
 
-각 Worker는 고정된 block을 사용하지 않습니다. 반복할 때마다 queue에서 원본과 대상을 다시 선택합니다.
+각 Worker는 반복할 때마다 queue에서 원본과 대상 block을 선택합니다.
 
 ### 세 가지 복사 방식
 
@@ -147,7 +147,7 @@ CrcWarmCopyPage()
  = vector 명령을 사용한 복사 + checksum 계산
 ```
 
-현재 분석한 ARM64 코드에서는 `prfm`, `ld1`, `st1`, vector add를 사용하여 한 번에 64 B씩 처리합니다. Cache를 우회하지 않는 일반 NEON 읽기·쓰기입니다.
+현재 분석한 ARM64 코드는 `prfm`, `ld1`, `st1`, vector add를 사용하여 한 번에 64 B씩 처리합니다. 일반 cacheable memory 속성이 적용되는 NEON 읽기·쓰기입니다.
 
 #### `-F`: libc `memcpy()` 복사
 
@@ -157,7 +157,7 @@ libc memcpy(destination, source, 1 MiB)
 
 복사 중 checksum 계산을 생략합니다. 대상 block에는 원본의 pattern 정보를 전달합니다. 대상 데이터 검사는 이후 이 block을 원본으로 읽거나 마지막 전체 검사를 수행할 때 이루어집니다.
 
-`-W`와 `-F`를 동시에 지정하면 첫 번째 조건인 `warm()`이 우선 적용됩니다. 따라서 `CrcWarmCopyPage()`가 실행되고 C library의 `memcpy()`는 실행되지 않습니다.
+`-W`와 `-F`를 함께 지정하면 첫 번째 조건인 `warm()`이 우선 적용되어 `CrcWarmCopyPage()`가 실행됩니다.
 
 ### Block 복사 후 CPU 실행권 양보
 
@@ -248,7 +248,7 @@ if (sat_->strict())
 
 ### 옵션
 
-`-i N`으로 개수를 지정합니다. 기본값은 0이므로 옵션을 지정하지 않으면 생성하지 않습니다.
+`-i N`으로 개수를 지정합니다. 기본값 0은 Invert Worker 비활성 상태입니다.
 
 ### 한 block의 처리 순서
 
@@ -281,7 +281,7 @@ yield
 
 ### 처리량 계산 시 주의점
 
-프로그램은 `InvertThread` 처리량을 `GetCopiedData() × 4`로 계산합니다. 실제 동작에는 네 번의 read-modify-write, 작업 전후 checksum, cache 관리 명령이 포함될 수 있으므로 이 값은 DMC byte와 직접 일치하지 않습니다.
+프로그램은 `InvertThread` 처리량을 `GetCopiedData() × 4`로 계산합니다. 실제 DMC byte에는 네 번의 read-modify-write, 작업 전후 checksum과 cache 동작이 반영됩니다. 두 값은 서로 다른 측정 기준을 사용합니다.
 
 ## MemoryRegionThread
 
@@ -314,9 +314,9 @@ SAT valid 원본
  → 원본과 메모리 구역 block 반환
 ```
 
-공개 `Sat::InitializeThreads()`에는 이 Worker의 생성 코드가 없고 명령 옵션도 제공하지 않습니다. SoC별 코드 또는 별도 확장 코드에서 명시적으로 생성해야 실행됩니다.
+`MemoryRegionThread`는 SoC별 코드 또는 별도 확장 코드의 `Sat::InitializeThreads()`에서 명시적으로 생성하여 실행합니다. 공개 공통 옵션에는 생성 항목이 없습니다.
 
-일반 실행에서 `--paddr_base`를 지정해도 이 Worker가 자동으로 활성화되지는 않습니다.
+`--paddr_base`는 memory allocator 설정이며 `MemoryRegionThread` 생성은 별도 코드에서 결정합니다.
 
 ## Worker별 읽기·쓰기 비교
 

@@ -28,7 +28,7 @@ static const int kCacheLineSize = 64;
 static const uint16_t kNetworkPort = 19996;
 ```
 
-**코드 설명:** 기본 SAT block은 1 MiB이고 파일 I/O는 한 번에 8개 block을 처리합니다. 코드에서 사용하는 cache line 크기 상수는 64 B이며 네트워크 시험에는 port 19996을 사용합니다. `kCacheLineSize`는 실행 중 SoC의 cache line을 확인한 값이 아니라 compile 시 정해지는 일부 처리 코드의 단위입니다.
+**코드 설명:** 기본 SAT block은 1 MiB이고 파일 I/O는 한 번에 8개 block을 처리합니다. 코드의 cache line 크기 상수는 64 B이며 네트워크 시험은 port 19996을 사용합니다. `kCacheLineSize`는 일부 처리 코드에서 사용하는 compile-time 단위입니다.
 
 ## GitHub master와 AOSP mirror의 버전 관계
 
@@ -37,7 +37,7 @@ static const uint16_t kNetworkPort = 19996;
 두 저장소는 서로 다른 commit 이력을 가집니다. 분석과 시험에는 실제 실행 파일을 만든 저장소와 commit을 적용해야 합니다. 확인한 차이는 다음과 같습니다.
 
 - GitHub master에는 ARM64 NEON `AdlerMemcpyAsm()` 구현이 있습니다.
-- AOSP mirror는 `Android.bp`로 Android build에 통합됩니다. Branch와 commit에 따라 ARM64 vector 복사 대신 C 대체 코드를 사용할 수 있습니다.
+- AOSP mirror는 `Android.bp`로 Android build에 통합됩니다. Branch와 commit에 따라 ARM64 vector 복사 또는 C fallback 코드를 사용합니다.
 - GitHub master에는 단독 Android build 파일이 없으므로 이 fork에서 `scripts/build_android_arm64.sh`를 제공합니다.
 
 시험 결과를 비교할 때에는 실행 파일의 소스 commit, compiler, NDK 또는 AOSP branch, `-W` 사용 여부를 기록해야 합니다.
@@ -57,7 +57,7 @@ static const uint16_t kNetworkPort = 19996;
 
 ## 분석 범위 외 항목
 
-- 공개되지 않은 특정 SoC의 DMC address map
+- 제조사 전용 SoC DMC address map
 - SLC/LLCC inclusive/exclusive 정책
 - Physical address bit에서 LPDDR channel·bank·row를 계산하는 실제 공식
 - Cache line 교체, 연속 쓰기, prefetch의 정확한 내부 알고리즘

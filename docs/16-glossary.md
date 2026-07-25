@@ -18,7 +18,7 @@ static bool page_is_empty(struct page_entry *pe) {
 }
 ```
 
-**코드 설명:** 이 설명서에서 사용하는 `SAT block`, `cache line`, `valid`, `empty`는 위 코드에 직접 대응합니다. Linux page, physical address, LPDDR row는 운영체제와 hardware가 사용하는 별도 단위이며 `kSatPageSize`와 같은 개념이 아닙니다.
+**코드 설명:** 이 설명서의 `SAT block`, `cache line`, `valid`, `empty`는 위 코드에 직접 대응합니다. Linux page, physical address와 LPDDR row는 운영체제 및 hardware가 관리하는 주소 단위입니다.
 
 ## 주소와 메모리
 
@@ -88,7 +88,7 @@ Kernel과 MMU가 virtual address와 physical address의 연결을 관리하는 �
 
 ### Write-Through
 
-CPU가 쓴 데이터를 cache에 반영하면서 하위 메모리 계층 방향으로도 전달하는 정책입니다. Write buffer와 하위 cache가 포함될 수 있으므로 LPDDR 쓰기 명령의 발생 시점과 항상 같지는 않습니다.
+CPU store를 cache와 하위 메모리 계층 방향으로 함께 전달하는 정책입니다. Write buffer와 하위 cache를 거쳐 LPDDR write 명령으로 변환됩니다.
 
 ### Dirty line
 
@@ -96,7 +96,7 @@ CPU가 쓴 데이터를 cache에 반영하면서 하위 메모리 계층 방향�
 
 ### Clean line
 
-현재 cache 계층이 하위 coherency 지점보다 최신 수정본을 보유하지 않은 cache line입니다. 다른 cache 계층에는 같은 주소의 dirty line이 존재할 수 있습니다.
+현재 cache 계층의 값이 하위 coherency 지점과 같은 cache line입니다. 다른 cache 계층에는 같은 주소의 dirty line이 존재할 수 있습니다.
 
 ### Eviction
 
@@ -206,7 +206,7 @@ SAT pattern word가 실제 DQ pin에 전달되기까지 cache 처리, DMC data s
 
 ### Modified Adler checksum
 
-Stressapptest의 `Crc*` 함수가 사용하는 네 누산기 기반의 빠른 checksum입니다. CRC polynomial과 암호학적 hash 알고리즘은 사용하지 않습니다.
+Stressapptest의 `Crc*` 함수가 사용하는 네 누산기 기반의 빠른 checksum입니다. Modified Adler 방식으로 pattern 데이터 변화를 검사합니다.
 
 ### Slow compare
 
@@ -224,7 +224,7 @@ Read-Modify-Write의 약어입니다. 기존값을 읽고 연산한 뒤 같은 �
 
 ### Anonymous mmap
 
-파일과 연결하지 않고 프로세스의 virtual memory를 확보하는 Linux API입니다. Stressapptest가 일반 메모리를 할당할 때 사용하는 방식입니다.
+파일 연결 없이 프로세스의 virtual memory를 확보하는 Linux API입니다. Stressapptest가 일반 메모리를 할당할 때 사용하는 방식입니다.
 
 ### Page cache
 

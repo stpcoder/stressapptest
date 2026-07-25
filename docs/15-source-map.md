@@ -125,7 +125,7 @@
 | `src/worker.cc:2622` | `DiskThread` 기본값 |
 | `src/worker.cc:2866` | 저장 장치 쓰기·읽기 단계 |
 | `src/worker.cc:3288` | RandomDiskThread |
-| `src/worker.cc:3397` | 공개 명령 옵션에서 생성하지 않는 `MemoryRegionThread` |
+| `src/worker.cc:3397` | SoC별 확장에서 생성하는 `MemoryRegionThread` |
 | `src/worker.cc:3558` | x86 CPU frequency thread |
 
 ## 실행 환경별 구현 선택
@@ -135,7 +135,7 @@
 | `src/os_factory.cc:30` | 항상 공통 `OsLayer` 생성 |
 | `src/sat_factory.cc:19` | 공통 `Sat` 생성 |
 | `src/os.cc:124` | 공개 build 지원 여부 판정 |
-| `src/os.cc:739` | 실제 오류를 수집하지 않는 공통 `ErrorPoll()` |
+| `src/os.cc:739` | 0을 반환하는 공통 `ErrorPoll()` |
 | `src/os.cc:194` | ARM64 vector feature 가정 |
 | `src/os.h:273` | AArch64 `CNTVCT_EL0` timestamp |
 

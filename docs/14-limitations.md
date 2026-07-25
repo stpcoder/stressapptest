@@ -37,7 +37,7 @@ Firmware, bootloader, PHY 진단 도구는 controller와 PHY를 직접 제어할
 
 ## 메모리 크기를 자동으로 정할 때의 위험
 
-RAM이 2 GiB 이상이면 기본 테스트 크기는 전체 RAM의 95%에서 192 MiB를 뺀 값입니다. 현재 사용할 수 있는 메모리와 Android service가 필요로 하는 여유 메모리를 충분히 반영하지 않습니다.
+RAM이 2 GiB 이상이면 기본 테스트 크기는 전체 RAM의 95%에서 192 MiB를 뺀 값입니다. Android에서는 현재 service와 LMKD 여유 공간을 반영한 `-M` 값을 직접 지정합니다.
 
 양산 휴대폰에서는 다음 문제가 발생할 수 있습니다.
 
@@ -51,7 +51,7 @@ RAM이 2 GiB 이상이면 기본 테스트 크기는 전체 RAM의 95%에서 192
 
 ## Generic ARM의 ErrorPoll 동작
 
-`ErrorPollThread`가 실행되더라도 공개 저장소의 공통 `OsLayer::ErrorPoll()`은 0을 반환합니다. Corrected ECC, SoC RAS, secure firmware 오류는 자동으로 수집하지 않습니다.
+공개 저장소의 공통 `OsLayer::ErrorPoll()`은 0을 반환합니다. Corrected ECC, SoC RAS와 secure firmware 오류 수집은 target별 구현에서 제공합니다.
 
 `--monitor_mode`와 `--no_errors`의 결과를 해석할 때 이 제한을 반영해야 합니다.
 
@@ -75,11 +75,11 @@ int OsLayer::ErrorPoll() {
 }
 ```
 
-**코드 설명:** 공개 저장소의 공통 build는 SoC별 `OsLayer`를 선택하지 않습니다. `ErrorPollThread`가 1초마다 실행되어도 공통 `ErrorPoll()`은 hardware 오류를 수집하지 않습니다. Android의 RAS, EDAC, firmware 로그를 읽으려면 해당 SoC에 맞는 `OsLayer` 구현이 필요합니다.
+**코드 설명:** 공개 공통 build는 generic `OsLayer`를 선택하고 `ErrorPoll()`은 0을 반환합니다. Android RAS, EDAC와 firmware 로그 수집은 해당 SoC의 interface를 읽는 `OsLayer` 구현에서 추가합니다.
 
 ## ARM64 오류 재검사의 제한
 
-공통 AArch64 구현에서는 `has_clflush_`가 false입니다. 따라서 데이터 불일치 후 `OsLayer::Flush()`가 실제 cache 관리 명령을 실행하지 않을 수 있습니다. 첫 번째 값과 다시 읽은 값의 차이만으로 읽기 오류를 분류한 결과에는 이 제한이 있습니다.
+공통 AArch64 구현의 `has_clflush_` 값은 `false`입니다. 데이터 mismatch 후 `OsLayer::Flush()`는 조건 확인 후 반환합니다. 첫 번째 값과 reread 값은 현재 cache 상태에서 수행한 두 CPU load의 관찰값입니다.
 
 ## `dc cvau`의 적용 범위
 
@@ -89,13 +89,13 @@ int OsLayer::ErrorPoll() {
 
 현재 분석한 GitHub master에는 ARM64 NEON 복사 코드가 있습니다. AOSP mirror 또는 이전 package는 C 코드로 대체될 수 있습니다. 실행 파일을 만든 저장소와 commit을 확인해야 합니다.
 
-ARM64의 `-W`는 AArch64 `ld1`과 `st1`이 수행하는 일반 cacheable 읽기·쓰기로 분석해야 합니다. x86의 `movntdq`에 적용되는 non-temporal store 특성을 ARM64 결과에 적용하면 안 됩니다.
+ARM64의 `-W`는 AArch64 `ld1`과 `st1`이 수행하는 일반 cacheable 읽기·쓰기로 분석합니다. Non-temporal store 분석은 x86 `movntdq` 경로에 적용합니다.
 
 ## Physical address 변환의 제한
 
 - 권한이 없으면 `/proc/self/pagemap`의 PFN이 0으로 표시될 수 있습니다.
 - `paddr`에는 block의 첫 주소에 대응하는 physical address만 저장됩니다.
-- Block 안의 Linux page가 physical address에서도 연속이라는 보장은 없습니다.
+- Block 안의 Linux page는 kernel page allocator가 각각 배치합니다.
 - 실행 중 kernel이 physical page를 이동할 수 있습니다.
 - `--do_page_map`은 4 KiB page와 0에 가까운 physical address 시작점을 가정합니다.
 - 공통 channel 계산은 1~2개 channel과 parity·XOR 규칙만 지원합니다.
@@ -111,15 +111,15 @@ Pattern 이름의 32·64·128·256은 32-bit word를 반복하는 범위를 나�
 
 ## 대상 block을 검사하는 시점
 
-기본 복사는 원본의 checksum을 계산하면서 대상에 데이터를 씁니다. 같은 복사 작업에서 대상을 다시 읽지는 않습니다. 따라서 대상에 쓴 데이터의 오류는 해당 block을 이후 원본으로 선택하거나 마지막 전체 검사를 수행할 때 발견합니다.
+기본 복사는 원본 checksum 계산과 대상 write를 함께 수행합니다. 대상 데이터 검사는 해당 block이 이후 원본으로 선택되는 시점 또는 마지막 전체 검사에서 실행됩니다.
 
 ## Checksum 한계
 
-Modified Adler checksum은 데이터 변화를 빠르게 찾기 위한 검사값입니다. 암호학적 checksum의 충돌 방지 성능이나 CRC polynomial 방식의 특성을 제공하지 않으므로 서로 다른 데이터가 같은 checksum을 만들 가능성이 있습니다. Word 단위 상세 비교는 checksum이 기대값과 다를 때 실행합니다.
+Modified Adler checksum은 네 누산기로 데이터 변화를 빠르게 찾습니다. 충돌 특성은 암호학적 checksum 및 CRC polynomial과 다릅니다. Word 단위 상세 비교는 checksum mismatch에서 실행합니다.
 
 ## 임의 선택 방식의 범위
 
-FineLock queue는 고정된 초기값을 사용하는 pseudo-random 계산으로 block 후보를 고릅니다. Pattern 선택은 `random()`의 상태와 thread 실행 순서의 영향을 받습니다. 주소 선택 순서가 암호학적으로 임의이거나 모든 physical row에 균등하게 분포한다는 보장은 없습니다.
+FineLock queue는 고정 초기값의 pseudo-random 계산으로 block 후보를 고릅니다. Pattern 선택은 `random()` 상태와 thread 실행 순서의 영향을 받습니다. Physical row 분포는 kernel page allocation과 DMC address map으로 측정합니다.
 
 `DiskThread`는 `srandom(time(NULL))`을 호출하므로 프로세스 전체가 사용하는 `random()` 상태에도 영향을 줄 수 있습니다.
 
@@ -143,7 +143,7 @@ CPU affinity 코드에는 사용 가능한 CPU 번호가 연속이라는 가정�
 
 ## ARM64 시간 측정 register
 
-AArch64 `GetTimestamp()`는 `CNTVCT_EL0`를 읽습니다. Kernel이 userspace의 virtual counter 접근을 허용하지 않는 기기에서는 trap 또는 illegal instruction이 발생할 수 있는지 확인해야 합니다.
+AArch64 `GetTimestamp()`는 `CNTVCT_EL0`를 읽습니다. 실행 조건은 kernel의 userspace virtual counter 접근 허용입니다. Target 기기에서 이 권한과 trap 처리를 확인합니다.
 
 ## 일시 정지 관련 값에 0을 사용할 때의 문제
 

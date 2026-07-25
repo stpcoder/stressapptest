@@ -49,13 +49,13 @@ for (WorkerMap::const_iterator map_it = workers_map_.begin();
 total_bandwidth = total_data / max_runtime_sec;
 ```
 
-**코드 설명:** 전체 bandwidth는 각 Worker가 보고한 논리적 메모리·장치 처리량을 더한 뒤 가장 오래 실행된 Worker의 실행 시간으로 나눕니다. DMC counter에서 측정한 읽기·쓰기 byte를 사용하지 않습니다. 따라서 stressapptest의 MB/s와 LPDDR의 실제 MB/s는 서로 다를 수 있습니다.
+**코드 설명:** 전체 bandwidth는 각 Worker가 보고한 논리적 처리량의 합을 가장 긴 Worker 실행 시간으로 나눕니다. LPDDR bandwidth는 DMC counter의 읽기·쓰기 byte로 계산합니다. 두 값은 서로 다른 측정 지점을 나타냅니다.
 
 `CopyThread`는 원본 읽기와 대상 쓰기를 더하여 block 크기의 두 배를 논리적 처리량으로 계산합니다. 실제 DMC 처리량과 차이가 나는 원인은 다음과 같습니다.
 
 - 대상 쓰기의 write allocate와 쓰기 권한 요청
 - 원본 또는 대상 cache hit
-- Prefetch했지만 사용하지 않은 cache line
+- Prefetch로 가져온 cache line
 - Dirty cache line의 write-back 지연
 - Checksum 불일치 이후 재검사
 - SLC hit와 cache 사이의 직접 데이터 전달
@@ -92,7 +92,7 @@ Event 이름과 접근 권한은 kernel과 SoC에 따라 다릅니다. `cache-mi
 - 요청 장치별 측정이 가능하면 CPU·UFS·GPU 분리
 - slice/bank별 occupancy 또는 bandwidth
 
-L2 miss가 발생해도 SLC에서 데이터를 찾으면 LPDDR 읽기는 발생하지 않을 수 있습니다.
+L2 miss가 SLC hit로 완료되면 데이터는 SLC에서 반환되고 LPDDR read counter는 그대로 유지됩니다.
 
 ## NoC PMU
 
@@ -121,11 +121,11 @@ DMC는 LPDDR 명령을 직접 배치하므로 다음 counter를 LPDDR 부하 분
 - channel별 utilization
 - DMC clock/devfreq state
 
-명령 수만 제공하는 counter에서 데이터양을 계산하려면 burst length와 data width뿐 아니라 rank·channel, 부분 쓰기, 압축, DBI, ECC가 counter에 어떻게 반영되는지 확인해야 합니다.
+명령 수 counter에서 데이터양을 계산할 때는 burst length, data width, rank·channel, 부분 쓰기, 압축, DBI와 ECC의 반영 방식을 확인합니다.
 
 ## 초기 쓰기·Worker 실행·마지막 검사 구분
 
-`-s`는 본 시험 시간만 나타내므로 초기 데이터 쓰기와 마지막 전체 검사 시간을 포함하지 않습니다. Stressapptest 로그와 PMU 측정 시각을 맞춰 다음 작동 단계를 구분합니다.
+`-s`는 Worker 실행 구간을 지정합니다. 초기 데이터 쓰기는 이 구간 전에, 마지막 전체 검사는 이 구간 후에 실행됩니다. Stressapptest 로그와 PMU 측정 시각을 맞춰 다음 작동 단계를 구분합니다.
 
 ```text
 T0 프로그램 시작
