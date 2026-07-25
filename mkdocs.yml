@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://squidfunk.github.io/mkdocs-material/schema.json
 
-site_name: StressAppTest 설명
+site_name: Stress App Test Manual
 site_description: Android ARM64 환경에서 stressapptest의 메모리 부하, cache 동작, Worker와 데이터 검사 과정을 설명합니다.
 site_url: https://stpcoder.github.io/stressapptest/
 repo_url: https://github.com/stpcoder/stressapptest
@@ -15,7 +15,6 @@ theme:
   name: material
   language: ko
   icon:
-    logo: material/memory
     repo: fontawesome/brands/github
   features:
     - navigation.sections
@@ -32,6 +31,15 @@ theme:
     - scheme: default
       primary: light blue
       accent: cyan
+      toggle:
+        icon: material/weather-night
+        name: 다크 모드로 전환
+    - scheme: slate
+      primary: black
+      accent: light blue
+      toggle:
+        icon: material/weather-sunny
+        name: 라이트 모드로 전환
   font:
     text: Noto Sans KR
     code: JetBrains Mono
@@ -42,6 +50,9 @@ plugins:
 
 extra_css:
   - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/search-reset.js
 
 markdown_extensions:
   - admonition
