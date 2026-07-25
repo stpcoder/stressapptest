@@ -128,8 +128,11 @@ jobs:
             echo "target=aarch64-linux-android"
           } > "${package_dir}/BUILD-INFO.txt"
 
-          sha256sum "${package_dir}/${RELEASE_BINARY}" \
-            > "${package_dir}/${RELEASE_BINARY}.sha256"
+          (
+            cd "${package_dir}"
+            sha256sum "${RELEASE_BINARY}" \
+              > "${RELEASE_BINARY}.sha256"
+          )
           tar -C "${package_dir}" -czf \
             "${RUNNER_TEMP}/${RELEASE_BINARY}.tar.gz" \
             "${RELEASE_BINARY}" \
