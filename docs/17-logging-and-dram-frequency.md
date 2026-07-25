@@ -1,512 +1,359 @@
-# 로그 출력과 DRAM 주파수 전환 오류를 분석하는 방법
+# 오류 로그 생성 과정과 DRAM 주파수 기록
 
-이 장에서는 stressapptest가 메모리 오류 로그를 만드는 과정과 외부 DRAM 주파수 변경 스크립트의 기록을 같은 시간축에서 분석하는 방법을 설명합니다. 설명은 public stressapptest 기준 소스에 적용됩니다. Qualcomm·MediaTek·단말 제조사가 Logger 또는 오류 처리 코드를 변경한 경우에는 실제 binary와 해당 소스를 추가로 확인해야 합니다.
+이 장에서는 memory Worker가 데이터를 검사하고 오류 로그를 출력하는 순서를 소스 코드의 공통 동작을 기준으로 설명합니다.
 
-## 먼저 구분해야 하는 시각
+## 전체 처리 순서
 
-DRAM 주파수를 일정 간격으로 변경하는 시험에서는 다음 시각이 서로 다를 수 있습니다.
+Memory Worker의 검사와 로그 출력은 다음 순서로 진행됩니다.
 
 ```text
-주파수 변경 command를 기록한 시각
- → kernel driver가 command를 받은 시각
- → clock·전압·timing 전환이 완료된 시각
- → 메모리 데이터가 실제로 변경된 시각
- → Worker가 해당 데이터를 다시 읽은 시각
- → stressapptest가 오류 로그를 queue에 넣은 시각
- → Logger thread가 파일과 stdout에 기록한 시각
- → adb 또는 terminal 화면에 표시된 시각
+Fill Worker가 pattern 기록
+ → Valid queue에 block 저장
+ → Copy·Invert·Check Worker가 block 처리
+ → 4 KiB 단위 checksum 검사
+ → checksum mismatch 발생
+ → 64-bit 단위 slow compare
+ → ErrorRecord 저장
+ → 같은 주소 reread
+ → 주소와 DDR 주파수 정보 정리
+ → Logger queue에 오류 메시지 저장
+ → Logger thread가 logfile과 stdout에 출력
+ → 잘못된 word를 expected 값으로 복구
 ```
 
-로그에 표시된 시각은 stressapptest가 불일치를 검출하여 `logprintf()`를 호출한 시각입니다. DRAM에서 데이터가 처음 변경된 시각을 직접 나타내지 않습니다. 대상 block에 오류가 발생한 뒤 해당 block이 다시 원본이나 검사 대상으로 선택될 때까지 검출이 지연될 수도 있습니다.
+`read`, `reread`, `expected`가 포함된 상세 로그는 위 과정에서 실제 mismatch가 검출됐을 때 생성됩니다. 정상적인 memory access는 이 형식으로 출력하지 않습니다.
 
-<sub><em>Detection latency: 데이터가 실제로 변경된 시점부터 software 검사가 불일치를 발견할 때까지의 시간입니다.</em></sub>
-<sub><em>Settling interval: clock, voltage 및 memory timing 전환 요청 이후 hardware 상태가 안정되도록 구분한 시간 구간입니다.</em></sub>
+## Worker별 검사 위치
 
-## 로그 출력 구조
+| Worker | 주요 함수 | 검사 내용 |
+|---|---|---|
+| Fill Worker | `FillPage()` | Empty queue에서 받은 block에 expected pattern을 기록합니다. |
+| Copy Worker | `CrcCopyPage()` | source를 destination으로 복사하면서 source checksum을 계산합니다. |
+| Warm Copy Worker | `CrcWarmCopyPage()` | CPU 연산 부하를 추가한 copy와 checksum 검사를 수행합니다. |
+| Invert Worker | `InvertPageUp()`, `InvertPageDown()` | block 값을 순방향과 역방향으로 반전합니다. Strict 검사에서는 처리 전후에 checksum을 확인합니다. |
+| Check Worker | `CrcCheckPage()` | block 내용을 변경하지 않고 checksum과 expected pattern을 확인합니다. |
 
-Stressapptest는 Worker가 로그를 직접 파일이나 terminal에 기록하지 않습니다. Worker가 만든 로그를 공용 queue에 넣고 전용 Logger thread가 출력합니다.
+각 Worker는 queue에서 받은 block을 처리합니다. `page_entry`에는 memory address, expected pattern, 마지막 writer CPU와 마지막 전체 기록 시점의 DDR 설정값이 저장됩니다.
+
+> **소스 위치:** `src/worker.cc`의 `FillPage()`, `CrcCopyPage()`, `CrcWarmCopyPage()`, `InvertThread::Work()`, `CrcCheckPage()`
+
+## 1단계: checksum으로 빠르게 검사
+
+Strict copy와 check 경로는 4 KiB 구간의 Adler checksum을 계산합니다.
+
+```text
+Memory block read
+ → 4 KiB checksum 계산
+ → expected checksum과 비교
+```
+
+Checksum이 같으면 다음 block을 처리합니다. Checksum이 다르면 `CheckRegion()`을 호출하여 어느 64-bit word가 다른지 확인합니다.
+
+```cpp
+if (!crc.Equals(*expectedcrc)) {
+  CheckRegion(...);
+}
+```
+
+Checksum 계산 중에는 block 전체를 읽습니다. Copy Worker는 source를 읽으면서 destination에도 데이터를 기록합니다.
+
+> **소스 위치:** `src/worker.cc`의 `CrcCheckPage()`, `CrcCopyPage()`
+
+## 2단계: 64-bit 단위로 mismatch 확인
+
+`CheckRegion()`은 checksum mismatch가 발생한 구간을 64-bit 단위로 다시 읽습니다.
+
+```text
+actual = memory에서 읽은 64-bit 값
+expected = pattern에서 계산한 64-bit 값
+```
+
+`actual != expected`이면 다음 정보를 `ErrorRecord`에 저장합니다.
+
+- `actual`: slow compare에서 읽은 값
+- `expected`: 해당 주소에 있어야 하는 값
+- `vaddr`: mismatch가 발생한 virtual address
+- `patternname`: expected 값을 계산한 pattern 이름
+- `lastcpu`: block의 마지막 writer로 기록된 CPU
+- `write_dram_frequency`: block을 마지막으로 전체 기록한 시점의 DDR 설정값
+- `read_dram_frequency`: mismatch load 직전의 DDR 설정값
+
+한 번의 `CheckRegion()`은 최대 128개의 `ErrorRecord`를 먼저 저장합니다. 저장이 끝나면 각 record를 `ProcessError()`로 전달합니다.
+
+```cpp
+const int kErrorLimit = 128;
+struct ErrorRecord recorded[kErrorLimit];
+```
+
+상세 로그는 각 Worker의 초기 오류를 중심으로 출력합니다. 일반 RAM 경로에서는 Worker별 초기 약 30개 오류가 높은 우선순위로 출력되고, 이후 오류는 incident 수에 계속 포함됩니다.
+
+> **소스 위치:** `src/worker.cc`의 `WorkerThread::CheckRegion()`
+
+## 3단계: reread와 오류 정보 생성
+
+`ProcessError()`는 저장된 mismatch를 다음 순서로 처리합니다.
+
+```text
+OsLayer::Flush(vaddr) 호출
+ → reread 시점의 DDR 설정값 저장
+ → 같은 virtual address를 다시 load
+ → physical address 변환 시도
+ → 위치 문자열 확인
+ → 상세 mismatch 메시지 생성
+ → expected 값을 해당 주소에 다시 기록
+```
+
+이때 두 번의 read 결과는 다음 필드에 저장됩니다.
+
+```text
+read   = CheckRegion()의 slow compare 결과
+reread = ProcessError()에서 같은 주소를 다시 읽은 결과
+```
+
+`ProcessError()`는 상세 로그를 만든 뒤 해당 word에 `expected` 값을 다시 기록합니다. 이후 검사에서 같은 주소가 정상으로 확인될 수 있으므로 첫 오류 record를 우선 보존해야 합니다.
+
+> **소스 위치:** `src/worker.cc`의 `WorkerThread::ProcessError()`
+
+### AArch64의 `Flush()` 동작
+
+현재 공개 AArch64 경로에서는 `has_clflush_`가 `false`로 유지됩니다. `ProcessError()`가 호출하는 `OsLayer::Flush()`는 `has_clflush_`가 `true`일 때만 cache 관리 명령을 실행합니다.
+
+```cpp
+void OsLayer::Flush(void *vaddr) {
+  if (has_clflush_) {
+    OsLayer::FastFlush(vaddr);
+  }
+}
+```
+
+따라서 현재 AArch64 일반 오류 처리에서 `reread`는 두 번째 CPU load입니다. 이 load가 L1, L2, system cache 또는 LPDDR 중 어느 계층에서 완료됐는지는 로그로 구분할 수 없습니다.
+
+Invert Worker의 `FastFlushHint()`는 별도 경로입니다. AArch64 구현의 `DC CVAU`는 Data Cache line을 Point of Unification까지 clean합니다. Data Cache line은 valid 상태로 유지될 수 있으므로 이후 load의 LPDDR 접근 여부를 보장하지 않습니다.
+
+> **소스 위치:** `src/os.cc`의 `OsLayer::GetFeatures()`, `OsLayer::Flush()`와 `src/os.h`의 `FastFlush()`, `FastFlushHint()`
+
+## 4단계: Logger가 메시지 출력
+
+Worker는 logfile과 terminal에 직접 쓰지 않습니다. 모든 메시지는 `logprintf()`를 통해 공용 Logger로 전달됩니다.
 
 ```text
 Worker의 logprintf()
  → Logger::VLogF()
  → timestamp와 문자열 생성
- → queued_lines_에 삽입
+ → queued_lines_에 저장
  → Logger thread가 queue를 가져감
- → 지정한 logfile에 write()
- → STDOUT_FILENO에 write()
+ → -l logfile에 write()
+ → stdout에 write()
 ```
 
-> **파일:** `src/logger.cc` · **함수:** `Logger::VLogF()` · **기준:** `73b9df2`
+`Logger::VLogF()`는 verbosity를 확인한 뒤 최대 4096-byte 문자열을 만듭니다. Timestamp 옵션을 사용하면 queue에 넣기 전에 wall-clock timestamp를 추가합니다.
 
-```cpp
-void Logger::VLogF(int priority, const char *format, va_list args) {
-  if (priority > verbosity_) {
-    return;
-  }
-  char buffer[4096];
-  size_t length = 0;
-  if (log_timestamps_) {
-    time_t raw_time;
-    time(&raw_time);
-    struct tm time_struct;
-    localtime_r(&raw_time, &time_struct);
-    length = strftime(buffer, sizeof(buffer),
-                      "%Y/%m/%d-%H:%M:%S(%Z) ", &time_struct);
-  }
-  length += vsnprintf(buffer + length, sizeof(buffer) - length,
-                      format, args);
-  QueueLogLine(new string(buffer, length));
-}
-```
-
-**코드 설명:** timestamp는 Logger thread가 출력할 때가 아니라 Worker가 `VLogF()`를 호출할 때 생성됩니다. 단위는 초이며 local timezone을 사용합니다. 이후 메시지는 queue에서 대기할 수 있습니다.
-
-`Logger::ThreadMain()`은 queue의 메시지를 local queue로 옮긴 뒤 공용 mutex를 풀고 순서대로 출력합니다.
-
-> **파일:** `src/logger.cc` · **함수:** `Logger::WriteAndDeleteLogLine()` · **기준:** `73b9df2`
-
-```cpp
-if (log_fd_ >= 0) {
-  bytes_written = write(log_fd_, line->data(), line->size());
-}
-bytes_written = write(STDOUT_FILENO, line->data(), line->size());
-```
-
-**코드 설명:** C library의 `printf()` buffering을 사용하지 않고 file descriptor에 `write()`합니다. `-l`로 logfile을 지정하면 같은 메시지를 logfile에 먼저 쓰고 stdout에도 씁니다. Logfile 쓰기가 지연되면 stdout 표시도 같이 늦어질 수 있습니다.
-
-### Queue가 로그 시각에 미치는 영향
-
-Logger queue의 제한은 250개입니다.
+Logger queue의 기본 제한은 250개 행입니다. Queue가 가득 차면 Worker는 공간이 생길 때까지 기다립니다. 정상 종료 시 `Logger::StopThread()`가 남아 있는 메시지를 모두 출력합니다.
 
 ```cpp
 static const size_t kMaxQueueSize = 250;
 ```
 
-Queue가 가득 차면 Worker는 새 로그를 넣을 수 있을 때까지 기다립니다. 오류가 집중되면 다음 조건이 발생할 수 있습니다.
+`-l <file>`을 사용하면 같은 메시지가 logfile과 stdout에 기록됩니다. Logfile은 platform이 지원하는 동기 쓰기 flag로 열리므로 로그 보존성이 높아지고 storage I/O 부하가 추가됩니다.
 
-- 여러 Worker가 만든 로그가 짧은 시간에 연속 출력됨
-- 로그 timestamp와 terminal 표시 시각 사이의 지연 증가
-- 로그 queue가 가득 차서 오류 처리 Worker가 대기
-- Logger thread와 adb·UFS 처리가 CPU, scheduler, NoC에 추가 부하 생성
-- 갑작스러운 reboot에서 아직 queue에 남은 마지막 로그가 유실
+> **소스 위치:** `src/sat.cc`의 `logprintf()`, `InitializeLogfile()`과 `src/logger.cc`의 `VLogF()`, `ThreadMain()`, `WriteAndDeleteLogLine()`
 
-정상 종료에서는 `Logger::StopThread()`가 queue에 남은 메시지를 모두 출력한 뒤 Logger thread를 종료합니다. Watchdog reset, kernel panic 또는 전원 재시작에서는 이 정리 과정이 실행되지 않을 수 있습니다.
+## 상세 mismatch 로그 읽기
 
-### `-l` logfile의 동기 쓰기
-
-`Sat::InitializeLogfile()`은 platform이 지원하면 `O_DSYNC`, `O_SYNC` 또는 `O_FSYNC`를 사용하여 logfile을 엽니다.
-
-> **파일:** `src/sat.cc` · **함수:** `Sat::InitializeLogfile()` · **기준:** `73b9df2`
-
-```cpp
-logfile_ = open(logfilename_,
-#if defined(O_DSYNC)
-                O_DSYNC |
-#elif defined(O_SYNC)
-                O_SYNC |
-#elif defined(O_FSYNC)
-                O_FSYNC |
-#endif
-                O_WRONLY | O_CREAT, mode);
-```
-
-**코드 설명:** Logger thread가 logfile에 전달한 메시지는 일반적인 지연 쓰기보다 보존성이 높습니다. 그러나 각 로그 쓰기가 UFS I/O와 전력·NoC 부하를 추가할 수 있고, Logger queue에만 있던 메시지는 보호하지 못합니다.
-
-| 기록 방식 | 장점 | 확인할 제한사항 |
-|---|---|---|
-| `-l /data/local/tmp/sat.log` | 갑작스러운 종료 직전 로그 보존 가능성 증가 | 동기 UFS 쓰기가 시험 부하에 추가됨 |
-| stdout을 host에서 저장 | 단말 logfile 쓰기를 줄일 수 있음 | adb 연결 중단이나 reboot에서 마지막 출력 유실 가능 |
-
-로그 보존 시험과 순수 메모리 부하 비교 시험을 분리하여 두 기록 방식이 재현 결과에 영향을 주는지 확인합니다.
-
-## 메모리 불일치가 로그로 확대되는 과정
-
-기본 복사 방식에서는 4 KiB마다 계산한 checksum이 기대값과 다르면 `CheckRegion()`이 64-bit word 단위로 다시 검사합니다.
+일반 RAM mismatch는 다음 형식으로 출력됩니다.
 
 ```text
-4 KiB checksum 불일치
- → CheckRegion() slow compare
- → actual과 expected를 64-bit word별로 비교
- → ErrorRecord 저장
- → ProcessError()에서 reread와 주소 정보 확인
- → Report Error와 상세 miscompare 출력
- → 잘못된 word를 expected 값으로 복구
+Hardware Error: miscompare on CPU <current_cpu>(<-<last_writer_cpu>)
+at <virtual_address>(<physical_address>:<location>):
+read:<actual>, reread:<second_actual> expected:<expected>.
+'<pattern_name>' read error.
+ddr_freq(write=<value> read=<value> reread=<value>).
 ```
 
-> **파일:** `src/worker.cc` · **함수:** `WorkerThread::CheckRegion()` · **기준:** `73b9df2`
+### 오류 로그 예시
 
-```cpp
-const int kErrorLimit = 128;
-struct ErrorRecord recorded[kErrorLimit];
-
-if (actual != expected) {
-  if (errors < kErrorLimit) {
-    recorded[errors].actual = actual;
-    recorded[errors].expected = expected;
-    recorded[errors].vaddr = &memblock[i];
-    recorded[errors].patternname = pattern->name();
-    recorded[errors].lastcpu = lastcpu;
-    errors++;
-  } else {
-    page_error = true;
-    break;
-  }
-}
-```
-
-**코드 설명:** 한 번의 `CheckRegion()` 호출은 우선 최대 128개의 오류 record를 저장합니다. 기본 checksum 경로에서는 일반적으로 4 KiB 구간을 대상으로 호출됩니다. 넓은 데이터 손상 하나가 여러 64-bit word의 불일치로 기록될 수 있습니다.
-
-각 Worker의 초기 상세 오류는 다음 조건으로 출력합니다.
-
-```cpp
-int priority = 5;
-if (errorcount_ + err < 30)
-  priority = 0;
-ProcessError(&recorded[err], priority, errormessage.c_str());
-```
-
-`ProcessError()`는 `priority < 5`인 오류에 대해 parse 가능한 `Report Error`와 상세 miscompare를 기록합니다. 여러 Worker가 동시에 오류를 발견하면 Worker별 초기 오류가 각각 출력되어 로그가 집중될 수 있습니다.
+다음 내용은 로그 구조를 설명하기 위해 만든 가상 예시입니다. 실제 제품, pattern과 시험 결과를 사용하지 않았습니다.
 
 ```text
-로그에 나온 miscompare word 수 ≠ 독립적인 DRAM failure 발생 횟수
+2026/01/15-10:20:00(KST) Log: DDR_FREQ write=3196 monotonic_us=120000000 node=<control_node>
+2026/01/15-10:20:42(KST) Report Error: miscompare : DIMM Unknown : 1 : 42s
+2026/01/15-10:20:42(KST) Hardware Error: miscompare on CPU 6(<-3) at 0x7a120000(0x12345000:DIMM Unknown): read:0x1122334455667780, reread:0x1122334455667788 expected:0x1122334455667788. '<selected_pattern>' read error. ddr_freq(write=3196 read=3196 reread=3196).
+2026/01/15-10:20:45(KST) Log: Thread 4 found 1 hardware incidents
+2026/01/15-10:20:45(KST) Stats: Found 1 hardware incidents
+2026/01/15-10:20:45(KST) Status: FAIL - test discovered HW problems
 ```
 
-첫 오류로 넓은 영역이 변경되었는지, 여러 시간대에서 독립 오류가 반복되었는지는 timestamp, 주소 범위, XOR bit 차이와 Worker 정보를 함께 사용하여 구분합니다.
+이 예시는 다음 순서로 읽습니다.
 
-## `Report Error` 원시 메시지 해석
+1. `DDR_FREQ` 행에서 control node에 마지막으로 전달한 설정값과 monotonic 시각을 확인합니다.
+2. `Report Error` 행에서 오류 종류와 시험 시작 이후 경과 시간을 확인합니다.
+3. `Hardware Error` 행에서 주소, 두 번의 read 결과, expected와 각 시점의 DDR 설정값을 확인합니다.
+4. `read`의 마지막 1 byte는 `0x80`, `expected`의 마지막 1 byte는 `0x88`입니다. `read XOR expected`는 `0x08`이므로 이 예시에서는 한 bit 차이가 기록됐습니다.
+5. `reread == expected` 조건이 성립하여 `read error` 문자열이 추가됐습니다.
+6. Worker와 전체 incident 집계가 1로 기록되고 최종 상태가 `FAIL`로 출력됐습니다.
 
-상세 miscompare를 출력하기 전에 `ErrorDiag::AddMiscompareError()`가 `OsLayer::ErrorReport()`를 호출합니다.
-
-```text
-Report Error: miscompare : DIMM Unknown : 1 : 42s
-```
-
-형식은 다음과 같습니다.
-
-```text
-Report Error: symptom : part : count : time-to-failure
-```
+이 예시에서 확인되는 결과는 첫 slow read의 mismatch와 정상값을 반환한 reread입니다. 발생 위치를 구분하려면 CPU, cache, memory controller, PHY와 DRAM의 hardware 정보를 추가로 확인합니다.
 
 | 필드 | 의미 |
 |---|---|
-| `miscompare` | 검출한 오류 종류 |
-| `DIMM Unknown` | 공통 `FindDimm()`이 계산한 위치 문자열. Android에서 실제 LPDDR 위치를 의미하지 않을 수 있음 |
-| `1` | 해당 `ErrorReport()` 호출에서 보고한 개수 |
-| `42s` | `OsLayer` 초기화 이후 경과한 초 |
+| `CPU <current_cpu>` | `ProcessError()`가 reread와 로그 생성을 수행한 시점의 CPU입니다. |
+| `<-<last_writer_cpu>` | Software가 해당 block의 마지막 writer로 저장한 CPU입니다. |
+| `virtual_address` | Process가 사용하는 virtual address입니다. |
+| `physical_address` | `/proc/self/pagemap`으로 변환에 성공한 system physical address입니다. |
+| `read` | `CheckRegion()` slow compare에서 처음 저장한 mismatch 값입니다. |
+| `reread` | `ProcessError()`가 같은 주소에서 다시 읽은 값입니다. |
+| `expected` | Pattern으로 계산한 기대값입니다. |
+| `pattern_name` | 해당 block의 expected pattern 이름입니다. 원인 판정에는 반복 횟수와 다른 조건이 함께 필요합니다. |
+| `read error` | `reread == expected`일 때 코드가 추가하는 분류 문자열입니다. |
+| `ddr_freq(write=...)` | Block을 마지막으로 전체 기록한 시점의 내부 DDR 설정값입니다. |
+| `ddr_freq(read=...)` | Slow compare가 mismatch 값을 읽기 직전의 내부 DDR 설정값입니다. |
+| `ddr_freq(reread=...)` | `ProcessError()`가 reread하기 직전의 내부 DDR 설정값입니다. |
 
-마지막 `42s`는 Logger의 wall-clock timestamp와 별도로 생성되는 상대 시간입니다. DRAM frequency script도 시험 시작 기준의 uptime을 기록하면 상대 시간 정합성을 추가로 확인할 수 있습니다.
+현재 로그의 `CPU` 필드는 최초 mismatch load를 실행한 CPU를 별도로 저장하지 않습니다. Worker가 두 load 사이에서 migration됐는지 확인하려면 `read_cpu`와 `reread_cpu`를 각각 기록하는 기능이 필요합니다.
 
-## 상세 miscompare 필드 해석
+`expected`는 pattern으로 계산합니다. 최초 write에서 실제 cache 또는 memory에 저장된 값을 별도로 읽어 보관하지는 않습니다.
 
-다음은 pattern name과 마지막 writer CPU가 포함된 형식의 예입니다.
+Physical address가 `0` 또는 제한된 값으로 표시되면 `/proc/self/pagemap` 접근 권한을 확인합니다. System physical address를 LPDDR channel, rank, bank, row와 column으로 변환하려면 target의 memory-controller address mapping 정보가 필요합니다.
 
-```text
-Hardware Error: miscompare on CPU 6(<-3)
-at 0x7abc0000(0x12340000:DIMM Unknown):
-read:0x00000000ffffffff,
-reread:0xffffffff00000000
-expected:0xffffffff00000000. 'OneZero128' read error.
-```
+## `read`와 `reread` 해석
 
-| 필드 | 의미 |
-|---|---|
-| `CPU 6` | 상세 검사를 수행한 시점의 CPU |
-| `<-3` | 프로그램이 해당 block을 마지막으로 쓴 CPU로 기록한 값 |
-| 첫 번째 주소 | Process virtual address |
-| 괄호 안 주소 | 변환 가능한 경우 system physical address |
-| `read` | slow compare에서 처음 읽은 actual 값 |
-| `reread` | 오류 처리 중 다시 읽은 값 |
-| `expected` | pattern에서 계산한 기대값 |
-| `OneZero128` | 검사한 block에 지정된 기대 pattern |
-| `read error` | `reread == expected`일 때 추가되는 분류 문자열 |
-
-`lastcpu`는 software가 기록한 마지막 writer CPU 후보입니다. CPU migration, vendor 수정, DMA와 다른 device의 접근을 포함하는 hardware trace가 아니므로 보조 정보로 사용합니다.
-
-Physical address가 `0`, 제한된 값 또는 `DIMM Unknown`으로 표시되면 `/proc/self/pagemap` 권한과 vendor address mapping 구현을 확인해야 합니다. 이 상태에서는 로그의 위치 문자열을 실제 LPDDR channel·bank·row로 해석하지 않습니다.
-
-## `read`, `reread`, `expected`를 비교하는 방법
-
-`ProcessError()`는 불일치가 발견된 주소에 대해 다음 순서로 처리합니다.
-
-```text
-OsLayer::Flush(vaddr)
- → 같은 주소를 reread
- → physical address와 위치 문자열 계산
- → 오류 로그 기록
- → expected 값을 해당 주소에 다시 기록
- → OsLayer::Flush(vaddr)
-```
-
-| 비교 결과 | 코드에서 확인되는 상태 | 해석 시 제한사항 |
+| 비교 결과 | 코드에서 확인되는 상태 | 추가 확인 범위 |
 |---|---|---|
-| `read != expected`, `reread == expected` | 첫 번째 읽기에서만 불일치하여 `read error` 표시 | 일시적 read path, cache 관찰 또는 재검사 시점 변화 가능 |
-| `read != expected`, `reread != expected` | 다시 읽어도 데이터 불일치 유지 | 잘못된 write, 저장 상태 변경 또는 반복 read 오류 가능 |
-| 같은 주소·같은 XOR bit 반복 | 위치 또는 data path 의존성 검토 대상 | VA 재사용과 PA 신뢰도 확인 필요 |
-| 넓은 연속 주소의 동시 불일치 | 하나의 광범위한 손상이 여러 word 오류로 분해되었을 가능성 | 로그 줄 수를 독립 failure 수로 사용하지 않음 |
+| `read != expected`, `reread == expected` | 첫 slow read에서 mismatch가 발생했고 두 번째 load는 expected를 반환했습니다. | CPU load, cache, coherency, interconnect, memory controller, PHY와 DRAM read 경로를 확인합니다. |
+| `read == reread`, 두 값 모두 `expected`와 다름 | 같은 잘못된 값이 두 번 관찰됐습니다. | 마지막 write, 지속 데이터 변경과 반복 read 상태를 확인합니다. |
+| `read != reread`, 두 값 모두 `expected`와 다름 | 두 load가 서로 다른 잘못된 값을 반환했습니다. | CPU 이동, 동시 상태 변화와 transient data path를 확인합니다. |
+| CRC mismatch 후 slow compare 정상 | Checksum 계산과 slow compare에서 관찰한 데이터가 달랐습니다. | 두 검사 사이의 시간, CPU와 memory 상태를 확인합니다. |
 
-공통 AArch64 구현에서는 `has_clflush_`가 false인 경우 `OsLayer::Flush()`가 실제 cache 관리 명령을 실행하지 않습니다. 따라서 `read error` 문자열만으로 DRAM read failure와 write failure를 확정하지 않습니다.
+`reread == expected`이면 일반 RAM 로그에 `read error`가 추가됩니다. 이 문자열은 첫 read와 reread 결과를 이용한 software 분류입니다. Hardware 발생 위치를 판정하려면 CPU, cache, controller와 RAS 정보를 함께 확인합니다.
 
-오류 출력 후에는 `expected` 값을 다시 기록합니다. 이후 같은 위치가 정상으로 보이더라도 오류가 자연적으로 사라졌다고 판단하면 안 됩니다.
+`read != expected`가 확인된 상세 로그는 CPU가 관찰한 memory data miscompare입니다. Stressapptest는 이를 `Hardware Error`로 집계합니다. Upstream도 stressapptest의 범위를 memory cell, cache coherency, memory controller와 bus interface를 포함하는 memory-interface 검사로 설명합니다.
 
-## `OneZero` pattern 오류를 해석하는 방법
+## `Report Error`와 최종 결과
 
-`OneZero`의 기본 32-bit 데이터는 다음 두 값의 반복입니다.
-
-> **파일:** `src/pattern.cc` · **구간:** `OneZero` · **기준:** `73b9df2`
-
-```cpp
-static unsigned int OneZero_data[] = {
-  0x00000000, 0xffffffff
-};
-
-static const struct PatternData OneZero = {
-  "OneZero",
-  OneZero_data,
-  1,
-  {5, 5, 15, 5}
-};
-```
-
-Pattern 이름은 반복 범위와 반전 여부를 포함합니다.
+초기 상세 오류는 parse 가능한 `Report Error`도 생성할 수 있습니다.
 
 ```text
-OneZero32, OneZero64, OneZero128, OneZero256
-OneZero~32, OneZero~64, OneZero~128, OneZero~256
+Report Error: miscompare : <part> : <count> : <time-to-failure>
 ```
 
-전체 pattern weight 합은 원본과 반전 variant를 포함하여 160입니다. OneZero 계열의 합은 60이므로 전체 선택 확률은 37.5%입니다.
+`time-to-failure`는 `OsLayer` 초기화 이후 경과 시간입니다. 상세 mismatch의 wall-clock timestamp와 기준이 다르므로 분석할 때 두 시간 기준을 구분합니다.
 
-| OneZero 범위 | 원본과 반전 variant를 합한 선택 비율 |
-|---|---:|
-| 32-bit | 6.25% |
-| 64-bit | 6.25% |
-| 128-bit | 18.75% |
-| 256-bit | 6.25% |
-| 전체 | 37.50% |
-
-로그의 `'OneZero128'`은 검사한 block의 기대 pattern이 OneZero128이었다는 뜻입니다. 다음 내용을 직접 증명하지 않습니다.
-
-- OneZero 데이터가 failure의 원인이라는 결론
-- OneZero를 처음 기록한 순간에 failure가 발생했다는 결론
-- 상세 로그가 표시된 DRAM 주파수에서 failure가 발생했다는 결론
-- 실제 LPDDR DQ pin에 `0x00000000`과 `0xffffffff`가 그대로 교대했다는 결론
-
-OneZero는 다른 pattern보다 자주 선택되므로 단순 오류 건수 대신 노출 횟수로 정규화한 오류율을 비교합니다.
+시험 종료 시에는 다음 순서로 결과를 확인합니다.
 
 ```text
-OneZero 오류 word 수 / OneZero 처리 transaction 수
-다른 pattern 오류 word 수 / 해당 pattern 처리 transaction 수
+Log: Thread <id> found <count> hardware incidents
+Stats: Found <total> hardware incidents
+Status: FAIL - test discovered HW problems
 ```
 
-기본 로그에는 pattern별 전체 처리 transaction 수가 없습니다. 정확한 비교에는 `CrcCopyPage()`와 `CrcCheckPage()` 진입 시 pattern별 counter를 추가하거나, pattern weight를 변경하여 특정 pattern만 사용하는 별도 binary가 필요합니다.
+상세 로그 수는 전체 incident 수보다 적을 수 있습니다. 최종 `Stats` 값을 전체 집계로 사용합니다.
 
-## 3초 주파수 전환 로그를 기록하는 방법
+## DRAM 주파수 기록
 
-DRAM frequency 변경 interface는 AOSP 공통 규격이 아닙니다. Qualcomm, MediaTek 및 단말 제조사마다 control node, command 형식, 단위와 readback 의미가 다릅니다. 다음 예제의 경로와 command는 target의 vendor 문서에 맞게 변경합니다.
+이 fork의 DDR 옵션을 사용하면 control node에 설정값을 전달하고 성공한 값을 내부 상태에 저장합니다.
 
-주파수 변경 script는 최소한 다음 세 상태를 기록합니다.
+```bash
+# 한 값으로 실행
+stressapptest -M 1024 -m 4 -i 4 -s 600 \
+  --ddr-freq 3196 -l /data/local/tmp/stressapptest.log
+
+# 지원 목록을 기본 3초 간격으로 순환
+stressapptest -M 1024 -m 4 -i 4 -s 600 \
+  --ddr-freq all -l /data/local/tmp/stressapptest.log
+
+# 전환 간격 지정
+stressapptest -M 1024 -m 4 -i 4 -s 600 \
+  --ddr-freq all --ddr-step 5
+```
+
+`--ddr-freq`를 생략하면 control node에 접근하지 않습니다. `--ddr-step`의 기본값은 3초입니다.
+
+설정값 전달에 성공하면 다음 로그가 생성됩니다.
 
 ```text
-REQUEST: 변경 command를 쓰기 직전
-WRITE_DONE: control node의 write가 반환된 직후
-READBACK: 실제 또는 요청 상태를 읽은 결과
+Log: DDR_FREQ write=<value> monotonic_us=<time> node=<control_node>
 ```
 
-Control node의 `write()` 성공은 command가 접수되었다는 의미입니다. Clock, voltage와 memory timing 전환 완료를 자동으로 보장하지 않습니다. Readback node가 요청값을 반환하는지 실제 hardware frequency를 반환하는지도 vendor 정의로 확인합니다.
+이 로그의 `write`는 control node의 `write()`가 성공한 값을 뜻합니다. 실제 hardware clock 확인에는 target이 제공하는 readback 또는 hardware counter를 사용합니다.
 
-```sh
-#!/system/bin/sh
+### 오류 record에 저장되는 주파수
 
-CONTROL_NODE=/sys/path/to/vendor_dram_control
-READBACK_NODE=/sys/path/to/vendor_dram_current_freq
-FREQ_LOG=/data/local/tmp/dram_frequency.log
-
-stamp() {
-    wall=$(date '+%Y/%m/%d-%H:%M:%S%z')
-    uptime=$(cut -d' ' -f1 /proc/uptime)
-    printf '%s uptime=%s' "$wall" "$uptime"
-}
-
-apply_frequency() {
-    freq="$1"
-
-    printf '%s REQUEST freq=%s\n' \
-        "$(stamp)" "$freq" >> "$FREQ_LOG"
-
-    # Target의 실제 vendor command 형식으로 교체합니다.
-    printf 'stat fix freq %s\n' "$freq" > "$CONTROL_NODE"
-
-    write_rc="$?"
-    printf '%s WRITE_DONE freq=%s rc=%s\n' \
-        "$(stamp)" "$freq" "$write_rc" >> "$FREQ_LOG"
-
-    actual=$(cat "$READBACK_NODE" 2>/dev/null)
-    printf '%s READBACK request=%s value=%s\n' \
-        "$(stamp)" "$freq" "$actual" >> "$FREQ_LOG"
-}
-
-while true
-do
-    for freq in 1737 1536 1353 1737
-    do
-        apply_frequency "$freq"
-        sleep 3
-    done
-done
-```
-
-Stressapptest와 frequency script에서 다음 조건을 동일하게 유지합니다.
-
-- Wall-clock timezone
-- 시험 시작 시각
-- `/proc/uptime` 기준
-- Frequency 값의 단위
-- Readback 값의 의미
-- Script cycle과 frequency 순서
-
-Stressapptest 기본 timestamp는 초 단위입니다. 3초 전환 시험에서는 1초 해상도, detection latency와 hardware settling 시간이 겹치므로 경계 부근 failure의 주파수를 하나로 확정하기 어렵습니다.
-
-정확한 시간 정렬이 필요하면 `Logger::VLogF()`에 `clock_gettime(CLOCK_MONOTONIC)` 기반 microsecond timestamp를 추가하고 frequency script도 같은 monotonic clock을 기록합니다.
-
-## 주파수 구간에 failure를 배치하는 방법
-
-각 주파수 구간을 다음 상태로 구분합니다.
-
-```text
-이전 주파수 안정 구간
- → REQUEST
- → WRITE_DONE
- → READBACK
- → settling 구간
- → 현재 주파수 안정 구간
- → 다음 REQUEST
-```
-
-오류 timestamp가 `REQUEST` 전후 또는 settling 구간에 있으면 `transition-associated`로 분류합니다. 현재 주파수가 충분히 안정된 구간 안에 있는 경우에만 해당 고정 주파수와의 연관성을 평가합니다.
-
-3초 간격이 hardware 전환 시간과 software detection latency에 비해 짧으면 failure가 어느 주파수에서 생성되었는지 분리하기 어렵습니다. 다음 두 시험을 별도로 수행합니다.
-
-### 고정 주파수 시험
-
-- 각 frequency를 충분한 시간 동안 고정
-- 같은 stressapptest 명령과 시작 온도 사용
-- Frequency별 반복 횟수 확보
-- 고정 구간 중간에서 발생한 failure만 우선 비교
-- Frequency 순서를 변경하여 온도와 시간 경과 영향을 분리
-
-고정 주파수에서 반복 failure가 발생하면 해당 OPP의 안정성, voltage, timing 및 temperature 조건을 검토합니다.
-
-### 주파수 전환 시험
-
-- 기존 3초 cycle을 별도 시험으로 유지
-- REQUEST·READBACK·settling 구간 기록
-- 낮은 주파수→높은 주파수와 높은 주파수→낮은 주파수 구분
-- 동일한 전환 방향에서 failure가 반복되는지 확인
-- 고정 주파수에서는 통과하고 전환 구간에서만 실패하는지 확인
-
-고정 주파수에서는 통과하고 transition window에서만 반복 실패하면 절대 frequency보다 DVFS 전환 과정과의 연관성을 우선 검토합니다. 이 결과만으로 특정 clock, voltage 또는 timing 회로를 원인으로 확정하지는 않습니다.
-
-## 첫 failure를 보존하는 방법
-
-분석 우선순위는 다음과 같습니다.
-
-1. 첫 번째 `Report Error`
-2. 첫 번째 상세 miscompare
-3. 같은 4 KiB 범위의 후속 오류
-4. 다른 Worker와 주소에서 발생한 독립 오류
-5. 최종 오류 집계와 `Status: FAIL`
-
-첫 failure 시점에 다음 상태를 함께 저장합니다.
-
-```text
-요청 DRAM frequency
-DRAM frequency readback
-마지막 frequency 전환 방향과 경과 시간
-DRAM·SoC·PMIC·CPU temperature
-DMC read/write counter
-CPU affinity와 현재 CPU
-kernel/RAS/SError/thermal 로그
-stressapptest read/reread/expected와 pattern
-virtual address와 확인 가능한 physical address
-```
-
-### `--max_errors`의 제한
-
-`--max_errors N`은 주 실행 thread가 전체 오류 수를 확인한 뒤 종료합니다. 현재 소스에서는 5초 단위 control loop에서 다음 조건을 사용합니다.
-
-```cpp
-if (errors > max_errorcount_) {
-  break;
-}
-```
-
-따라서 `--max_errors 1`은 첫 오류에서 즉시 중단하지 않습니다. 오류 수가 1을 초과해야 하며, 다음 control loop 확인 전까지 여러 Worker가 추가 오류를 출력할 수 있습니다.
-
-현재 public 코드의 `--stop_on_errors`도 일반 RAM miscompare 경로에서 즉시 전체 Worker를 종료하는 기능으로 사용하기 어렵습니다. File sector 오류 경로에는 명시적인 종료가 있지만 `CheckRegion()`의 일반 메모리 불일치에는 같은 종료 호출이 없습니다.
-
-첫 RAM 오류 직후 중단하려면 다음 방법 중 하나를 사용합니다.
-
-- 외부 watcher가 첫 `Report Error: miscompare`를 확인하고 SAT process에 `SIGINT` 전달
-- `CheckRegion()`이 첫 오류를 기록한 후 전체 Worker stop 상태 설정
-- `ProcessError()`에서 frequency·thermal·DMC 상태를 직접 snapshot
-
-외부 watcher도 Logger queue에 기록된 이후에 동작하므로 실제 오류 발생 시점과 차이가 있습니다. 가장 정확한 방법은 오류 검출 코드 내부에서 monotonic timestamp와 target 상태를 함께 저장하는 것입니다.
-
-## 로그 양이 시험 조건에 미치는 영향
-
-기본 verbosity는 8입니다. `-v 0`을 사용하면 일반 정보 로그는 줄지만 priority 0인 초기 상세 오류는 계속 출력됩니다.
-
-대량 로그가 발생하면 다음 부하가 추가됩니다.
-
-- Logger thread의 문자열 생성과 mutex 처리
-- Logfile의 동기 UFS 쓰기
-- stdout과 adbd·USB 전송
-- Worker의 queue 대기
-- 오류 주소의 reread, physical mapping 조회와 기대값 복구 write
-
-따라서 오류 발생 후의 bandwidth, power와 temperature는 정상 부하 구간과 직접 비교하지 않습니다. 첫 오류 이전 구간과 이후 오류 처리 구간을 분리하여 분석합니다.
-
-## 오류 형태별 확인 항목
-
-| 관찰 결과 | 우선 확인할 내용 |
+| 필드 | 저장 시점 |
 |---|---|
-| 고정 1737에서 반복 failure | 해당 OPP의 voltage·timing·temperature와 재현성 |
-| 1737 진입 직후만 failure | 상승 전환 과정, settling 시간, readback 의미 |
-| 1737 이탈 직후만 failure | 하강 전환 과정과 voltage·clock 순서 |
-| OneZero 로그 비율이 높음 | Pattern별 transaction 노출 횟수로 정규화 |
-| OneZero128만 반복 | 128-bit 반복 variant의 노출률과 다른 variant 비교 |
-| 동일 주소·동일 XOR bit 반복 | PA 신뢰도, 위치 재현성, address/data path |
-| 연속 주소의 다수 word 불일치 | 하나의 광범위한 손상이 로그 여러 줄로 분해되었는지 확인 |
-| `reread == expected` | 일시적 관찰 가능성. ARM64 Flush 조건을 함께 확인 |
-| `reread != expected` | 지속 데이터 불일치. 오류 후 복구 write가 수행됨을 고려 |
-| Reboot로 로그가 중단 | pstore, reboot reason, watchdog, SError, thermal 상태 확인 |
+| `write` | Fill, copy, invert, file read 또는 network receive로 block을 마지막 전체 기록한 시점 |
+| `read` | `CheckRegion()`에서 mismatch 값을 읽기 직전 |
+| `reread` | `ProcessError()`에서 같은 주소를 다시 읽기 직전 |
 
-## 최소 분석 표
+Block 기록과 검사 사이에 주파수가 전환되면 세 값이 달라질 수 있습니다. `CheckRegion()`이 여러 오류를 먼저 저장한 뒤 처리하므로 `read`와 `reread` 사이에도 전환이 발생할 수 있습니다.
 
-실행별로 다음 표를 작성하면 frequency와 pattern의 연관성을 비교할 수 있습니다.
+세 값은 각 동작 시점에 `ErrorRecord`에 저장됩니다. Logger queue의 출력 지연은 저장된 값에 영향을 주지 않습니다.
 
-| 항목 | 기록값 |
-|---|---|
-| Run ID |  |
-| Binary build ID·commit |  |
-| Stressapptest 명령 |  |
-| Worker 수·CPU affinity |  |
-| Frequency cycle |  |
-| REQUEST 시각 |  |
-| READBACK 시각·값 |  |
-| 첫 Report Error 시각 |  |
-| Transition 이후 경과 시간 |  |
-| Pattern |  |
-| CPU와 last writer CPU |  |
-| VA·PA |  |
-| Read |  |
-| Reread |  |
-| Expected |  |
-| `read XOR expected`와 bit 수 |  |
-| 같은 4 KiB 범위의 오류 word 수 |  |
-| Temperature |  |
-| DMC counter |  |
-| Kernel·RAS 로그 |  |
-| 종료 원인 |  |
+### 시간 순서 확인
 
-이 표에서 frequency별 failure 횟수, transition 방향별 failure 횟수와 pattern별 정규화 오류율을 각각 계산합니다. 한 종류의 집계값만으로 DRAM 원인을 확정하지 않습니다.
+주파수 전환 시험에서는 다음 시각을 구분합니다.
+
+```text
+Control node write 시작
+ → write() 반환
+ → hardware clock·voltage·timing 전환
+ → Worker의 write 또는 read
+ → mismatch 검출
+ → ProcessError()의 reread
+ → Logger queue 저장
+ → logfile과 stdout 출력
+```
+
+Stressapptest 기본 timestamp는 `ProcessError()`가 메시지를 만든 시각에 가깝습니다. 데이터 상태가 처음 변경된 시각은 직접 기록하지 않습니다. 주파수 경계 분석에는 monotonic timestamp와 actual-frequency readback을 함께 사용합니다.
+
+## 고정 주파수와 전환 시험 분리
+
+주파수 연관성을 확인할 때는 다음 순서로 실행합니다.
+
+1. 각 주파수를 고정하여 같은 명령을 반복합니다.
+2. 주파수 순환 시험을 별도로 실행합니다.
+3. 전환 직전, 전환 처리 구간과 안정 구간을 구분합니다.
+4. 설정값과 hardware readback 값을 같은 monotonic 시간축에 기록합니다.
+5. 같은 실행의 temperature, voltage, memory-controller와 RAS 정보를 함께 저장합니다.
+
+고정 시험과 전환 시험을 분리하면 안정 상태와 DDR DVFS 처리 구간을 각각 비교할 수 있습니다.
+
+## 로그를 수집할 때 확인할 항목
+
+첫 상세 mismatch를 기준으로 다음 정보를 저장합니다.
+
+```text
+Binary build ID와 source commit
+전체 실행 명령
+Worker 종류와 수
+CPU affinity
+Virtual address와 확인 가능한 physical address
+read, reread, expected
+read XOR expected
+마지막 writer CPU
+DDR 설정값과 actual-frequency readback
+Monotonic timestamp
+Temperature와 voltage
+Memory-controller, cache, RAS와 kernel error log
+최종 hardware incident 수와 종료 원인
+```
+
+오류 행이 연속으로 출력되면 주소 범위와 XOR bit를 기준으로 묶습니다. 하나의 넓은 데이터 변경이 여러 64-bit mismatch 행으로 기록될 수 있습니다.
+
+## 분석 결과 작성 형식
+
+로그만으로 확인된 내용과 추가 확인이 필요한 범위를 구분하여 기록합니다.
+
+```text
+확인 결과:
+- Worker의 checksum 검사에서 mismatch가 발생함
+- Slow compare의 read 값이 expected와 다름
+- Reread 결과와 DDR 설정 metadata를 기록함
+
+추가 확인:
+- 최초 mismatch load를 실행한 CPU
+- Reread가 완료된 cache 또는 memory 계층
+- Actual DDR clock과 전환 완료 시각
+- Memory-controller·PHY·DRAM의 hardware error 정보
+```
+
+이 형식을 사용하면 stressapptest가 직접 확인한 사실과 hardware 계층별 원인 분석을 분리해서 관리할 수 있습니다.

@@ -34,6 +34,28 @@ ARG_IVALUE("-c", check_threads_);
 
 <sub><em>Base 0 integer parsing: 숫자 prefix에 따라 `0x`는 16진수, 앞의 `0`은 8진수, 그 외에는 10진수로 해석하는 C library 변환 방식입니다.</em></sub>
 
+## 이 fork에서 추가한 Android 시험 옵션
+
+아래 옵션은 upstream `73b9df2`에 없으며 이 저장소에서 추가했습니다.
+
+| 옵션 | 기본값 | 동작 |
+|---|---:|---|
+| `-P <ID\|이름[,ID\|이름...]>` | 무작위 선택 | 하나 또는 여러 pattern을 지정하고 block 선택마다 입력 순서로 순환 |
+| `--ddr-freq <주파수>` | 사용 안 함 | 하나의 Qualcomm DDR 주파수 유지 |
+| `--ddr-freq all` | 사용 안 함 | 등록된 전체 DDR 주파수를 순서대로 반복 |
+| `--ddr-freq <a,b,...>` | 사용 안 함 | 지정한 주파수만 입력 순서대로 반복 |
+| `--ddr-step <seconds>` | 3 | sweep 주파수 전환 간격 |
+| `--ddr-node <path>` | `/sys/kernel/debug/aoss_send_message` | Qualcomm AOSS debugfs node 변경 |
+
+ID `27`과 이름 `OneZero256`은 같은 pattern을 선택합니다. lowercase `-p`는 기존 SAT block 크기 옵션이므로 구분해야 합니다.
+
+```bash
+stressapptest -M 1024 -m 4 -i 4 -s 600 \
+  -P OneZero256,FiveA256 --ddr-freq all
+```
+
+`--ddr-step`을 생략하면 3초마다 다음 값으로 전환합니다. `--ddr-freq`를 생략하면 DDR 제어 기능은 비활성화되며 `--ddr-step`이나 `--ddr-node`만 지정해도 node를 열거나 쓰지 않습니다. DDR 제어를 사용하려면 해당 debugfs node의 쓰기 권한과 SELinux 허용이 필요합니다.
+
 ## 메모리 크기와 실행 시간
 
 | 옵션 | 기본값 | 실제 동작과 모바일 환경에서의 의미 |

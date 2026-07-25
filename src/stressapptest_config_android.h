@@ -97,13 +97,13 @@
 /* Define to the full name of this package. */
 #define PACKAGE_NAME "stressapptest"
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "stressapptest 1.0.9_autoconf"
+#define PACKAGE_STRING "stressapptest 1.0.11-android"
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "stressapptest"
 /* Define to the home page for this package. */
 #define PACKAGE_URL ""
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "1.0.9_autoconf"
+#define PACKAGE_VERSION "1.0.11-android"
 /* Define as the return type of signal handlers (`int' or `void'). */
 #define RETSIGTYPE void
 /* Define to the type of arg 1 for `select'. */
@@ -137,7 +137,7 @@
 /* Define to 1 if you can safely include both <sys/time.h> and <time.h>. */
 #define TIME_WITH_SYS_TIME 1
 /* Version number of package */
-#define VERSION "1.0.9_autoconf"
+#define VERSION "1.0.11-android"
 /* Define to empty if `const' does not conform to ANSI C. */
 /* #undef const */
 /* Define to `__inline__' or `__inline' if that's what the C compiler

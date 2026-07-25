@@ -45,6 +45,7 @@ struct page_entry {
   uint32 touch;  // Counter of the number of reads from this page.
   uint64 ts;     // Timestamp of the last read from this page.
   uint32 lastcpu; // Last CPU to write this page.
+  int write_dram_frequency;  // DDR value at the latest whole-page write.
   class Pattern *lastpattern;  // Expected Pattern at last read.
 };
 
@@ -56,6 +57,7 @@ static inline void init_pe(struct page_entry *pe) {
   pe->touch = 0;
   pe->ts = 0;
   pe->lastcpu = 0;
+  pe->write_dram_frequency = -1;
 }
 
 // This is a threadsafe randomized queue of pages for

@@ -323,7 +323,8 @@ class WorkerThread {
                           uint32 lastcpu,
                           int64 length,
                           int offset,
-                          int64 patternoffset);
+                          int64 patternoffset,
+                          int write_dram_frequency = -1);
 
   // Fast compare a block of memory.
   virtual int CrcCheckPage(struct page_entry *srcpe);
@@ -362,7 +363,9 @@ class WorkerThread {
   // Report a mistagged cacheline.
   virtual bool ReportTagError(uint64 *mem64,
                       uint64 actual,
-                      uint64 tag);
+                      uint64 tag,
+                      int write_dram_frequency,
+                      int read_dram_frequency);
   // Print out the error record of the tag mismatch.
   virtual void ProcessTagError(struct ErrorRecord *error,
                        int priority,

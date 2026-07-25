@@ -34,9 +34,6 @@ if [[ ! -x "${cxx}" ]]; then
 fi
 
 mkdir -p "${output_dir}"
-install -m 0644 \
-  "${repo_root}/src/stressapptest_config_android.h" \
-  "${output_dir}/stressapptest_config.h"
 
 sources=(
   src/main.cc
@@ -67,7 +64,9 @@ done
   -fPIE \
   -pie \
   -pthread \
+  -static-libstdc++ \
   -DHAVE_CONFIG_H \
+  -DSTRESSAPPTEST_CONFIG_ANDROID \
   -DANDROID \
   -DNDEBUG \
   -UDEBUG \
@@ -77,5 +76,8 @@ done
   -I"${repo_root}/src" \
   "${source_paths[@]}" \
   -o "${output_dir}/stressapptest"
+
+"${toolchain}/bin/llvm-strip" --strip-unneeded \
+  "${output_dir}/stressapptest"
 
 echo "Android ARM64 binary: ${output_dir}/stressapptest"

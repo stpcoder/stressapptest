@@ -20,8 +20,9 @@
 #ifndef STRESSAPPTEST_PATTERN_H_
 #define STRESSAPPTEST_PATTERN_H_
 
-#include <vector>
+#include <atomic>
 #include <string>
+#include <vector>
 
 // This file must work with autoconf on its public version,
 // so these includes are correct.
@@ -94,6 +95,8 @@ class PatternList {
 
   // Return the pattern designated by index i.
   Pattern *GetPattern(int i);
+  // Select patterns by zero-based ID or exact name, in comma-separated order.
+  bool SetPatternSequence(const string &selectors);
   // Return a random pattern according to the specified weighted probability.
   Pattern *GetRandomPattern();
   // Return the number of patterns available.
@@ -104,6 +107,8 @@ class PatternList {
   int weightcount_;  // Total count of pattern weights.
   unsigned int size_;
   int initialized_;
+  vector<int> selected_pattern_ids_;
+  std::atomic<unsigned int> selected_pattern_cursor_;
   DISALLOW_COPY_AND_ASSIGN(PatternList);
 };
 

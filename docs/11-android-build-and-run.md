@@ -2,6 +2,17 @@
 
 이 장에서는 현재 저장소의 소스 코드를 Android ARM64 실행 파일로 빌드하고 휴대폰의 Android shell에서 실행하는 방법을 설명합니다.
 
+## 빌드 없이 다운로드
+
+[최신 Android ARM64 실행 파일](https://github.com/stpcoder/stressapptest/releases/latest/download/stressapptest-android-arm64)은 GitHub Actions가 `master`의 source commit을 빌드한 결과입니다.
+
+```bash
+adb push stressapptest-android-arm64 /data/local/tmp/stressapptest
+adb shell chmod 0755 /data/local/tmp/stressapptest
+```
+
+Release에는 SHA-256 checksum과 `BUILD-INFO.txt`를 포함한 압축 파일도 함께 게시됩니다.
+
 ## 이 저장소의 Android 빌드 방식
 
 현재 GitHub master에는 단독으로 사용할 수 있는 `Android.bp`가 없습니다. 이 fork는 Android NDK로 소스 코드를 직접 cross-compile하는 `scripts/build_android_arm64.sh`를 제공합니다.
@@ -44,7 +55,7 @@ CHECKOPTS
 STRESSAPPTEST_CPU_AARCH64
 ```
 
-`src/stressapptest_config_android.h`를 출력 경로에 `stressapptest_config.h`라는 이름으로 준비하여 공개 소스의 autoconf include 방식을 맞춥니다.
+Standalone build는 `STRESSAPPTEST_CONFIG_ANDROID`를 정의하여 `src/stressapptest_config_android.h`를 직접 선택합니다. 따라서 같은 source tree에서 Linux host build가 먼저 `src/stressapptest_config.h`를 생성해도 Android architecture 설정을 덮어쓰지 않습니다.
 
 > **파일:** `scripts/build_android_arm64.sh` · **구간:** AArch64 compiler 호출 · **기준:** 이 fork
 
@@ -57,7 +68,9 @@ STRESSAPPTEST_CPU_AARCH64
   -fPIE \
   -pie \
   -pthread \
+  -static-libstdc++ \
   -DHAVE_CONFIG_H \
+  -DSTRESSAPPTEST_CONFIG_ANDROID \
   -DANDROID \
   -DNDEBUG \
   -UDEBUG \
@@ -67,9 +80,12 @@ STRESSAPPTEST_CPU_AARCH64
   -I"${repo_root}/src" \
   "${source_paths[@]}" \
   -o "${output_dir}/stressapptest"
+
+"${toolchain}/bin/llvm-strip" --strip-unneeded \
+  "${output_dir}/stressapptest"
 ```
 
-**코드 설명:** NDK의 `aarch64-linux-android<API>-clang++`로 공개 소스 파일을 하나의 PIE 실행 파일로 연결합니다. `STRESSAPPTEST_CPU_AARCH64`는 ARM64용 timestamp, cache 관리 명령, NEON 복사 코드를 선택합니다.
+**코드 설명:** NDK의 `aarch64-linux-android<API>-clang++`로 공개 소스 파일을 하나의 PIE 실행 파일로 연결합니다. C++ runtime은 실행 파일에 정적으로 연결하므로 휴대폰에 `libc++_shared.so`를 별도로 복사하지 않습니다. `STRESSAPPTEST_CPU_AARCH64`는 ARM64용 timestamp, cache 관리 명령, NEON 복사 코드를 선택합니다.
 
 <sub><em>PIE: Position-Independent Executable의 약어이며 ASLR 적용을 위해 고정 virtual address에 의존하지 않도록 생성한 실행 파일입니다.</em></sub>
 <sub><em>Conditional compilation: compile-time macro 값에 따라 특정 architecture 또는 platform 구현만 binary에 포함하는 방식입니다.</em></sub>
@@ -112,6 +128,27 @@ adb shell /data/local/tmp/stressapptest --help
 ```bash
 adb shell '/data/local/tmp/stressapptest -M 256 -s 30 -m 2 -v 8'
 ```
+
+특정 pattern과 DDR 주파수 sweep을 함께 사용할 때에는 다음 형식을 사용합니다.
+
+```bash
+adb shell '/data/local/tmp/stressapptest \
+  -M 1024 -m 4 -i 4 -s 600 --printsec 10 \
+  -P OneZero256,FiveA256 \
+  --ddr-freq all'
+```
+
+`-P`에 여러 pattern을 쓰면 새 block의 pattern을 선택할 때 입력 순서대로 순환합니다. `--ddr-freq all`은 내장된 전체 목록을 순환하며 기본 전환 간격은 3초입니다. 다른 간격이 필요할 때만 `--ddr-step <초>`를 추가합니다.
+
+```bash
+adb shell '/data/local/tmp/stressapptest \
+  -M 1024 -m 4 -i 4 -s 600 \
+  -P OneZero256 \
+  --ddr-freq 547,1017,2092,3196,5333 \
+  --ddr-step 5'
+```
+
+`--ddr-freq 3196`처럼 값 하나만 지정하면 sweep하지 않고 같은 값을 유지합니다. `--ddr-freq`를 지정하지 않으면 AOSS node에 접근하지 않습니다.
 
 초기 결과와 시스템 상태를 확인한 뒤 다음 순서로 부하를 늘립니다.
 

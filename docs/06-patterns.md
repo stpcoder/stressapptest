@@ -113,6 +113,39 @@ if (i < size_) {
 
 **코드 설명:** 임의 값을 전체 선택 비율의 합인 160 안의 값으로 바꿉니다. 각 pattern의 선택 비율을 차례로 빼다가 0 이하가 되는 `Pattern` 객체를 선택합니다. 선택 비율이 10인 pattern은 5인 pattern보다 선택 확률이 두 배입니다.
 
+## Pattern을 직접 선택하는 방법
+
+이 fork의 `-P` 옵션은 하나 또는 여러 `Pattern` 객체를 직접 지정합니다. 하나만 지정하면 `GetRandomPattern()`이 항상 같은 객체를 반환합니다. 초기 FillThread와 오류 복구 과정에서 다시 채우는 block에도 같은 pattern이 적용됩니다.
+
+ID는 0부터 시작합니다. `OneZero256`의 ID는 27입니다.
+
+```bash
+stressapptest -M 1024 -m 4 -i 4 -s 600 -P 27
+stressapptest -M 1024 -m 4 -i 4 -s 600 -P OneZero256
+```
+
+두 명령은 동일하게 작동합니다. 이름 비교는 대소문자를 구분하지 않습니다. `-P`를 생략하면 upstream의 가중치 기반 무작위 선택을 그대로 사용합니다.
+
+여러 pattern은 쉼표로 연결합니다.
+
+```bash
+stressapptest -M 1024 -m 4 -i 4 -s 600 \
+  -P OneZero256,FiveA256,walkingOnes128
+```
+
+`GetRandomPattern()`을 호출할 때마다 다음 항목을 선택하고, 마지막 항목 다음에는 첫 항목을 선택합니다.
+
+```text
+첫 번째 선택  → OneZero256
+두 번째 선택  → FiveA256
+세 번째 선택  → walkingOnes128
+네 번째 선택  → OneZero256
+```
+
+이 순서는 새 pattern을 요청한 호출 순서입니다. 여러 Fill Worker가 empty block을 병렬로 가져오므로 낮은 주소부터 같은 순서로 배치된다는 의미는 아닙니다. 각 pattern을 일정 시간 동안 전체 메모리에 적용하는 단계 실행 방식도 아닙니다. 선택한 목록을 block 단위로 순환 배정하는 방식입니다.
+
+<sub><em>Round-robin: 목록의 항목을 처음부터 마지막까지 차례로 선택하고 다시 첫 항목으로 돌아가는 배정 방식입니다.</em></sub>
+
 ## Width별 선택 비율
 
 | 반복 범위 | 선택 확률 |
@@ -126,7 +159,7 @@ if (i < size_) {
 
 ## Block에 Pattern을 기록하는 과정
 
-초기 `FillThread`가 empty block을 가져올 때 `GetRandomPattern()`을 한 번 호출합니다. 선택한 하나의 `Pattern`을 1 MiB block 전체에 반복해서 기록합니다.
+초기 `FillThread`가 empty block을 가져올 때 `GetRandomPattern()`을 한 번 호출합니다. 선택한 `Pattern`을 1 MiB block 전체에 반복해서 기록합니다.
 
 ```text
 1 MiB block A → OneZero128

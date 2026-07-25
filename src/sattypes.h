@@ -26,7 +26,11 @@
 #include <string>
 
 #ifdef HAVE_CONFIG_H  // Built using autoconf
+#ifdef STRESSAPPTEST_CONFIG_ANDROID
+#include "stressapptest_config_android.h"  // NOLINT
+#else
 #include "stressapptest_config.h"  // NOLINT
+#endif
 #ifndef _LIBCPP_VERSION
 using namespace __gnu_cxx;  //NOLINT
 #endif  // _LIBCPP_VERSION

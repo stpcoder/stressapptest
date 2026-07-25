@@ -19,6 +19,7 @@
 
 #include <signal.h>
 
+#include <atomic>
 #include <map>
 #include <string>
 #include <vector>
@@ -92,6 +93,9 @@ class Sat {
   int warm() const { return warm_; }
   bool stop_on_error() const { return stop_on_error_; }
   bool use_affinity() const { return use_affinity_; }
+  int current_dram_frequency() const {
+    return current_dram_frequency_.load(std::memory_order_acquire);
+  }
   int32 region_mask() const { return region_mask_; }
   // Semi-accessor to find the "nth" region to avoid replicated bit searching..
   int32 region_find(int32 num) const {
@@ -141,9 +145,19 @@ class Sat {
   int ReadInt(const char *filename, int *value);
   // Collect error counts from threads.
   int64 GetTotalErrorCount();
+  // Submit a Qualcomm AOSS fixed DDR frequency request.
+  bool ApplyDramFrequency(int frequency);
 
   // Command line arguments.
   string cmdline_;
+  string pattern_selector_;
+
+  // Qualcomm DDR frequency control.
+  vector<int> dram_frequencies_;
+  bool dram_sweep_;
+  int dram_step_seconds_;
+  string dram_frequency_node_;
+  std::atomic<int> current_dram_frequency_;
 
   // Memory and test configuration.
   int runtime_seconds_;               // Seconds to run.
