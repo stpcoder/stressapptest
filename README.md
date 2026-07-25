@@ -1,10 +1,23 @@
 # StressAppTest Android ARM64 확장판
 
-이 저장소는 공개 [stressapptest](https://github.com/stressapptest/stressapptest)에 Android AArch64 실장기 테스트 기능을 추가한 개인 fork입니다. 이 README는 이 fork에서 추가한 기능, 기존 stressapptest 옵션, Android 실행 방법과 오류 로그 해석 방법을 함께 설명합니다.
+이 저장소는 공개 [stressapptest](https://github.com/stressapptest/stressapptest)에 Android AArch64 실장기 테스트 기능을 추가한 개인 fork입니다. 기본 branch인 `master`에서 소스, 한글 매뉴얼과 Android ARM64 배포 파일을 함께 관리합니다.
 
 [![Android ARM64 최신 버전 다운로드](https://img.shields.io/badge/Android_ARM64-최신_버전_다운로드-1976d2?style=for-the-badge&logo=android&logoColor=white)](https://github.com/stpcoder/stressapptest/releases/latest/download/stressapptest-android-arm64)
+[![최신 Release](https://img.shields.io/github/v/release/stpcoder/stressapptest?display_name=tag&style=for-the-badge&label=Latest%20Release&color=455a64)](https://github.com/stpcoder/stressapptest/releases/latest)
+[![한글 매뉴얼](https://img.shields.io/badge/한글_매뉴얼-바로_보기-0288d1?style=for-the-badge&logo=materialformkdocs&logoColor=white)](https://stpcoder.github.io/stressapptest/)
 
-압축 파일과 SHA-256 checksum이 필요하면 [최신 Release 페이지](https://github.com/stpcoder/stressapptest/releases/latest)에서 다운로드할 수 있습니다.
+첫 번째 버튼은 Android ARM64 실행 파일을 직접 다운로드합니다. 최신 Release 페이지에는 실행 파일, 압축 파일과 SHA-256 checksum이 함께 제공됩니다. 한글 매뉴얼 버튼은 Worker, queue, cache, memory access와 오류 로그 설명으로 연결됩니다.
+
+## 바로 사용하기
+
+```bash
+# PC에서 다운로드한 실행 파일을 Android 기기로 복사
+adb push stressapptest-android-arm64 /data/local/tmp/stressapptest
+adb shell chmod 0755 /data/local/tmp/stressapptest
+
+# 기본 memory stress 실행
+adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
+```
 
 ## 추가된 기능
 
@@ -359,3 +372,86 @@ GitHub Actions 화면에서 `Build Android ARM64 release` workflow를 수동 실
 기존 소스 구조와 worker, queue, cache, physical mapping 설명은 [StressAppTest 설명 사이트](https://stpcoder.github.io/stressapptest/)에서 확인할 수 있습니다.
 
 License: Apache License 2.0
+
+---
+
+## StressAppTest 기본 설명과 분석 문서
+
+이 저장소는 stressapptest의 메모리 준비, Worker 실행, cache 동작과 데이터 검사 과정을 공개 소스 기준으로 설명합니다. 분석 기준은 upstream commit `73b9df227e89cd52b09852056843610722b7b7ae`입니다.
+
+### 핵심 동작
+
+- 기본 설정에서는 online 상태의 논리 CPU 수만큼 `CopyThread`를 만듭니다. `-m N`으로 개수를 변경할 수 있습니다.
+- 테스트 메모리는 기본 1 MiB 크기의 SAT block으로 나뉩니다. Worker는 공용 queue에서 읽을 block과 쓸 block을 가져옵니다.
+- 한 block 내부에서는 주소 순서대로 읽고 씁니다. 다음 block은 여러 block 중에서 선택합니다.
+- 기본 복사 과정은 원본 block read, checksum 계산과 대상 block write를 함께 수행합니다.
+- stressapptest는 cache가 활성화된 일반 메모리를 사용합니다. 여러 core와 큰 working set을 사용하면 cache miss와 write-back이 반복됩니다.
+- 함수 이름에는 `CRC`가 사용되지만 실제 검증에는 modified Adler checksum을 사용합니다.
+- 프로그램의 처리량은 Worker가 처리한 논리적 byte입니다. 실제 LPDDR transaction은 DMC·NoC·SLC 계측값으로 확인합니다.
+
+<sub><em>Worker: 특정 memory·CPU·I/O 부하 또는 검증 loop를 실행하는 pthread 단위입니다.</em></sub><br>
+<sub><em>Write-back: 수정된 cache line을 하위 cache 또는 system memory 방향으로 기록하는 동작입니다.</em></sub><br>
+<sub><em>Physical mapping: virtual address를 system physical address에 대응시키는 변환 관계입니다.</em></sub>
+
+### 한글 문서 목차
+
+처음 확인할 때는 다음 순서로 읽을 수 있습니다. 같은 내용은 [`docs/README.md`](docs/README.md)와 [배포된 한글 매뉴얼](https://stpcoder.github.io/stressapptest/)에서 제공합니다.
+
+1. [stressapptest의 작동 원리](docs/01-overview.md)
+2. [실행 순서 한눈에 보기](docs/02-execution-flow.md)
+3. [메모리를 복사하고 오류를 찾는 과정](docs/09-copy-and-verification.md)
+4. [Cache에서 LPDDR까지 데이터가 이동하는 과정](docs/04-cache-and-arm64.md)
+5. [메모리 Worker 종류와 동작](docs/07-memory-workers.md)
+6. [목적에 따른 테스트 명령](docs/12-test-recipes.md)
+7. [부하와 오류를 측정하는 방법](docs/13-measurement.md)
+8. [오류 로그 생성 과정과 DRAM 주파수 기록](docs/17-logging-and-dram-frequency.md)
+
+사이트 메뉴는 [`mkdocs.yml`](mkdocs.yml), 본문 style은 [`docs/stylesheets/extra.css`](docs/stylesheets/extra.css)에서 관리합니다.
+
+### 문서 사이트를 로컬에서 확인하기
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-docs.txt
+mkdocs serve
+```
+
+브라우저에서 `http://127.0.0.1:8000/stressapptest/`를 열어 배포 전 화면을 확인할 수 있습니다.
+
+### 일반 Linux 빌드
+
+```bash
+./configure
+make -j"$(nproc)"
+./src/stressapptest --help
+```
+
+### Memory access별 실행 명령
+
+```bash
+# Read와 checksum 검사
+stressapptest -M 512 -s 60 -m 0 -c 4
+
+# Read, write와 checksum을 수행하는 기본 copy
+stressapptest -M 512 -s 60 -m 4
+
+# libc memcpy 처리량 확인
+stressapptest -M 512 -s 60 -m 4 -F
+
+# Read-Modify-Write와 접근 방향 전환
+stressapptest -M 512 -s 60 -m 0 -i 4
+
+# CPU 계산 부하 병행
+stressapptest -M 512 -s 60 -m 4 -C 4
+```
+
+`-d ... --destructive`는 지정한 block device를 덮어씁니다. 저장 데이터가 있는 기기에서는 사용하지 않습니다.
+
+### Upstream과 라이선스
+
+- Upstream: <https://github.com/stressapptest/stressapptest>
+- 원본 README: <https://github.com/stressapptest/stressapptest/blob/73b9df227e89cd52b09852056843610722b7b7ae/README.md>
+- License: Apache License 2.0. 기존 `COPYING`과 `NOTICE`를 유지합니다.
+
+Physical address를 LPDDR channel, rank, bank, row와 column으로 변환하거나 DMC counter를 해석할 때는 target platform의 memory-controller 자료를 함께 사용합니다.
