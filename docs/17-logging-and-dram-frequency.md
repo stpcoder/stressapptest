@@ -93,6 +93,7 @@ OsLayer::Flush(vaddr) 호출
  → reread 시점의 DDR 설정값 저장
  → 같은 virtual address load
  → physical address 변환 시도
+ → 선택한 주소 프로필로 DRAM 좌표 계산
  → 상세 오류 메시지 생성
  → expected 값을 해당 주소에 기록
 ```
@@ -157,7 +158,7 @@ Worker의 logprintf()
 ```text
 2026/01/15-10:20:00(KST) Log: DDR_FREQ write=3196 monotonic_us=120000000 node=<control_node>
 2026/01/15-10:20:42(KST) Report Error: miscompare : DIMM Unknown : 1 : 42s
-2026/01/15-10:20:42(KST) Hardware Error: miscompare on CPU 6(<-3) at 0x7a120000(0x12345000:DIMM Unknown): read:0x1122334455667780, reread:0x1122334455667788 expected:0x1122334455667788. '<selected_pattern>' read error. ddr_freq(write=3196 read=3196 reread=3196).
+2026/01/15-10:20:42(KST) Hardware Error: miscompare on CPU 6(<-3) at 0x730bae8c38(0x90a5edc3c:DIMM Unknown): read:0xfffffff7ffffffff, reread:0xffffffffffffffff, expected:0xffffffffffffffff. 'OneZero256'; read error, ch:0,rk:0,sc:1,bg:1,bank:2,row:4297,col:29, cur_mode:sweep, cur_freq:5333, ddr_freq(write=3196 read=4266 reread=5333).
 2026/01/15-10:20:45(KST) Log: Thread 4 found 1 hardware incidents
 2026/01/15-10:20:45(KST) Stats: Found 1 hardware incidents
 2026/01/15-10:20:45(KST) Status: FAIL - test discovered HW problems
@@ -185,6 +186,10 @@ Worker의 logprintf()
 | `expected` | Pattern으로 계산한 기대값 |
 | `pattern_name` | Block에 지정된 expected pattern 이름 |
 | `read error` | `reread == expected` 조건에서 추가되는 software 분류 문자열 |
+| `write error` | `reread != expected` 조건에서 추가되는 software 분류 문자열 |
+| `ch,rk,sc,bg,bank,row,col` | 선택한 주소 프로필로 physical address를 변환한 DRAM 좌표 |
+| `cur_mode` | DDR 값 하나는 `fixed`, 여러 값은 `sweep`, DDR 옵션이 없으면 `none` |
+| `cur_freq` | `reread` 직전에 저장한 DDR 설정값 |
 | `ddr_freq(write=...)` | Block을 마지막으로 전체 기록한 시점의 내부 DDR 설정값 |
 | `ddr_freq(read=...)` | `CheckRegion()` 상세 검사 직전의 내부 DDR 설정값 |
 | `ddr_freq(reread=...)` | `ProcessError()`의 두 번째 load 직전 내부 DDR 설정값 |
@@ -193,7 +198,7 @@ Worker의 logprintf()
 
 `expected`는 pattern으로 계산합니다. 실제 write 결과를 별도 snapshot으로 저장하는 필드는 없습니다.
 
-Physical address 변환에는 `/proc/self/pagemap` 접근 권한이 필요합니다. LPDDR channel, rank, bank, row와 column 분석에는 해당 SoC의 memory-controller address map이 필요합니다.
+Physical address 변환에는 `/proc/self/pagemap` 접근 권한이 필요합니다. `--dram-map lpddr-v1`을 지정하면 저장소의 주소 프로필이 channel, rank, subchannel, bank group, bank, row와 column을 계산합니다. 프로필을 지정하지 않으면 각 좌표에 `unknown`이 출력됩니다.
 
 ## `read`와 `reread` 해석
 
@@ -219,7 +224,8 @@ stressapptest -M 1024 -m 4 -i 4 -s 600 \
 
 # 전체 지원 목록을 기본 3초 간격으로 순환
 stressapptest -M 1024 -m 4 -i 4 -s 600 \
-  --ddr-freq all -l /data/local/tmp/stressapptest.log
+  --ddr-freq all --dram-map lpddr-v1 \
+  -l /data/local/tmp/stressapptest.log
 
 # 전환 간격을 5초로 지정
 stressapptest -M 1024 -m 4 -i 4 -s 600 \

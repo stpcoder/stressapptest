@@ -56,6 +56,7 @@
 // This file must work with autoconf on its public version,
 // so these includes are correct.
 #include "error_diag.h"  // NOLINT
+#include "dram_address.h"  // NOLINT
 #include "os.h"          // NOLINT
 #include "pattern.h"     // NOLINT
 #include "queue.h"       // NOLINT
@@ -164,6 +165,26 @@ static void FormatDramFrequencies(struct ErrorRecord *error,
                            reread_frequency, sizeof(reread_frequency));
   snprintf(buffer, buffer_size, "write=%s read=%s reread=%s",
            write_frequency, read_frequency, reread_frequency);
+}
+
+static void FormatDramCoordinates(class Sat *sat,
+                                  uint64 physical_address,
+                                  char *buffer,
+                                  size_t buffer_size) {
+  DramAddress address = {};
+  if (physical_address == 0 ||
+      !DecodeDramAddress(sat->dram_address_map_profile(),
+                         physical_address, &address)) {
+    snprintf(buffer, buffer_size,
+             "ch:unknown,rk:unknown,sc:unknown,bg:unknown,bank:unknown,"
+             "row:unknown,col:unknown");
+    return;
+  }
+
+  snprintf(buffer, buffer_size,
+           "ch:%u,rk:%u,sc:%u,bg:%u,bank:%u,row:%x,col:%x",
+           address.channel, address.rank, address.subchannel,
+           address.bank_group, address.bank, address.row, address.column);
 }
 
 // This is a helper function to create new threads with pthreads.
@@ -642,6 +663,8 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
                                 const char *message) {
   char dimm_string[256] = "";
   char dram_frequencies[128];
+  char current_dram_frequency[32];
+  char dram_coordinates[192];
 
   int core_id = sched_getcpu();
 
@@ -665,6 +688,11 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
 
   // Find physical address if possible.
   error->paddr = os_->VirtualToPhysical(error->vbyteaddr);
+  FormatDramCoordinates(sat_, error->paddr,
+                        dram_coordinates, sizeof(dram_coordinates));
+  FormatDramFrequencyValue(error->reread_dram_frequency,
+                           current_dram_frequency,
+                           sizeof(current_dram_frequency));
 
   // Pretty print DIMM mapping if available.
   os_->FindDimm(error->paddr, dimm_string, sizeof(dimm_string));
@@ -678,8 +706,9 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
 
     logprintf(priority,
               "%s: miscompare on CPU %d(<-%d) at %p(0x%llx:%s): "
-              "read:0x%016llx, reread:0x%016llx expected:0x%016llx. "
-              "'%s'%s. ddr_freq(%s).\n",
+              "read:0x%016llx, reread:0x%016llx, expected:0x%016llx. "
+              "'%s'; %s, %s, cur_mode:%s, cur_freq:%s, "
+              "ddr_freq(%s).\n",
               message,
               core_id,
               error->lastcpu,
@@ -690,7 +719,11 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
               error->reread,
               error->expected,
               (error->patternname) ? error->patternname : "None",
-              (error->reread == error->expected) ? " read error" : "",
+              (error->reread == error->expected) ?
+                  "read error" : "write error",
+              dram_coordinates,
+              sat_->dram_frequency_mode(),
+              current_dram_frequency,
               dram_frequencies);
   }
 
@@ -709,6 +742,8 @@ void FileThread::ProcessError(struct ErrorRecord *error,
                               const char *message) {
   char dimm_string[256] = "";
   char dram_frequencies[128];
+  char current_dram_frequency[32];
+  char dram_coordinates[192];
 
   // Determine if this is a write or read error.
   os_->Flush(error->vaddr);
@@ -730,6 +765,11 @@ void FileThread::ProcessError(struct ErrorRecord *error,
 
   // Find physical address if possible.
   error->paddr = os_->VirtualToPhysical(error->vbyteaddr);
+  FormatDramCoordinates(sat_, error->paddr,
+                        dram_coordinates, sizeof(dram_coordinates));
+  FormatDramFrequencyValue(error->reread_dram_frequency,
+                           current_dram_frequency,
+                           sizeof(current_dram_frequency));
 
   // Pretty print DIMM mapping if available.
   os_->FindDimm(error->paddr, dimm_string, sizeof(dimm_string));
@@ -753,7 +793,8 @@ void FileThread::ProcessError(struct ErrorRecord *error,
 
   logprintf(priority,
             "%s: miscompare on %s at %p(0x%llx:%s): read:0x%016llx, "
-            "reread:0x%016llx expected:0x%016llx. '%s'. ddr_freq(%s).\n",
+            "reread:0x%016llx, expected:0x%016llx. '%s'; %s, %s, "
+            "cur_mode:%s, cur_freq:%s, ddr_freq(%s).\n",
             message,
             devicename_.c_str(),
             error->vaddr,
@@ -763,6 +804,11 @@ void FileThread::ProcessError(struct ErrorRecord *error,
             error->reread,
             error->expected,
             (error->patternname) ? error->patternname : "None",
+            (error->reread == error->expected) ?
+                "read error" : "write error",
+            dram_coordinates,
+            sat_->dram_frequency_mode(),
+            current_dram_frequency,
             dram_frequencies);
 
   // Overwrite incorrect data with correct data to prevent
@@ -1032,6 +1078,8 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
   char dimm_string[256] = "";
   char tag_dimm_string[256] = "";
   char dram_frequencies[128];
+  char current_dram_frequency[32];
+  char dram_coordinates[192];
   bool read_error = false;
 
   int core_id = sched_getcpu();
@@ -1054,6 +1102,11 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
   // Find physical address if possible.
   error->paddr = os_->VirtualToPhysical(error->vbyteaddr);
   error->tagpaddr = os_->VirtualToPhysical(error->tagvaddr);
+  FormatDramCoordinates(sat_, error->paddr,
+                        dram_coordinates, sizeof(dram_coordinates));
+  FormatDramFrequencyValue(error->reread_dram_frequency,
+                           current_dram_frequency,
+                           sizeof(current_dram_frequency));
 
   // Pretty print DIMM mapping if available.
   os_->FindDimm(error->paddr, dimm_string, sizeof(dimm_string));
@@ -1065,8 +1118,8 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
     logprintf(priority,
               "%s: Tag from %p(0x%llx:%s) (%s) "
               "miscompare on CPU %d(0x%s) at %p(0x%llx:%s): "
-              "read:0x%016llx, reread:0x%016llx expected:0x%016llx. "
-              "ddr_freq(%s).\n",
+              "read:0x%016llx, reread:0x%016llx, expected:0x%016llx. "
+              "%s, %s, cur_mode:%s, cur_freq:%s, ddr_freq(%s).\n",
               message,
               error->tagvaddr, error->tagpaddr,
               tag_dimm_string,
@@ -1079,6 +1132,10 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
               error->actual,
               error->reread,
               error->expected,
+              read_error ? "read error" : "write error",
+              dram_coordinates,
+              sat_->dram_frequency_mode(),
+              current_dram_frequency,
               dram_frequencies);
   }
 
@@ -3464,6 +3521,8 @@ void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
     WorkerThread::ProcessError(error, priority, message);
   } else if (phase_ == kPhaseCheck) {
     char dram_frequencies[128];
+    char current_dram_frequency[32];
+    char dram_coordinates[192];
     // A error on the Check Phase means that the memory region tested
     // has an error. Gathering more information and then reporting
     // the error.
@@ -3487,10 +3546,16 @@ void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
 
     // Find physical address if possible.
     error->paddr = os_->VirtualToPhysical(error->vbyteaddr);
+    FormatDramCoordinates(sat_, error->paddr,
+                          dram_coordinates, sizeof(dram_coordinates));
+    FormatDramFrequencyValue(error->reread_dram_frequency,
+                             current_dram_frequency,
+                             sizeof(current_dram_frequency));
     logprintf(priority,
               "%s: miscompare on %s, CRC check at %p(0x%llx), "
               "offset %llx: read:0x%016llx, reread:0x%016llx "
-              "expected:0x%016llx. ddr_freq(%s).\n",
+              "expected:0x%016llx. %s, %s, cur_mode:%s, cur_freq:%s, "
+              "ddr_freq(%s).\n",
               message,
               identifier_.c_str(),
               error->vaddr,
@@ -3499,6 +3564,11 @@ void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
               error->actual,
               error->reread,
               error->expected,
+              (error->reread == error->expected) ?
+                  "read error" : "write error",
+              dram_coordinates,
+              sat_->dram_frequency_mode(),
+              current_dram_frequency,
               dram_frequencies);
   } else {
     logprintf(0, "Process Error: memory region thread raised an "

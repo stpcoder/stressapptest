@@ -179,11 +179,12 @@ top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 AM_DEFAULT_SOURCE_EXT = .cc
+EXTRA_DIST = dram_address_test.cc
 MAINFILES = main.cc
 CFILES = os.cc os_factory.cc pattern.cc queue.cc sat.cc sat_factory.cc \
 	worker.cc finelock_queue.cc error_diag.cc disk_blocks.cc \
 	adler32memcpy.cc logger.cc
-HFILES = os.h pattern.h queue.h sat.h worker.h sattypes.h \
+HFILES = os.h dram_address.h pattern.h queue.h sat.h worker.h sattypes.h \
 	finelock_queue.h error_diag.h disk_blocks.h adler32memcpy.h \
 	logger.h clock.h
 stressapptest_SOURCES = $(MAINFILES) $(CFILES) $(HFILES)

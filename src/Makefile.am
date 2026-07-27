@@ -2,6 +2,7 @@ bin_PROGRAMS = stressapptest
 noinst_PROGRAMS = findmask
 
 AM_DEFAULT_SOURCE_EXT=.cc
+EXTRA_DIST = dram_address_test.cc
 
 MAINFILES = main.cc
 CFILES = os.cc
@@ -18,6 +19,7 @@ CFILES += adler32memcpy.cc
 CFILES += logger.cc
 
 HFILES = os.h
+HFILES += dram_address.h
 HFILES += pattern.h
 HFILES += queue.h
 HFILES += sat.h
