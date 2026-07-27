@@ -27,6 +27,7 @@
 // This file must work with autoconf on its public version,
 // so these includes are correct.
 #include "finelock_queue.h"
+#include "dram_address.h"
 #include "queue.h"
 #include "sattypes.h"
 #include "worker.h"
@@ -96,6 +97,14 @@ class Sat {
   int current_dram_frequency() const {
     return current_dram_frequency_.load(std::memory_order_acquire);
   }
+  const char *dram_frequency_mode() const {
+    if (dram_frequencies_.empty())
+      return "none";
+    return dram_frequencies_.size() == 1 ? "fixed" : "sweep";
+  }
+  DramAddressMapProfile dram_address_map_profile() const {
+    return dram_address_map_profile_;
+  }
   int32 region_mask() const { return region_mask_; }
   // Semi-accessor to find the "nth" region to avoid replicated bit searching..
   int32 region_find(int32 num) const {
@@ -158,6 +167,7 @@ class Sat {
   int dram_step_seconds_;
   string dram_frequency_node_;
   std::atomic<int> current_dram_frequency_;
+  DramAddressMapProfile dram_address_map_profile_;
 
   // Memory and test configuration.
   int runtime_seconds_;               // Seconds to run.

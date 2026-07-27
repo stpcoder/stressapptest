@@ -147,6 +147,65 @@ DMC는 physical address의 bit를 해석하여 channel, rank, bank, row, column�
 <sub><em>DRAM coordinate: channel, rank, bank group, bank, row 및 column으로 구성되는 DRAM 내부 위치 정보입니다.</em></sub>
 <sub><em>Interleaving: 연속 주소를 여러 channel 또는 bank에 분산하여 병렬성을 높이는 주소 배치 방식입니다.</em></sub>
 
+## `lpddr-v1` 주소 변환 프로필
+
+이 저장소는 `--dram-map lpddr-v1` 옵션으로 physical address를 DRAM 좌표로 변환합니다. 변환 코드는 `src/dram_address.h`에 있습니다. 옵션을 지정하지 않으면 로그의 DRAM 좌표에는 `unknown`이 기록됩니다.
+
+아래 식에서 `P[n]`은 system physical address의 n번 bit를 의미합니다. `^`는 XOR 연산입니다. 두 bit로 구성된 값은 bit 0과 bit 1을 결합하여 0부터 3까지의 값으로 만듭니다.
+
+| DRAM 필드 | `lpddr-v1` 계산식 | 출력 형식 |
+|---|---|---|
+| Byte offset | `P[4:0]` | 16진수 계산 기준 |
+| Column | `{P[14:12], P[7:5]}` | 16진수 |
+| Channel | `P[9:8]` | 10진수 0~3 |
+| Subchannel | `P[10]` | 10진수 0~1 |
+| Row | `P[33:18]` | 16진수 |
+| Bank group bit 0 | `1 ^ P[11] ^ P[20] ^ P[29] ^ P[30]` | `bg[0]` |
+| Bank group bit 1 | `P[15] ^ P[19] ^ P[21] ^ P[24]` | `bg[1]` |
+| Bank bit 0 | `P[16] ^ P[21] ^ P[23] ^ P[30]` | `bank[0]` |
+| Bank bit 1 | `P[17] ^ P[19] ^ P[23] ^ P[27] ^ P[30]` | `bank[1]` |
+| Rank | `0` | 이 프로필의 검증 범위 |
+
+최종 bank group과 bank 값은 다음과 같이 계산합니다.
+
+```text
+bg   = bg[0]   + 2 × bg[1]
+bank = bank[0] + 2 × bank[1]
+```
+
+예를 들어 physical address `0x90a5edc3c`에는 다음 결과가 적용됩니다.
+
+```text
+ch:0,rk:0,sc:1,bg:1,bank:2,row:4297,col:29
+```
+
+`row`와 `col`은 16진수 문자열로 출력됩니다. 위 예시의 `row:4297`은 10진수 4297이 아니라 16진수 `0x4297`을 의미합니다.
+
+### 프로필 적용 범위
+
+`lpddr-v1`의 식은 저장소의 검증 vector 전체와 일치합니다. Rank 1 주소가 검증 vector에 포함되지 않아 이 프로필의 rank는 0으로 고정됩니다. Bank group과 bank의 XOR 탭은 현재 vector를 만족하는 프로필 식입니다. 추가 주소만으로 같은 결과를 만드는 다른 XOR 식이 존재할 수 있으므로 target의 controller 설정 또는 별도 주소 표본으로 확인합니다.
+
+Memory-controller의 주소 배치는 boot 설정, interleave 설정과 memory topology에 따라 달라질 수 있습니다. `lpddr-v1`은 명령행에서 선택한 실행에만 적용됩니다. 다른 주소 배치를 사용하는 target에는 별도의 `DramAddressMapProfile`과 decode 함수를 추가합니다.
+
+<sub><em>XOR hash: 여러 address bit를 XOR하여 channel 또는 bank 선택 bit를 만드는 주소 분산 규칙입니다.</em></sub>
+<sub><em>Address-map profile: system physical address를 DRAM 좌표로 변환하는 bit 배치와 XOR 식의 묶음입니다.</em></sub>
+
+### 오류 주소에 적용되는 physical address
+
+Memory mismatch 로그의 virtual address는 오류가 포함된 64-bit word의 시작 주소입니다. Physical address는 `read`와 `expected`를 byte 단위로 비교하여 처음 다른 byte의 virtual address를 `/proc/self/pagemap`으로 변환한 값입니다.
+
+```text
+word virtual address
+ + first mismatching byte offset
+ = mismatching byte virtual address
+ → /proc/self/pagemap
+ = 오류 로그의 physical address
+ → lpddr-v1
+ = ch, rk, sc, bg, bank, row, col
+```
+
+따라서 로그의 virtual address와 physical address는 같은 byte 위치를 직접 표현하지 않을 수 있습니다. 64-bit word의 다섯 번째 byte가 처음 다르면 physical address의 page offset은 virtual word 시작 offset보다 4만큼 큽니다.
+
 ## Virtual address와 physical address의 연속성
 
 `-M 1024`로 확보한 1 GiB virtual address 범위는 연속입니다. 각 Linux page의 physical 위치는 kernel page allocator가 개별적으로 결정합니다.

@@ -45,6 +45,15 @@ jobs:
             ./configure --disable-default-optimizations
           make -j"$(nproc)"
 
+      - name: Verify physical-to-DRAM address profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ -std=gnu++11 -Wall -Wextra -Werror -Isrc \
+            src/dram_address_test.cc \
+            -o "${RUNNER_TEMP}/dram_address_test"
+          "${RUNNER_TEMP}/dram_address_test"
+
       - name: Verify pattern sequence and DDR frequency options
         shell: bash
         run: |

@@ -46,15 +46,18 @@ ARG_IVALUE("-c", check_threads_);
 | `--ddr-freq <a,b,...>` | 사용 안 함 | 지정한 주파수만 입력 순서대로 반복 |
 | `--ddr-step <seconds>` | 3 | sweep 주파수 전환 간격 |
 | `--ddr-node <path>` | `/sys/kernel/debug/aoss_send_message` | Qualcomm AOSS debugfs node 변경 |
+| `--dram-map lpddr-v1` | `none` | Physical address를 DRAM 좌표로 변환하는 주소 프로필 선택 |
 
 ID `27`과 이름 `OneZero256`은 같은 pattern을 선택합니다. lowercase `-p`는 기존 SAT block 크기 옵션이므로 구분해야 합니다.
 
 ```bash
 stressapptest -M 1024 -m 4 -i 4 -s 600 \
-  -P OneZero256,FiveA256 --ddr-freq all
+  -P OneZero256,FiveA256 --ddr-freq all --dram-map lpddr-v1
 ```
 
 `--ddr-step`의 기본값은 3초입니다. DDR 제어는 `--ddr-freq`를 지정한 실행에서 활성화됩니다. 해당 debugfs node의 쓰기 권한과 SELinux 허용이 필요합니다.
+
+`--dram-map lpddr-v1`은 오류 로그의 physical address에 주소 변환 프로필을 적용합니다. 기본값 `none`은 DRAM 좌표 필드에 `unknown`을 출력합니다. 주소 변환 프로필은 target의 memory-controller 설정과 일치하는지 먼저 확인합니다.
 
 ## 메모리 크기와 실행 시간
 

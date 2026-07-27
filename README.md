@@ -30,6 +30,7 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | 전환 간격 | `--ddr-step <초>` | sweep 주파수 유지 시간. 기본값은 3초 |
 | AOSS node 변경 | `--ddr-node <경로>` | 기본 debugfs node가 다른 제품에서 사용 |
 | 오류 주파수 기록 | 자동 | expected data의 마지막 write, 최초 mismatch read, `Flush()` 호출 후 reread 시점의 값을 각각 출력 |
+| DRAM 주소 변환 | `--dram-map lpddr-v1` | Physical address를 channel, rank, subchannel, bank group, bank, row, column으로 변환 |
 
 기본 Qualcomm AOSS node는 다음 경로입니다.
 
@@ -78,6 +79,7 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | `--ddr-freq all` | 사용 안 함 | 이 fork에 등록된 전체 DDR 값 목록을 순서대로 sweep합니다. |
 | `--ddr-step <초>` | 3 | DDR sweep에서 각 값을 유지하는 시간입니다. `--ddr-freq`와 함께 사용합니다. |
 | `--ddr-node <경로>` | `/sys/kernel/debug/aoss_send_message` | Qualcomm AOSS control node 경로를 변경합니다. |
+| `--dram-map lpddr-v1` | `none` | 검증된 주소 변환 프로필을 선택하여 오류 로그에 DRAM 좌표를 기록합니다. |
 
 ### 로그와 오류 처리
 
@@ -202,7 +204,8 @@ OneZero256 패턴을 3196 요청값으로 10분 동안 실행합니다.
   -M 1024 -m 4 -i 4 -s 600 \
   --printsec 10 \
   -P OneZero256 \
-  --ddr-freq 3196
+  --ddr-freq 3196 \
+  --dram-map lpddr-v1
 ```
 
 ## 전체 DDR 주파수 sweep
@@ -220,7 +223,8 @@ OneZero256 패턴을 3196 요청값으로 10분 동안 실행합니다.
   -M 1024 -m 4 -i 4 -s 600 \
   --printsec 10 \
   -P OneZero256 \
-  --ddr-freq all
+  --ddr-freq all \
+  --dram-map lpddr-v1
 ```
 
 ## 선택한 DDR 주파수만 sweep
@@ -249,7 +253,7 @@ Log: DDR_FREQ write=3196 monotonic_us=... node=/sys/kernel/debug/aoss_send_messa
 Memory mismatch가 발생하면 세 시점의 DDR 값이 같은 오류 record에 저장됩니다.
 
 ```text
-Hardware Error: miscompare on CPU 3(<-1) at ...: read:0x0000000000000000, reread:0xffffffff00000000 expected:0xffffffff00000000. 'OneZero256' read error. ddr_freq(write=3196 read=4266 reread=5333).
+Hardware Error: miscompare on CPU 3(<-1) at 0x730bae8c38(0x90a5edc3c:DIMM Unknown): read:0xfffffff7ffffffff, reread:0xffffffffffffffff, expected:0xffffffffffffffff. 'OneZero256'; read error, ch:0,rk:0,sc:1,bg:1,bank:2,row:4297,col:29, cur_mode:sweep, cur_freq:5333, ddr_freq(write=3196 read=4266 reread=5333).
 ```
 
 세 값은 각 memory 동작 직전의 DDR 설정값입니다.
@@ -259,6 +263,10 @@ Hardware Error: miscompare on CPU 3(<-1) at ...: read:0x0000000000000000, reread
 | `write` | Block의 expected data를 마지막으로 전체 기록하기 직전 |
 | `read` | `CheckRegion()`의 mismatch load 직전 |
 | `reread` | `Flush()` 호출 후 두 번째 load 직전 |
+| `cur_mode` | 주파수 값 하나는 `fixed`, 여러 값은 `sweep`, DDR 옵션을 사용하지 않으면 `none` |
+| `cur_freq` | `reread` 직전에 저장한 DDR 설정값 |
+
+`ch`, `rk`, `sc`, `bg`, `bank`, `row`, `col`은 `--dram-map lpddr-v1`을 지정한 실행에서 계산됩니다. 주소 프로필을 선택하지 않거나 physical address를 얻지 못하면 각 필드에 `unknown`이 표시됩니다.
 
 Sweep 전환이 세 동작 사이에 발생하면 각 필드에 서로 다른 값이 저장됩니다.
 

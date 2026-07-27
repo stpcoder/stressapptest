@@ -741,6 +741,7 @@ Sat::Sat() {
   dram_step_seconds_ = 3;
   dram_frequency_node_ = kDefaultDramFrequencyNode;
   current_dram_frequency_.store(-1, std::memory_order_relaxed);
+  dram_address_map_profile_ = DRAM_ADDRESS_MAP_NONE;
 
   user_break_ = false;
   verbosity_ = 8;
@@ -931,6 +932,25 @@ bool Sat::ParseArgs(int argc, char **argv) {
         return false;
       }
       dram_frequency_node_ = argv[i];
+      continue;
+    }
+
+    // Select an opt-in physical-to-DRAM address mapping profile.
+    if (!strcmp(argv[i], "--dram-map")) {
+      if (++i >= argc) {
+        logprintf(0, "Process Error: --dram-map requires a profile\n");
+        return false;
+      }
+      if (!strcmp(argv[i], "lpddr-v1")) {
+        dram_address_map_profile_ = DRAM_ADDRESS_MAP_LPDDR_V1;
+      } else if (!strcmp(argv[i], "none")) {
+        dram_address_map_profile_ = DRAM_ADDRESS_MAP_NONE;
+      } else {
+        logprintf(0,
+                  "Process Error: Invalid --dram-map profile '%s'\n",
+                  argv[i]);
+        return false;
+      }
       continue;
     }
 
@@ -1225,6 +1245,7 @@ void Sat::PrintHelp() {
          " --ddr-freq list  hold one frequency or sweep 'all'/comma list\n"
          " --ddr-step secs  seconds per sweep frequency (default 3)\n"
          " --ddr-node path  Qualcomm AOSS message node\n"
+         " --dram-map name  physical-to-DRAM map: none or lpddr-v1\n"
          " -m threads       number of memory copy threads to run\n"
          " -i threads       number of memory invert threads to run\n"
          " -C threads       number of memory CPU stress threads to run\n"
