@@ -147,6 +147,19 @@ DMC는 physical address의 bit를 해석하여 channel, rank, bank, row, column�
 <sub><em>DRAM coordinate: channel, rank, bank group, bank, row 및 column으로 구성되는 DRAM 내부 위치 정보입니다.</em></sub>
 <sub><em>Interleaving: 연속 주소를 여러 channel 또는 bank에 분산하여 병렬성을 높이는 주소 배치 방식입니다.</em></sub>
 
+## 선택형 DRAM 주소 변환 프로필
+
+`--dram-map lpddr-v1`은 오류에서 확인한 system physical address에 `lpddr-v1` 주소 변환 프로필을 적용합니다. 변환 결과는 오류 로그의 channel, rank, subchannel, bank group, bank, row 및 column 진단 필드에 사용됩니다.
+
+프로필의 적용 가능성은 대상 시스템의 memory-controller 설정과 memory topology를 기준으로 확인합니다. Physical address를 확인할 수 있는 실행 권한도 필요합니다.
+
+```bash
+stressapptest -M 1024 -m 4 -s 600 \
+  --dram-map lpddr-v1
+```
+
+<sub><em>Address-map profile: system physical address를 DRAM 좌표 필드로 해석하는 변환 규칙의 묶음입니다.</em></sub>
+
 ## Virtual address와 physical address의 연속성
 
 `-M 1024`로 확보한 1 GiB virtual address 범위는 연속입니다. 각 Linux page의 physical 위치는 kernel page allocator가 개별적으로 결정합니다.
