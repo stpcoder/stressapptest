@@ -149,9 +149,9 @@ DMC는 physical address의 bit를 해석하여 channel, rank, bank, row, column�
 
 ## 선택형 DRAM 주소 변환 프로필
 
-`--dram-map lpddr-v1`은 오류에서 확인한 system physical address에 `lpddr-v1` 주소 변환 프로필을 적용합니다. 변환 결과는 오류 로그의 channel, rank, subchannel, bank group, bank, row 및 column 진단 필드에 사용됩니다.
+`--dram-map lpddr-v1`은 오류에서 확인한 system physical address에 `lpddr-v1` 주소 변환 프로필을 적용합니다.
 
-프로필의 적용 가능성은 대상 시스템의 memory-controller 설정과 memory topology를 기준으로 확인합니다. Physical address를 확인할 수 있는 실행 권한도 필요합니다.
+프로필의 적용 가능성은 대상 시스템의 memory-controller 설정과 memory topology를 기준으로 확인합니다. Physical address는 `/proc/self/pagemap`의 PFN 읽기가 허용된 실행 환경에서 확인할 수 있습니다.
 
 ```bash
 stressapptest -M 1024 -m 4 -s 600 \

@@ -24,7 +24,7 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | 기능 | 옵션 | 설명 |
 |---|---|---|
 | 패턴 선택 | `-P <ID\|이름[,ID\|이름...]>` | 하나 또는 여러 pattern을 지정한 순서대로 block에 순환 배정 |
-| DRAM 주소 해석 | `--dram-map lpddr-v1` | 오류의 system physical address에 선택형 프로필을 적용하여 DRAM 좌표 진단 필드 생성 |
+| DRAM 주소 해석 | `--dram-map lpddr-v1` | 오류의 system physical address를 선택형 프로필로 해석 |
 
 ## 선택 가능한 옵션 전체 정리
 
@@ -59,9 +59,9 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 
 | 옵션 | 기본값 | 설명 |
 |---|---:|---|
-| `--dram-map lpddr-v1` | `none` | 오류에서 확인한 system physical address에 `lpddr-v1` 프로필을 적용하여 channel, rank, subchannel, bank group, bank, row 및 column 진단 필드를 생성합니다. |
+| `--dram-map lpddr-v1` | `none` | 오류에서 확인한 system physical address에 `lpddr-v1` 주소 변환 프로필을 적용합니다. |
 
-주소 변환 결과는 대상 시스템의 memory-controller 설정과 memory topology를 기준으로 확인합니다. Physical address를 확인할 수 있는 실행 권한도 필요합니다.
+주소 변환 결과는 대상 시스템의 memory-controller 설정과 memory topology를 기준으로 확인합니다. Physical address는 `/proc/self/pagemap`의 PFN 읽기가 허용된 실행 환경에서 확인할 수 있습니다.
 
 ### 로그와 오류 처리
 

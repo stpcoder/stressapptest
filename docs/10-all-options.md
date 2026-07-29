@@ -41,7 +41,7 @@ ARG_IVALUE("-c", check_threads_);
 | 옵션 | 기본값 | 동작 |
 |---|---:|---|
 | `-P <ID\|이름[,ID\|이름...]>` | 무작위 선택 | 하나 또는 여러 pattern을 지정하고 block 선택마다 입력 순서로 순환 |
-| `--dram-map lpddr-v1` | `none` | 오류의 system physical address에 선택형 주소 변환 프로필을 적용하고 DRAM 좌표 진단 필드를 생성 |
+| `--dram-map lpddr-v1` | `none` | 오류의 system physical address에 선택형 주소 변환 프로필 적용 |
 
 ID `27`과 이름 `OneZero256`은 같은 pattern을 선택합니다. lowercase `-p`는 기존 SAT block 크기 옵션이므로 구분해야 합니다.
 
