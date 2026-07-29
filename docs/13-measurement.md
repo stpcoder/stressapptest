@@ -142,7 +142,7 @@ T9 프로그램 종료
 
 로그 상세도를 12 이상으로 설정하면 초기 데이터 쓰기와 Worker 실행 로그가 더 많이 출력됩니다. 로그 I/O로 인한 추가 부하도 증가합니다.
 
-3초 단위 DRAM frequency 전환 script와 오류 로그의 시각을 맞추는 방법은 [로그 출력과 DRAM 주파수 전환 오류를 분석하는 방법](17-logging-and-dram-frequency.md)에서 확인합니다.
+오류가 검출되어 로그로 기록되는 과정은 [오류 검사와 로그 처리 과정](17-logging-and-dram-frequency.md)에서 확인합니다.
 
 ## Worker별로 예상되는 측정 결과
 

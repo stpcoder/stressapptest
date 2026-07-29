@@ -4,7 +4,7 @@
 
 [Android ARM64 최신 실행 파일 다운로드](https://github.com/stpcoder/stressapptest/releases/latest/download/stressapptest-android-arm64)
 
-이 fork에서 추가한 `-P`, Qualcomm DDR 고정·sweep, 오류 시점 주파수 로그의 빠른 실행법은 [저장소 README](https://github.com/stpcoder/stressapptest#readme)에서 확인할 수 있습니다.
+이 fork에서 추가한 pattern 선택 기능의 빠른 실행법은 [저장소 README](https://github.com/stpcoder/stressapptest#readme)에서 확인할 수 있습니다.
 
 - 테스트할 메모리를 어떻게 준비하고 block으로 나누는가
 - 각 Worker가 어느 시점에 메모리를 읽고 쓰는가
@@ -32,7 +32,7 @@
 3. [메모리를 복사하고 오류를 찾는 과정](09-copy-and-verification.md)
 4. [Cache에서 LPDDR까지 데이터가 이동하는 과정](04-cache-and-arm64.md)
 5. [목적별 테스트 명령](12-test-recipes.md)
-6. [로그 출력과 DRAM 주파수 전환 오류를 분석하는 방법](17-logging-and-dram-frequency.md)
+6. [오류 검사와 로그 처리 과정](17-logging-and-dram-frequency.md)
 
 세부 구현을 찾을 때는 [소스 코드 찾아보기](15-source-map.md), 어려운 용어는 [용어 설명](16-glossary.md)을 사용합니다.
 

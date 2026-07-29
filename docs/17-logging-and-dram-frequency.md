@@ -1,4 +1,4 @@
-# 오류 로그 처리 과정과 DRAM 주파수 기록
+# 오류 검사와 로그 처리 과정
 
 이 장은 Memory Worker가 데이터 오류를 검출하고 로그를 출력하는 과정을 설명합니다. 설명 기준은 이 저장소의 Android AArch64 코드입니다.
 
@@ -11,7 +11,7 @@ Fill Worker가 pattern 기록
  → CheckRegion()이 64-bit 단위로 값 비교
  → ErrorRecord에 read와 expected 저장
  → ProcessError()가 같은 주소를 reread
- → 주소·CPU·DDR 설정값을 오류 메시지로 생성
+ → 주소와 CPU 정보를 오류 메시지로 생성
  → Logger가 logfile과 stdout에 출력
  → 해당 주소를 expected 값으로 복구
 ```
@@ -28,7 +28,7 @@ Fill Worker가 pattern 기록
 | Invert Worker | `InvertPageUp()`, `InvertPageDown()` | Block 값을 순방향과 역방향으로 반전하고 checksum을 검사합니다. |
 | Check Worker | `CrcCheckPage()` | Block을 읽고 checksum과 expected pattern을 검사합니다. |
 
-`page_entry`에는 block 주소, expected pattern, 마지막 writer CPU와 마지막 전체 기록 시점의 DDR 설정값이 저장됩니다.
+`page_entry`에는 block 주소, expected pattern과 마지막 writer CPU가 저장됩니다.
 
 > **소스 위치:** `src/worker.cc`의 `FillPage()`, `CrcCopyPage()`, `CrcWarmCopyPage()`, `InvertThread::Work()`, `CrcCheckPage()`
 
@@ -72,8 +72,6 @@ expected = pattern으로 계산한 64-bit 값
 | `vaddr` | Mismatch가 발생한 virtual address |
 | `patternname` | Expected 값을 만든 pattern 이름 |
 | `lastcpu` | Block의 마지막 writer CPU |
-| `write_dram_frequency` | Block을 마지막으로 전체 기록한 시점의 DDR 설정값 |
-| `read_dram_frequency` | Mismatch 값을 읽기 직전의 DDR 설정값 |
 
 한 번의 `CheckRegion()`은 최대 128개 record를 저장한 후 `ProcessError()`에 순서대로 전달합니다.
 
@@ -90,10 +88,8 @@ struct ErrorRecord recorded[kErrorLimit];
 
 ```text
 OsLayer::Flush(vaddr) 호출
- → reread 시점의 DDR 설정값 저장
  → 같은 virtual address load
  → physical address 변환 시도
- → 선택한 주소 프로필로 DRAM 좌표 계산
  → 상세 오류 메시지 생성
  → expected 값을 해당 주소에 기록
 ```
@@ -151,55 +147,6 @@ Worker의 logprintf()
 
 > **소스 위치:** `src/sat.cc`의 `logprintf()`, `InitializeLogfile()`과 `src/logger.cc`의 `VLogF()`, `ThreadMain()`, `WriteAndDeleteLogLine()`
 
-## 샘플 오류 로그
-
-다음 로그는 필드 설명을 위한 가상 예시입니다.
-
-```text
-2026/01/15-10:20:00(KST) Log: DDR_FREQ write=3196 monotonic_us=120000000 node=<control_node>
-2026/01/15-10:20:42(KST) Report Error: miscompare : DIMM Unknown : 1 : 42s
-2026/01/15-10:20:42(KST) Hardware Error: miscompare on CPU 6(<-3) at 0x730bae8c38(0x90a5edc3c:DIMM Unknown): read:0xfffffff7ffffffff, reread:0xffffffffffffffff, expected:0xffffffffffffffff. 'OneZero256'; read error, ch:0,rk:0,sc:1,bg:1,bank:2,row:4297,col:29, cur_mode:sweep, cur_freq:5333, ddr_freq(write=3196 read=4266 reread=5333).
-2026/01/15-10:20:45(KST) Log: Thread 4 found 1 hardware incidents
-2026/01/15-10:20:45(KST) Stats: Found 1 hardware incidents
-2026/01/15-10:20:45(KST) Status: FAIL - test discovered HW problems
-```
-
-위 로그는 다음 순서로 확인합니다.
-
-1. `DDR_FREQ`에서 control node에 전달한 설정값과 monotonic 시각을 확인합니다.
-2. `Report Error`에서 오류 종류, 누적 횟수와 시험 경과 시간을 확인합니다.
-3. `Hardware Error`에서 주소, `read`, `reread`, `expected`와 세 시점의 DDR 설정값을 확인합니다.
-4. `read XOR expected`로 변경된 bit 위치를 계산합니다. 예시의 XOR 값은 `0x08`입니다.
-5. `Stats`에서 전체 hardware incident 수를 확인합니다.
-6. `Status`에서 최종 시험 결과를 확인합니다.
-
-### 상세 로그 필드
-
-| 필드 | 의미 |
-|---|---|
-| `CPU <current_cpu>` | `ProcessError()`가 reread와 로그 생성을 수행한 CPU |
-| `<-<last_writer_cpu>` | Software가 block의 마지막 writer로 저장한 CPU |
-| `virtual_address` | Process가 사용하는 virtual address |
-| `physical_address` | `/proc/self/pagemap`에서 얻은 system physical address |
-| `read` | `CheckRegion()`의 첫 상세 검사값 |
-| `reread` | `ProcessError()`의 두 번째 load 값 |
-| `expected` | Pattern으로 계산한 기대값 |
-| `pattern_name` | Block에 지정된 expected pattern 이름 |
-| `read error` | `reread == expected` 조건에서 추가되는 software 분류 문자열 |
-| `write error` | `reread != expected` 조건에서 추가되는 software 분류 문자열 |
-| `ch,rk,sc,bg,bank,row,col` | 선택한 주소 프로필로 physical address를 변환한 DRAM 좌표 |
-| `cur_mode` | DDR 값 하나는 `fixed`, 여러 값은 `sweep`, DDR 옵션이 없으면 `none` |
-| `cur_freq` | `reread` 직전에 저장한 DDR 설정값 |
-| `ddr_freq(write=...)` | Block을 마지막으로 전체 기록한 시점의 내부 DDR 설정값 |
-| `ddr_freq(read=...)` | `CheckRegion()` 상세 검사 직전의 내부 DDR 설정값 |
-| `ddr_freq(reread=...)` | `ProcessError()`의 두 번째 load 직전 내부 DDR 설정값 |
-
-`CPU` 필드는 `ProcessError()` 실행 CPU를 표시합니다. 최초 mismatch load의 CPU를 구분하려면 별도의 `read_cpu` 필드가 필요합니다.
-
-`expected`는 pattern으로 계산합니다. 실제 write 결과를 별도 snapshot으로 저장하는 필드는 없습니다.
-
-Physical address 변환에는 `/proc/self/pagemap` 접근 권한이 필요합니다. `--dram-map lpddr-v1`을 지정하면 저장소의 주소 프로필이 channel, rank, subchannel, bank group, bank, row와 column을 계산합니다. 프로필을 지정하지 않으면 각 좌표에 `unknown`이 출력됩니다.
-
 ## `read`와 `reread` 해석
 
 | 비교 결과 | 코드가 기록한 사실 | 분석 범위 |
@@ -212,104 +159,3 @@ Physical address 변환에는 `/proc/self/pagemap` 접근 권한이 필요합니
 Stressapptest는 상세 mismatch를 `Hardware Error`와 hardware incident로 집계합니다. `read error` 문자열은 `reread == expected` 조건에서 생성되는 software 분류입니다.
 
 AArch64 공개 경로의 reread는 현재 cache 상태를 유지한 CPU load입니다. 위 표는 관찰값의 시간적 관계를 나타냅니다. Hardware 발생 위치는 CPU·cache PMU, interconnect, memory controller, PHY, DRAM과 RAS 정보를 함께 사용하여 판정합니다.
-
-## DRAM 주파수 기록
-
-이 fork의 DDR 옵션은 control node에 설정값을 전달하고 성공한 값을 내부 상태에 저장합니다.
-
-```bash
-# 한 값으로 실행
-stressapptest -M 1024 -m 4 -i 4 -s 600 \
-  --ddr-freq 3196 -l /data/local/tmp/stressapptest.log
-
-# 전체 지원 목록을 기본 3초 간격으로 순환
-stressapptest -M 1024 -m 4 -i 4 -s 600 \
-  --ddr-freq all --dram-map lpddr-v1 \
-  -l /data/local/tmp/stressapptest.log
-
-# 전환 간격을 5초로 지정
-stressapptest -M 1024 -m 4 -i 4 -s 600 \
-  --ddr-freq all --ddr-step 5
-```
-
-`--ddr-freq`를 지정한 실행에서 control node를 사용합니다. `--ddr-step`의 기본값은 3초입니다.
-
-설정값 전달에 성공하면 다음 로그가 생성됩니다.
-
-```text
-Log: DDR_FREQ write=<value> monotonic_us=<time> node=<control_node>
-```
-
-`write`는 control node의 `write()`가 성공한 설정값입니다. 실제 hardware clock은 target의 readback node 또는 hardware counter에서 측정합니다.
-
-### 오류 record의 주파수 필드
-
-| 필드 | 저장 시점 |
-|---|---|
-| `write` | Fill, copy, invert, file read 또는 network receive가 block을 마지막으로 전체 기록한 시점 |
-| `read` | `CheckRegion()`이 mismatch 값을 읽기 직전 |
-| `reread` | `ProcessError()`가 같은 주소를 다시 읽기 직전 |
-
-주파수 전환이 block 기록과 검사 사이에 발생하면 세 값이 달라집니다. `CheckRegion()`이 최대 128개 오류를 먼저 저장하므로 `read`와 `reread` 사이에도 전환이 발생할 수 있습니다.
-
-세 설정값은 각 동작 시점에 `ErrorRecord`에 저장됩니다. 이후 Logger queue의 출력 대기 중에도 같은 값을 유지합니다.
-
-## 주파수 전환 시각 확인
-
-```text
-Control node write 시작
- → write() 반환
- → hardware clock·voltage·timing 전환
- → Worker write 또는 read
- → mismatch 검출
- → ProcessError() reread
- → Logger queue 저장
- → logfile과 stdout 출력
-```
-
-Stressapptest의 기본 timestamp는 `ProcessError()`의 메시지 생성 시각을 나타냅니다. 주파수 경계 분석에는 `DDR_FREQ`의 monotonic timestamp와 hardware actual-frequency readback을 같은 시간축으로 기록합니다.
-
-고정 주파수 시험과 전환 시험은 다음 순서로 구성합니다.
-
-1. 각 주파수에서 같은 명령을 반복합니다.
-2. 동일 조건으로 주파수 순환 시험을 실행합니다.
-3. 전환 처리 구간과 주파수 유지 구간을 구분합니다.
-4. 설정값과 actual-frequency readback을 monotonic 시간축에 기록합니다.
-5. Temperature, voltage, memory-controller와 RAS 정보를 함께 저장합니다.
-
-## 로그 수집 항목
-
-첫 상세 mismatch를 기준으로 다음 정보를 저장합니다.
-
-```text
-Binary build ID와 source commit
-전체 실행 명령
-Worker 종류와 수
-CPU affinity
-Virtual address와 확인 가능한 physical address
-read, reread, expected와 XOR
-마지막 writer CPU
-DDR 설정값과 actual-frequency readback
-Monotonic timestamp
-Temperature와 voltage
-Memory-controller, cache, RAS와 kernel error log
-최종 hardware incident 수와 종료 원인
-```
-
-연속 오류는 주소 범위와 XOR bit를 기준으로 묶습니다. 하나의 넓은 데이터 변경이 여러 64-bit mismatch 행으로 출력될 수 있습니다.
-
-로그 분석 결과는 다음 형식으로 기록합니다.
-
-```text
-Stressapptest 기록:
-- Worker와 검사 함수
-- read, reread, expected와 XOR
-- 주소, CPU와 DDR 설정값
-- 전체 incident 수와 최종 상태
-
-추가 계측:
-- 최초 mismatch load를 실행한 CPU
-- Load가 완료된 cache 또는 memory 계층
-- Actual DDR clock과 전환 완료 시각
-- Memory-controller·PHY·DRAM의 hardware error 정보
-```
