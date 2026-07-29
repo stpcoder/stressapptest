@@ -41,13 +41,17 @@ ARG_IVALUE("-c", check_threads_);
 | 옵션 | 기본값 | 동작 |
 |---|---:|---|
 | `-P <ID\|이름[,ID\|이름...]>` | 무작위 선택 | 하나 또는 여러 pattern을 지정하고 block 선택마다 입력 순서로 순환 |
+| `--dram-map lpddr-v1` | `none` | 오류의 system physical address에 선택형 주소 변환 프로필을 적용하고 DRAM 좌표 진단 필드를 생성 |
 
 ID `27`과 이름 `OneZero256`은 같은 pattern을 선택합니다. lowercase `-p`는 기존 SAT block 크기 옵션이므로 구분해야 합니다.
 
 ```bash
 stressapptest -M 1024 -m 4 -i 4 -s 600 \
-  -P OneZero256,FiveA256
+  -P OneZero256,FiveA256 \
+  --dram-map lpddr-v1
 ```
+
+주소 변환 결과는 대상 시스템의 memory-controller 설정과 memory topology를 기준으로 확인합니다. 프로필은 오류 로그의 주소 진단에 사용됩니다.
 
 ## 메모리 크기와 실행 시간
 
