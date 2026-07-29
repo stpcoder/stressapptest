@@ -24,31 +24,10 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | 기능 | 옵션 | 설명 |
 |---|---|---|
 | 패턴 선택 | `-P <ID\|이름[,ID\|이름...]>` | 하나 또는 여러 pattern을 지정한 순서대로 block에 순환 배정 |
-| DDR 주파수 고정 | `--ddr-freq <주파수>` | 하나의 Qualcomm DDR 주파수를 시험 종료까지 유지 |
-| 전체 주파수 sweep | `--ddr-freq all` | 등록된 전체 주파수를 순서대로 반복 |
-| 선택 주파수 sweep | `--ddr-freq <목록>` | 쉼표로 지정한 주파수만 입력 순서대로 반복 |
-| 전환 간격 | `--ddr-step <초>` | sweep 주파수 유지 시간. 기본값은 3초 |
-| AOSS node 변경 | `--ddr-node <경로>` | 기본 debugfs node가 다른 제품에서 사용 |
-| 오류 주파수 기록 | 자동 | expected data의 마지막 write, 최초 mismatch read, `Flush()` 호출 후 reread 시점의 값을 각각 출력 |
-| DRAM 주소 변환 | `--dram-map lpddr-v1` | Physical address를 channel, rank, subchannel, bank group, bank, row, column으로 변환 |
-
-기본 Qualcomm AOSS node는 다음 경로입니다.
-
-```text
-/sys/kernel/debug/aoss_send_message
-```
-
-프로그램은 다음 메시지를 debugfs node에 `write()`로 전달합니다.
-
-```text
-{class:ddr, res:fixed, val:3196}
-```
-
-테스트 종료 후에도 마지막 fixed DDR 요청이 유지됩니다.
 
 ## 선택 가능한 옵션 전체 정리
 
-아래 표는 이 저장소의 `Sat::ParseArgs()`가 실제로 인식하는 옵션을 기준으로 작성했습니다. `-P`와 DDR 관련 옵션은 이 fork에서 추가했으며 나머지는 기존 stressapptest 옵션입니다.
+아래 표는 이 저장소의 `Sat::ParseArgs()`가 실제로 인식하는 공개 옵션을 기준으로 작성했습니다. `-P`는 이 fork에서 추가했으며 나머지는 기존 stressapptest 옵션입니다.
 
 ### 메모리와 실행 시간
 
@@ -69,17 +48,11 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | `--coarse_grain_lock` | 사용 안 함 | Queue 전체를 하나의 lock으로 관리합니다. Queue lock 방식 비교에 사용합니다. |
 | `--random-threads <개수>` | 0 | 각 raw disk write thread에 추가할 random disk thread 수입니다. |
 
-### Pattern과 DDR 제어
+### Pattern 선택
 
 | 옵션 | 기본값 | 설명 |
 |---|---:|---|
 | `-P <ID\|이름[,ID\|이름...]>` | 가중치 기반 무작위 | 지정한 pattern을 입력 순서대로 block에 순환 배정합니다. |
-| `--ddr-freq <주파수>` | 사용 안 함 | 값 하나를 AOSS fixed DDR 값으로 사용합니다. |
-| `--ddr-freq <a,b,...>` | 사용 안 함 | 지정한 값만 입력 순서대로 sweep합니다. |
-| `--ddr-freq all` | 사용 안 함 | 이 fork에 등록된 전체 DDR 값 목록을 순서대로 sweep합니다. |
-| `--ddr-step <초>` | 3 | DDR sweep에서 각 값을 유지하는 시간입니다. `--ddr-freq`와 함께 사용합니다. |
-| `--ddr-node <경로>` | `/sys/kernel/debug/aoss_send_message` | Qualcomm AOSS control node 경로를 변경합니다. |
-| `--dram-map lpddr-v1` | `none` | 검증된 주소 변환 프로필을 선택하여 오류 로그에 DRAM 좌표를 기록합니다. |
 
 ### 로그와 오류 처리
 
@@ -112,7 +85,7 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | `--paddr_base <주소>` | 0 | Physical base 지정 기능을 제공하는 memory allocator에서 시작 주소를 설정합니다. 공통 Android allocator는 anonymous memory를 사용합니다. |
 | `--pause_delay <초>` | 600 | Worker를 일시 정지하여 power spike를 만드는 주기입니다. |
 | `--pause_duration <초>` | 15 | 각 pause 상태를 유지하는 시간입니다. |
-| `--cpu_freq_test` | 사용 안 함 | CPU clock 측정 시험을 추가합니다. DDR sweep 기능과는 별도입니다. |
+| `--cpu_freq_test` | 사용 안 함 | CPU clock 측정 시험을 추가합니다. |
 | `--cpu_freq_threshold <MHz>` | 0 | CPU frequency가 이 값보다 낮으면 실패 처리합니다. `--cpu_freq_test`를 사용할 때 0보다 큰 값이 필요합니다. |
 | `--cpu_freq_round <MHz>` | 10 | 측정한 CPU frequency를 반올림하는 단위입니다. |
 | `--channel_hash <mask>` | `0x40` | Physical address를 memory channel로 해석할 때 사용하는 address bit mask입니다. |
@@ -139,7 +112,7 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | `--listen` | 사용 안 함 | 다른 stressapptest Network Worker의 연결을 받는 listener를 실행합니다. |
 | `-h`, `--help` | 해당 없음 | 프로그램 도움말을 출력하고 종료합니다. |
 
-Android 모바일 DRAM 시험은 주로 `-M`, `-s`, `-m`, `-i`, `-c`, `-P`, `--printsec`, `--max_errors`, `--ddr-freq`, `--ddr-step`으로 구성합니다. File, raw disk와 network 옵션은 각 장치의 I/O 시험에 사용합니다.
+Android 모바일 DRAM 시험은 주로 `-M`, `-s`, `-m`, `-i`, `-c`, `-P`, `--printsec`, `--max_errors`로 구성합니다. File, raw disk와 network 옵션은 각 장치의 I/O 시험에 사용합니다.
 
 ## 휴대폰에 설치
 
@@ -150,7 +123,7 @@ adb push stressapptest-android-arm64 /data/local/tmp/stressapptest
 adb shell chmod 0755 /data/local/tmp/stressapptest
 ```
 
-Qualcomm AOSS node를 변경하려면 root 권한과 허용된 SELinux domain이 필요합니다. `adb root`를 지원하는 `userdebug` 또는 `eng` build에서는 다음과 같이 실행할 수 있습니다.
+`adb root`를 지원하는 `userdebug` 또는 `eng` build에서는 다음과 같이 실행할 수 있습니다.
 
 ```bash
 adb root
@@ -194,85 +167,6 @@ lowercase `-p`는 기존 memory block 크기 옵션입니다. 패턴 선택에�
 ```
 
 Pattern은 입력 목록의 순서대로 선택됩니다. 여러 Fill Worker가 block을 병렬로 처리하므로 주소별 배치 순서는 실행 시점에 결정됩니다. `-P`는 pattern 목록을 block 단위로 순환 배정합니다.
-
-## DDR 주파수 하나로 고정
-
-OneZero256 패턴을 3196 요청값으로 10분 동안 실행합니다.
-
-```bash
-./stressapptest \
-  -M 1024 -m 4 -i 4 -s 600 \
-  --printsec 10 \
-  -P OneZero256 \
-  --ddr-freq 3196 \
-  --dram-map lpddr-v1
-```
-
-## 전체 DDR 주파수 sweep
-
-`all`에 등록된 값은 다음과 같습니다.
-
-```text
-547, 768, 1017, 1353, 1555, 1708, 2092, 2736, 3196, 4266, 5333
-```
-
-각 값을 3초씩 유지하면서 순서대로 반복합니다.
-
-```bash
-./stressapptest \
-  -M 1024 -m 4 -i 4 -s 600 \
-  --printsec 10 \
-  -P OneZero256 \
-  --ddr-freq all \
-  --dram-map lpddr-v1
-```
-
-## 선택한 DDR 주파수만 sweep
-
-주파수 값은 공백 없이 쉼표로 연결합니다.
-
-```bash
-./stressapptest \
-  -M 1024 -m 4 -i 4 -s 600 \
-  --printsec 10 \
-  -P OneZero256 \
-  --ddr-freq 547,1017,2092,3196,5333 \
-  --ddr-step 3
-```
-
-`--ddr-step`의 기본값은 3초입니다. DDR 제어는 `--ddr-freq`를 지정한 실행에서 활성화됩니다. `--ddr-step`은 해당 주파수 목록의 전환 간격을 설정합니다.
-
-## 로그 확인
-
-주파수 값을 AOSS node에 성공적으로 쓰면 다음 로그가 기록됩니다. 초기 pattern 기록 전과 Worker 시작 전에 첫 값을 각각 쓰므로 같은 값이 두 번 표시됩니다.
-
-```text
-Log: DDR_FREQ write=3196 monotonic_us=... node=/sys/kernel/debug/aoss_send_message
-```
-
-Memory mismatch가 발생하면 세 시점의 DDR 값이 같은 오류 record에 저장됩니다.
-
-```text
-Hardware Error: miscompare on CPU 3(<-1) at 0x730bae8c38(0x90a5edc3c:DIMM Unknown): read:0xfffffff7ffffffff, reread:0xffffffffffffffff, expected:0xffffffffffffffff. 'OneZero256'; read error, ch:0,rk:0,sc:1,bg:1,bank:2,row:4297,col:29, cur_mode:sweep, cur_freq:5333, ddr_freq(write=3196 read=4266 reread=5333).
-```
-
-세 값은 각 memory 동작 직전의 DDR 설정값입니다.
-
-| 필드 | 저장 시점 |
-|---|---|
-| `write` | Block의 expected data를 마지막으로 전체 기록하기 직전 |
-| `read` | `CheckRegion()`의 mismatch load 직전 |
-| `reread` | `Flush()` 호출 후 두 번째 load 직전 |
-| `cur_mode` | 주파수 값 하나는 `fixed`, 여러 값은 `sweep`, DDR 옵션을 사용하지 않으면 `none` |
-| `cur_freq` | `reread` 직전에 저장한 DDR 설정값 |
-
-`ch`, `rk`, `sc`, `bg`, `bank`, `row`, `col`은 `--dram-map lpddr-v1`을 지정한 실행에서 계산됩니다. 주소 프로필을 선택하지 않거나 physical address를 얻지 못하면 각 필드에 `unknown`이 표시됩니다.
-
-Sweep 전환이 세 동작 사이에 발생하면 각 필드에 서로 다른 값이 저장됩니다.
-
-각 숫자는 AOSS node의 `write()`에 성공한 설정값입니다. Hardware DDR clock은 제품의 readback node 또는 hardware counter로 측정합니다. DDR metadata가 없는 record에는 `unknown`이 표시됩니다.
-
-`CheckRegion()`은 최대 128개 오류를 수집한 후 각 주소를 순차적으로 reread합니다. 이 처리 중 sweep 전환이 발생할 수 있습니다. 각 주파수 값은 memory 동작 시점에 record에 저장되며 Logger 대기 중에도 유지됩니다.
 
 ## Read와 reread를 수행하는 이유
 
@@ -420,7 +314,7 @@ License: Apache License 2.0
 5. [메모리 Worker 종류와 동작](docs/07-memory-workers.md)
 6. [목적에 따른 테스트 명령](docs/12-test-recipes.md)
 7. [부하와 오류를 측정하는 방법](docs/13-measurement.md)
-8. [오류 로그 처리 과정과 DRAM 주파수 기록](docs/17-logging-and-dram-frequency.md)
+8. [오류 검사와 로그 처리 과정](docs/17-logging-and-dram-frequency.md)
 
 사이트 메뉴는 [`mkdocs.yml`](mkdocs.yml), 본문 style은 [`docs/stylesheets/extra.css`](docs/stylesheets/extra.css)에서 관리합니다.
 

@@ -129,29 +129,15 @@ adb shell /data/local/tmp/stressapptest --help
 adb shell '/data/local/tmp/stressapptest -M 256 -s 30 -m 2 -v 8'
 ```
 
-특정 pattern과 DDR 주파수 sweep을 함께 사용할 때에는 다음 형식을 사용합니다.
+특정 pattern을 선택할 때에는 다음 형식을 사용합니다.
 
 ```bash
 adb shell '/data/local/tmp/stressapptest \
   -M 1024 -m 4 -i 4 -s 600 --printsec 10 \
-  -P OneZero256,FiveA256 \
-  --ddr-freq all \
-  --dram-map lpddr-v1'
+  -P OneZero256,FiveA256'
 ```
 
-`-P`에 여러 pattern을 쓰면 새 block의 pattern을 선택할 때 입력 순서대로 순환합니다. `--ddr-freq all`은 내장된 전체 목록을 순환하며 기본 전환 간격은 3초입니다. 다른 간격이 필요할 때만 `--ddr-step <초>`를 추가합니다.
-
-```bash
-adb shell '/data/local/tmp/stressapptest \
-  -M 1024 -m 4 -i 4 -s 600 \
-  -P OneZero256 \
-  --ddr-freq 547,1017,2092,3196,5333 \
-  --ddr-step 5'
-```
-
-`--ddr-freq 3196`은 한 값을 유지합니다. 여러 값 또는 `all`은 sweep을 실행합니다. AOSS node는 `--ddr-freq`를 지정한 실행에서 사용합니다.
-
-`--dram-map lpddr-v1`은 오류가 발생한 physical address를 DRAM 좌표로 변환합니다. `/proc/self/pagemap`에서 PFN을 읽을 수 있어야 physical address와 DRAM 좌표가 출력됩니다.
+`-P`에 여러 pattern을 쓰면 새 block의 pattern을 선택할 때 입력 순서대로 순환합니다.
 
 초기 결과와 시스템 상태를 확인한 뒤 다음 순서로 부하를 늘립니다.
 
