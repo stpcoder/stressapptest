@@ -27,7 +27,7 @@ if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
 
 **코드 설명:** 첫 번째 `open()`은 direct I/O를 요청합니다. `EINVAL` 응답에서는 buffered I/O로 전환하고 이후 page cache 정리를 요청합니다. `O_DIRECT`는 Linux file page cache의 I/O 경로를 선택합니다. CPU data cache에는 일반 coherency 규칙이 적용됩니다.
 
-<sub><em>O_SYNC: write system call의 데이터와 필요한 metadata가 backing storage에 동기화되도록 요청하는 file open flag입니다.</em></sub>
+<sub><em>O_SYNC: write system call의 데이터와 필요한 상태 정보가 backing storage에 동기화되도록 요청하는 file open flag입니다.</em></sub>
 <sub><em>O_DIRECT: filesystem page cache 사용을 최소화하도록 kernel에 요청하는 file open flag입니다.</em></sub>
 <sub><em>Page cache: Linux kernel이 file 데이터를 RAM에 보관하여 file I/O를 처리하는 cache 계층입니다.</em></sub>
 
@@ -136,7 +136,7 @@ if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
 
 **코드 설명:** 시험 대상은 `O_RDWR`로 열립니다. 기본 `--non_destructive`는 read 단계만 실행합니다. `--destructive`는 write 단계를 활성화하므로 시험 전 대상 경로를 확인합니다.
 
-`-d device-or-file`은 장치 또는 파일의 임의 위치를 읽고 쓰는 `DiskThread` 하나를 만듭니다. `DiskThread`는 sector·block 상태표와 asynchronous I/O를 사용합니다. 반면 `FileThread`는 SAT block 단위로 파일의 처음부터 순차 처리합니다.
+`-d device-or-file`은 장치 또는 파일의 임의 위치를 읽고 쓰는 `DiskThread` 하나를 만듭니다. `DiskThread`는 sector·block 상태표와 asynchronous I/O를 사용합니다. `FileThread`는 SAT block 단위로 파일의 처음부터 순차 처리합니다.
 
 <sub><em>Asynchronous I/O: I/O 요청 제출과 완료 수집을 분리하여 여러 요청을 동시에 계류시키는 방식입니다.</em></sub>
 
@@ -152,7 +152,7 @@ if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
 
 - sector와 주소 정렬 단위: 512 B
 - 기본 읽기 block: 512 B
-- 쓰기 block: 기본값은 읽기 block과 같은 크기
+- 쓰기 block: 기본값은 읽기 block과 동일한 크기
 - 기본 disk cache: Worker 생성 코드 기준 16 MiB
 - 동시에 진행하는 I/O 수: cache에 들어가는 block 수의 약 150%
 - 필요한 장치 크기: cache 크기의 3배 초과
@@ -162,7 +162,7 @@ if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
 
 `--random-threads N`은 각 `DiskThread`에 N개의 추가 읽기 Worker를 만듭니다. 이 Worker들은 공동 `DiskBlockTable`에서 초기화가 끝난 block을 임의로 선택하여 검사합니다.
 
-현재 분석한 주 `DiskThread`는 block 준비 후 `block->initialized()`를 확인합니다 (`src/worker.cc:2948`). 해당 경로의 `set_initialized()` 호출 여부가 `RandomDiskThread`의 검사 block 공급을 결정합니다. 이 옵션을 사용할 때에는 대상 build에서 두 상태 함수의 호출 순서를 확인합니다.
+`DiskThread`는 block 준비 후 `block->initialized()`를 확인합니다. 해당 경로의 `set_initialized()` 호출 여부가 `RandomDiskThread`의 검사 block 공급을 결정합니다. 구현은 `src/worker.cc`의 `DiskThread::DoWork()`와 `RandomDiskThread::DoWork()`에서 확인합니다.
 
 ## CpuStressThread (`-C`)
 
@@ -179,7 +179,7 @@ do {
 
 `-C N`은 N개의 CPU 연산 Worker를 만듭니다.
 
-공통 ARM·Linux 구현은 100개의 `double` 배열을 사용하여 moving average 형태의 부동소수점 계산을 100,000,000회 반복합니다 (`src/os.cc:904`).
+공통 ARM·Linux 구현은 100개의 `double` 배열을 사용하여 이동 평균 형태의 부동소수점 계산을 100,000,000회 반복합니다. 구현은 `src/os.cc`의 `OsLayer::CpuStressWorkload()`에 있습니다.
 
 특성:
 
@@ -209,11 +209,11 @@ for (int cline_num = 0; cline_num < cc_cacheline_count_; cline_num++) {
 }
 ```
 
-**코드 설명:** 각 thread는 cache line 크기의 구조체를 pseudo-random 방식으로 선택합니다. 구조체 안에서 자신에게 배정된 byte 값을 증가시킨 뒤 전체 합이 기대값과 같은지 검사합니다. 홀수 번호 thread는 cache line 안의 byte 위치를 역순으로 선택합니다.
+**코드 설명:** 각 thread는 cache line 크기의 구조체를 pseudo-random 방식으로 선택합니다. 구조체 안에서 자신에게 배정된 byte 값을 증가시킨 뒤 전체 합이 기대값과 일치하는지 검사합니다. 홀수 번호 thread는 cache line 안의 byte 위치를 역순으로 선택합니다.
 
 설정한 CPU 수만큼 thread를 만들고 각 thread를 지정한 CPU에서 실행합니다.
 
-여러 cache line 크기의 구조체 중 하나를 pseudo-random 방식으로 선택하고, 자신의 byte counter를 반복해서 증가시킵니다. 이후 모든 구조체에서 해당 counter를 더한 값이 `cc_inc_count`와 같은지 확인하고 0으로 초기화합니다.
+여러 cache line 크기의 구조체 중 하나를 pseudo-random 방식으로 선택하고, 자신의 byte counter를 반복해서 증가시킵니다. 이후 모든 구조체에서 해당 counter를 더한 값과 `cc_inc_count`의 일치 여부를 확인하고 0으로 초기화합니다.
 
 목적:
 
@@ -247,15 +247,15 @@ do {
 
 기본으로 하나 생성되며 `OsLayer::ErrorPoll()`을 약 1초마다 호출합니다.
 
-공개 저장소의 공통 `OsLayer::ErrorPoll()`은 0을 반환합니다 (`src/os.cc:739`). Android ARM에서 corrected ECC 또는 RAS를 수집하려면 target의 오류 interface를 읽는 구현을 추가합니다.
+공개 저장소의 공통 `OsLayer::ErrorPoll()`은 0을 반환합니다. Android ARM에서 corrected ECC 또는 RAS를 수집하려면 대상 시스템의 오류 interface를 읽는 구현이 필요합니다.
 
 따라서 모바일 시험에서는 다음 정보를 별도로 수집해야 합니다.
 
-- kernel RAS/EDAC/vendor memory error log
+- kernel RAS/EDAC와 대상 시스템의 memory error log
 - pstore/ramoops
 - watchdog/reboot reason
 - DMC/LLCC error register
-- secure firmware/SoC-specific diagnostics
+- Secure firmware와 시스템 전용 진단 정보
 
 `--no_errors`는 `ErrorPollThread` 생성을 생략합니다. `CopyThread`, `CheckThread`와 마지막 전체 pattern 검사는 계속 실행됩니다.
 
@@ -265,7 +265,7 @@ do {
 
 ```cpp
 #if defined(STRESSAPPTEST_CPU_X86_64) || defined(STRESSAPPTEST_CPU_I686)
-  // TSC, invariant TSC, APERF/MPERF 지원을 CPUID로 검사한다.
+  // TSC, invariant TSC, APERF/MPERF 지원을 CPUID로 검사합니다.
   return true;
 #else
   logprintf(0, "Process Error: "

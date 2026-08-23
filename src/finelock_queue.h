@@ -47,6 +47,9 @@ class FineLockPEQueue {
 
   bool QueueAnalysis();
   bool GetPageFromPhysical(uint64 paddr, struct page_entry *pe);
+  // 초기화 단계의 단일 검사 Worker가 논리 offset으로 Valid entry를 읽습니다.
+  // Entry 상태와 queue random generator를 변경하지 않습니다.
+  bool GetValidByOffset(uint64 offset, struct page_entry *pe);
   void set_os(OsLayer *os);
   OsLayer::ErrCallback get_err_log_callback();
   bool ErrorLogCallback(uint64 paddr, string *buf);

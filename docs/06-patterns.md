@@ -12,12 +12,12 @@ stressapptest는 bit가 바뀌는 순서와 반복 구조가 서로 다른 patte
 - 주소 또는 데이터 전달 경로가 잘못되어 다른 block의 pattern이 나타나는 오류
 - 읽기·쓰기 과정에서 일부 bit 또는 burst가 바뀌는 오류
 
-Pattern은 CPU가 virtual address에 기록할 데이터 word를 정의합니다. 실제 DQ·CA 신호와 bank·row의 변화는 cache write-back, DMC 주소 배치, PHY 배선, LPDDR protocol을 모두 거친 결과로 결정됩니다.
+Pattern은 CPU가 가상 주소에 기록할 데이터 word를 정의합니다. 실제 DQ·CA 신호와 bank·row의 변화는 cache write-back, DMC 주소 배치, PHY 배선, LPDDR protocol을 모두 거친 결과로 결정됩니다.
 
 <sub><em>Pattern family: 동일한 생성 규칙을 공유하는 기본 데이터 배열의 집합입니다.</em></sub>
 <sub><em>Bit transition: 데이터 bit가 0에서 1 또는 1에서 0으로 변경되는 동작입니다.</em></sub>
-<sub><em>DQ: LPDDR device와 controller 사이에서 데이터를 전송하는 physical signal입니다.</em></sub>
-<sub><em>CA: LPDDR command와 address 정보를 전송하는 physical signal입니다.</em></sub>
+<sub><em>DQ: LPDDR device와 controller 사이에서 데이터를 전송하는 물리 신호입니다.</em></sub>
+<sub><em>CA: LPDDR command와 address 정보를 전송하는 물리 신호입니다.</em></sub>
 
 ## Pattern을 만드는 방법
 
@@ -43,7 +43,7 @@ for (int i = 0; i < pattern_array_size; i++) {
                                        pattern_array[i].weight[2]);
   patterns_[patterncount++].Initialize(pattern_array[i], 256, false,
                                        pattern_array[i].weight[3]);
-  // 같은 네 반복 범위를 invert=true로 다시 생성한다.
+  // 같은 네 반복 범위를 invert=true로 다시 생성합니다.
 }
 ```
 
@@ -51,7 +51,7 @@ for (int i = 0; i < pattern_array_size; i++) {
 
 ### Width가 나타내는 반복 범위
 
-`Pattern::pattern(offset)`은 `offset >> busshift`로 32-bit pattern word 반복 수를 바꾼다.
+`Pattern::pattern(offset)`은 `offset >> busshift`로 32-bit Pattern word 반복 수를 바꿉니다.
 
 | 이름 suffix | 같은 32-bit word 반복 |
 |---|---:|
@@ -60,7 +60,7 @@ for (int i = 0; i < pattern_array_size; i++) {
 | 128 | 4회 |
 | 256 | 8회 |
 
-이 width는 pattern 함수에서 동일한 32-bit word를 반복하는 논리적 범위다. LPDDR physical channel width, burst width 및 DQ width는 별도의 hardware 속성으로 관리된다. DMC interleave, cache-line assembly, endian 및 bus packing은 이후 hardware 경로에서 적용된다.
+이 width는 Pattern 함수에서 동일한 32-bit word를 반복하는 논리적 범위입니다. LPDDR 물리 channel 폭, burst 폭과 DQ 폭은 별도의 hardware 속성으로 관리됩니다. DMC interleave, cache-line assembly, endian과 bus packing은 이후 hardware 경로에서 적용됩니다.
 
 <sub><em>Logical width: 동일한 32-bit pattern word가 반복되는 byte 배열의 범위입니다.</em></sub>
 <sub><em>Burst width: 하나의 DRAM read/write command가 전송하는 데이터 구성을 나타내며 device width와 burst length로 결정됩니다.</em></sub>
@@ -144,6 +144,8 @@ stressapptest -M 1024 -m 4 -i 4 -s 600 \
 
 이 순서는 새 pattern을 요청한 호출 순서입니다. 여러 Fill Worker가 empty block을 병렬로 가져가므로 주소별 배치는 실행 시점에 결정됩니다. 선택한 pattern 목록은 block 단위로 순환 배정됩니다.
 
+쉼표 목록은 한 실행의 SAT 작업 단위에 여러 Pattern을 혼합합니다. Pattern별 독립 결과는 Pattern 하나마다 별도 프로세스를 실행하여 수집합니다.
+
 <sub><em>Round-robin: 목록의 항목을 처음부터 마지막까지 차례로 선택하고 다시 첫 항목으로 돌아가는 배정 방식입니다.</em></sub>
 
 ## Width별 선택 비율
@@ -167,17 +169,17 @@ stressapptest -M 1024 -m 4 -i 4 -s 600 \
 1 MiB block C → JustFive32
 ```
 
-`CopyThread`는 원본 데이터를 대상 block에 복사하고 원본의 `pattern` 정보도 대상 block에 전달합니다. 따라서 복사가 끝난 대상 block은 원본과 같은 기대 pattern을 갖습니다.
+`CopyThread`는 원본 데이터를 대상 block에 복사하고 원본의 `pattern` 정보도 대상 block에 전달합니다. 복사가 끝난 대상 block은 원본과 동일한 기대 pattern을 갖습니다.
 
 ## Pattern별 기대 checksum
 
-각 `Pattern` 객체는 초기화할 때 4 KiB 데이터의 modified-Adler checksum을 미리 계산합니다 (`src/pattern.cc:246`). Pattern이 일정한 주기로 반복되므로 1 MiB block 안의 모든 4 KiB 검사 구간에 같은 기대 checksum을 적용할 수 있습니다.
+각 `Pattern` 객체는 초기화할 때 4 KiB 데이터의 modified-Adler checksum을 미리 계산합니다. 구현은 `src/pattern.cc`의 `Pattern::CalculateCrc()`에 있습니다. Pattern이 일정한 주기로 반복되므로 1 MiB 작업 단위 안의 모든 4 KiB 검사 구간에 같은 기대 checksum을 적용할 수 있습니다.
 
 Tag mode에서는 각 cache line의 첫 8 B에 주소 tag를 기록하므로, 현재 주소를 함께 반영하는 checksum 함수를 사용합니다.
 
 ## `--tag_mode`
 
-Tag mode는 각 64 B cache line의 첫 8 B에 해당 virtual address로 만든 tag를 저장합니다 (`src/worker.cc:490`). 나머지 위치에는 선택한 pattern을 기록합니다.
+Tag mode는 각 64 B cache line의 첫 8 B에 해당 가상 주소로 만든 tag를 저장합니다. 구현은 `src/worker.cc`의 `WorkerThread::FillPage()`에 있습니다. 나머지 위치에는 선택한 Pattern을 기록합니다.
 
 목적:
 
@@ -187,9 +189,9 @@ Tag mode는 각 64 B cache line의 첫 8 B에 해당 virtual address로 만든 t
 
 이러한 오류를 일반적인 data bit 오류와 구분하는 데 사용합니다.
 
-Tag mode에서도 일반 cacheable memory를 사용합니다. 파일·네트워크 DMA 옵션과 함께 지정하면 호환성 검사에서 초기화가 실패합니다.
+Tag mode에서도 일반 cacheable memory를 사용합니다. File·raw disk·Network Worker 옵션과 함께 지정하면 호환성 검사에서 초기화가 실패합니다.
 
-<sub><em>Address tag: cache line의 현재 virtual address에서 계산하여 해당 line의 첫 8 B에 저장하는 식별값입니다.</em></sub>
+<sub><em>Address tag: cache line의 현재 가상 주소에서 계산하여 해당 line의 첫 8 B에 저장하는 식별값입니다.</em></sub>
 
 ## Pattern이 만드는 데이터와 실제 LPDDR 신호의 관계
 

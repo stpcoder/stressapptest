@@ -30,6 +30,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/times.h>
 
@@ -38,6 +39,7 @@
 #include <fcntl.h>
 
 #include <list>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -64,10 +66,15 @@ namespace {
 
   static const char kDefaultDramFrequencyNode[] =
       "/sys/kernel/debug/aoss_send_message";
+  // 비정상 입력에 따른 대규모 객체 생성과 pthread 자원 고갈을 방지합니다.
+  // 일반 모바일 CPU 수보다 충분히 큰 진단 Worker 상한입니다.
+  static const int kMaxDiagnosticWorkerCount = 256;
   static const int kAllDramFrequencies[] = {
     547, 768, 1017, 1353, 1555, 1708, 2092, 2736, 3196, 4266, 5333
   };
 
+  // 옵션 문자열을 1 이상의 int로 변환합니다. 숫자 뒤의 추가 문자와
+  // int 범위 초과 입력을 거부합니다.
   bool ParsePositiveInt(const string &value, int *result) {
     errno = 0;
     char *end = NULL;
@@ -80,6 +87,22 @@ namespace {
     return true;
   }
 
+  // 0 이상의 int로 변환합니다. 대기 시간과 Pattern offset에
+  // 사용하는 공통 입력 검사입니다.
+  bool ParseNonNegativeInt(const string &value, int *result) {
+    errno = 0;
+    char *end = NULL;
+    long parsed = strtol(value.c_str(), &end, 10);
+    if (errno != 0 || end == value.c_str() || *end != '\0' ||
+        parsed < 0 || parsed > INT_MAX) {
+      return false;
+    }
+    *result = static_cast<int>(parsed);
+    return true;
+  }
+
+  // --ddr-freq의 all 또는 쉼표 목록을 입력 순서대로 변환합니다.
+  // 항목 하나라도 유효하지 않으면 결과 목록을 비우고 실패를 반환합니다.
   bool ParseDramFrequencyList(const string &value,
                               vector<int> *frequencies) {
     frequencies->clear();
@@ -107,6 +130,30 @@ namespace {
       start = comma + 1;
     }
     return !frequencies->empty();
+  }
+
+  // /proc 형식 파일에서 같은 key의 kB 값을 합산합니다. Android 정책이나
+  // kernel 설정으로 파일을 읽을 수 없으면 -1을 반환합니다.
+  int64 ReadProcKbTotal(const char *path, const char *key) {
+    FILE *file = fopen(path, "r");
+    if (!file)
+      return -1;
+
+    const size_t key_length = strlen(key);
+    char line[512];
+    int64 total = 0;
+    bool found = false;
+    while (fgets(line, sizeof(line), file)) {
+      if (strncmp(line, key, key_length) != 0)
+        continue;
+      unsigned long long value = 0;
+      if (sscanf(line + key_length, " %llu kB", &value) == 1) {
+        total += static_cast<int64>(value);
+        found = true;
+      }
+    }
+    fclose(file);
+    return found ? total : -1;
   }
 
   // Signal handler for catching break or kill.
@@ -286,6 +333,7 @@ bool Sat::InitializePatterns() {
     bad_status();
     return false;
   }
+  patternlist_->SetByteOffset(pattern_byte_offset_);
   if (!patternlist_->Initialize()) {
     logprintf(0, "Process Error: failed to initialize patternlist\n");
     bad_status();
@@ -375,6 +423,63 @@ bool Sat::PutEmpty(struct page_entry *pe) {
     return false;
 }
 
+// 초기화 단계의 단일 Worker가 논리 offset 순서로 Valid entry를 조회합니다.
+// Queue의 random cursor, Valid/Empty 상태와 lock 보유 상태는 변경하지 않습니다.
+bool Sat::GetValidByOffsetForInitialization(
+    uint64 offset, struct page_entry *pe) {
+  if (!pe)
+    return false;
+  bool result = false;
+  if (pe_q_implementation_ == SAT_FINELOCK && finelock_q_) {
+    result = finelock_q_->GetValidByOffset(offset, pe);
+  }
+  if (!result)
+    return false;
+
+  pe->addr = os_->PrepareTestMem(pe->offset, page_length_);
+  if (!pe->addr)
+    return false;
+  pe->ts = os_->GetTimestamp();
+  pe->lastpattern = pe->pattern;
+  return true;
+}
+
+// GetValidByOffsetForInitialization()에서 준비한 mapping만 해제합니다.
+// Entry metadata와 queue 상태는 원래 위치에 유지됩니다.
+void Sat::ReleaseInitializationPage(struct page_entry *pe) {
+  if (!pe || !pe->addr)
+    return;
+  os_->ReleaseTestMem(pe->addr, pe->offset, page_length_);
+  pe->addr = NULL;
+}
+
+// OneLock 초기 검사에서 완료 entry를 Empty queue 객체에 임시 보관합니다.
+// Pattern과 write metadata는 지우지 않으며 Runtime용 Empty 상태를 의미하지
+// 않습니다. 이 함수는 queue split 전 단일 post-fill Worker만 호출합니다.
+bool Sat::HoldInitializationPage(struct page_entry *pe) {
+  if (pe_q_implementation_ != SAT_ONELOCK || !empty_ || !pe)
+    return false;
+  if (pe->addr)
+    os_->ReleaseTestMem(pe->addr, pe->offset, page_length_);
+  pe->addr = NULL;
+  return empty_->Push(pe);
+}
+
+// OneLock 임시 queue의 entry를 모두 Valid queue로 복원합니다.
+bool Sat::RestoreInitializationPages(int64 count) {
+  if (pe_q_implementation_ != SAT_ONELOCK || !empty_ || !valid_)
+    return false;
+  bool result = true;
+  for (int64 i = 0; i < count; ++i) {
+    struct page_entry pe;
+    if (!empty_->PopRandom(&pe) || !valid_->Push(&pe)) {
+      result = false;
+      break;
+    }
+  }
+  return result;
+}
+
 // Set up the bitmap of physical pages in case we want to see which pages were
 // accessed under this run of SAT.
 void Sat::AddrMapInit() {
@@ -453,20 +558,99 @@ void Sat::AddrMapPrint() {
   logprintf(4, "Log: Done printing physical ranges.\n");
 }
 
-// Initializes page lists and fills pages with data patterns.
+// 모든 SAT 작업 단위를 한 번씩 처리하는 Fill 단계를 실행합니다.
+// preset_only=true이면 동일값 사전 기록을 수행하고, 완료 후 모든 entry를
+// Empty 상태로 복원하여 다음 Pattern Fill이 전체 영역을 다시 처리하게 합니다.
+bool Sat::RunFillPass(bool preset_only, const char *phase) {
+  bool result = true;
+  WorkerStatus fill_status;
+  WorkerVector fill_vector;
+
+  logprintf(5,
+            "Log: DIAG phase=%s_begin threads=%d pages=%lld direction=%s "
+            "yield_bytes=%d verify_every=%d\n",
+            phase, fill_threads_, pages_,
+            fill_direction_ == FILL_DIRECTION_UP ? "up" : "down",
+            fill_yield_bytes_, preset_only ? 0 : fill_verify_every_);
+
+  for (int i = 0; i < fill_threads_; ++i) {
+    FillThread *thread = new FillThread();
+    thread->InitThread(i, this, os_, patternlist_, &fill_status);
+    thread->SetPresetOnly(preset_only);
+    if (i != fill_threads_ - 1)
+      thread->SetFillPages(pages_ / fill_threads_);
+    else
+      thread->SetFillPages(pages_ - pages_ / fill_threads_ * i);
+    fill_vector.push_back(thread);
+  }
+
+  fill_status.Initialize();
+  vector<bool> fill_spawned(fill_vector.size(), false);
+  for (size_t i = 0; i < fill_vector.size(); ++i) {
+    if (fill_vector[i]->SpawnThread()) {
+      fill_spawned[i] = true;
+    } else {
+      // InitThread()에서 증가한 WorkerStatus 수를 생성 실패 시 복원합니다.
+      fill_vector[i]->RemoveUnspawnedWorker();
+      result = false;
+      bad_status();
+    }
+  }
+
+  for (size_t i = 0; i < fill_vector.size(); ++i) {
+    FillThread *thread = static_cast<FillThread*>(fill_vector[i]);
+    if (fill_spawned[i])
+      thread->JoinThread();
+    initialization_errorcount_ += thread->GetErrorCount();
+    if (fill_spawned[i] && thread->GetStatus() != 1) {
+      logprintf(0, "Thread %d failed with status %d at %.2f seconds\n",
+                thread->ThreadID(), thread->GetStatus(),
+                thread->GetRunDurationUSec() * 1.0 / 1000000);
+      result = false;
+      bad_status();
+    }
+    delete thread;
+  }
+  fill_vector.clear();
+  fill_status.Destroy();
+
+  if (preset_only && result) {
+    // 완료 표시로 사용한 Valid entry를 하나씩 가져와 Empty로 복원합니다.
+    // 가져온 entry는 즉시 Empty가 되므로 같은 entry를 중복 처리하지 않습니다.
+    for (int64 i = 0; i < pages_; ++i) {
+      struct page_entry pe;
+      if (!GetValid(&pe) || !PutEmpty(&pe)) {
+        logprintf(0,
+                  "Process Error: failed to reset preset page %lld/%lld\n",
+                  i, pages_);
+        result = false;
+        bad_status();
+        break;
+      }
+    }
+  }
+
+  logprintf(result ? 5 : 0,
+            "Log: DIAG phase=%s_end threads=%d pages=%lld status=%d\n",
+            phase, fill_threads_, pages_, result);
+  LogVmStats(phase);
+  return result;
+}
+
+// 전체 SAT 작업 단위를 Empty로 등록하고 초기 Pattern을 기록한 뒤 Runtime용
+// Valid·Empty 비율과 물리 region tag를 구성합니다.
 bool Sat::InitializePages() {
   int result = 1;
-  // Calculate needed page totals.
+  // Runtime Worker가 동시에 보유할 수 있는 최소 Empty 작업 단위 수입니다.
   int64 neededpages = memory_threads_ +
     invert_threads_ +
     check_threads_ +
     net_threads_ +
     file_threads_;
 
-  // Empty-valid page ratio is adjusted depending on queue implementation.
-  // since fine-grain-locked queue keeps both valid and empty entries in the
-  // same queue and randomly traverse to find pages, the empty-valid ratio
-  // should be more even.
+  // FineLock queue는 Valid와 Empty를 한 구조에서 검색하므로 전체의 약 2/5를
+  // Empty로 설정합니다. OneLock queue는 Worker 수에 필요한 최소 여유량을
+  // 기준으로 Empty 수를 계산합니다.
   if (pe_q_implementation_ == SAT_FINELOCK)
     freepages_ = pages_ / 5 * 2;  // Mark roughly 2/5 of all pages as Empty.
   else
@@ -495,7 +679,7 @@ bool Sat::InitializePages() {
             pages_,
             freepages_);
 
-  // Initialize page locations.
+  // 시험 영역을 SAT 작업 단위로 나누어 모두 Empty 상태로 등록합니다.
   for (int64 i = 0; i < pages_; i++) {
     struct page_entry pe;
     init_pe(&pe);
@@ -509,57 +693,133 @@ bool Sat::InitializePages() {
     return false;
   }
 
-  // Fill valid pages with test patterns.
-  // Use fill threads to do this.
-  WorkerStatus fill_status;
-  WorkerVector fill_vector;
-
-  logprintf(12, "Starting Fill threads: %d threads, %d pages\n",
-            fill_threads_, pages_);
-  // Initialize the fill threads.
-  for (int i = 0; i < fill_threads_; i++) {
-    FillThread *thread = new FillThread();
-    thread->InitThread(i, this, os_, patternlist_, &fill_status);
-    if (i != fill_threads_ - 1) {
-        logprintf(12, "Starting Fill Threads %d: %d pages\n",
-                  i, pages_ / fill_threads_);
-        thread->SetFillPages(pages_ / fill_threads_);
-      // The last thread finishes up all the leftover pages.
-    } else {
-      logprintf(12, "Starting Fill Threads %d: %d pages\n",
-                i, pages_ - pages_ / fill_threads_ * i);
-        thread->SetFillPages(pages_ - pages_ / fill_threads_ * i);
+  if (prefault_pages_) {
+    // 메인 스레드가 각 SAT 작업 단위의 offset 0부터 운영체제 page 크기
+    // 간격으로 1 byte를 기록합니다. SAT 작업 단위가 운영체제 page보다 작으면
+    // 각 작업 단위의 첫 byte를 기록합니다. 이 store는 Fill 전 매핑·TLB·cache
+    // 상태를 변경하며 미할당 주소의 page fault와 물리 할당을 유도합니다.
+    long os_page_size = sysconf(_SC_PAGESIZE);
+    if (os_page_size <= 0)
+      os_page_size = 4096;
+    logprintf(5,
+              "Log: DIAG phase=prefault_begin pages=%lld os_page_size=%ld\n",
+              pages_, os_page_size);
+    for (int64 i = 0; i < pages_; ++i) {
+      uint64 page_offset = i * page_length_;
+      void *addr = os_->PrepareTestMem(page_offset, page_length_);
+      if (!addr) {
+        logprintf(0,
+                  "Process Error: prefault failed at SAT page %lld\n", i);
+        bad_status();
+        return false;
+      }
+      volatile unsigned char *bytes =
+          static_cast<volatile unsigned char*>(addr);
+      for (int64 offset = 0; offset < page_length_; offset += os_page_size)
+        bytes[offset] = 0;
+      os_->ReleaseTestMem(addr, page_offset, page_length_);
     }
-    fill_vector.push_back(thread);
+    logprintf(5,
+              "Log: DIAG phase=prefault_end pages=%lld os_page_size=%ld\n",
+              pages_, os_page_size);
+    LogVmStats("prefault");
   }
 
-  // Spawn the fill threads.
-  fill_status.Initialize();
-  for (WorkerVector::const_iterator it = fill_vector.begin();
-       it != fill_vector.end(); ++it)
-    (*it)->SpawnThread();
+  const char *fill_preset_name = "none";
+  if (fill_preset_ == FILL_PRESET_ZERO)
+    fill_preset_name = "zero";
+  else if (fill_preset_ == FILL_PRESET_ONE)
+    fill_preset_name = "one";
+  logprintf(5, "Log: DIAG fill_preset=%s pattern_offset=%d\n",
+            fill_preset_name, pattern_byte_offset_);
+  logprintf(5,
+            "Log: DIAG invert_range=%s range_bytes_per_pass=%lld "
+            "sat_block_bytes=%d\n",
+            invert_range_ == INVERT_RANGE_FULL ? "full" : "legacy",
+            invert_range_bytes(), page_length_);
 
-  // Reap the finished fill threads.
-  for (WorkerVector::const_iterator it = fill_vector.begin();
-       it != fill_vector.end(); ++it) {
-    (*it)->JoinThread();
-    if ((*it)->GetStatus() != 1) {
-      logprintf(0, "Thread %d failed with status %d at %.2f seconds\n",
-                (*it)->ThreadID(), (*it)->GetStatus(),
-                (*it)->GetRunDurationUSec() * 1.0/1000000);
+  if (fill_preset_ != FILL_PRESET_NONE &&
+      !RunFillPass(true, "preset_fill"))
+    return false;
+
+  // 사전 채움이 완료된 뒤 최종 Pattern을 전체 시험 영역에 기록합니다.
+  if (!RunFillPass(false, "initial_fill"))
+    return false;
+
+#ifdef STRESSAPPTEST_ENABLE_TEST_HOOKS
+  // 상세 비교의 오류 수, 복구, 로그 제한과 종료 요청을 반복 가능하게
+  // 검증하는 CI 전용 hook입니다. Release build에는 포함되지 않습니다.
+  if (test_corrupt_after_fill_words_ > 0) {
+    void *address = os_->PrepareTestMem(0, page_length_);
+    if (!address) {
+      logprintf(0, "Process Error: test corruption mapping failed\n");
       bad_status();
       return false;
     }
-    delete (*it);
+    uint64 *words = static_cast<uint64 *>(address);
+    for (int word = 0; word < test_corrupt_after_fill_words_; ++word)
+      words[word] ^= 1;
+    os_->ReleaseTestMem(address, 0, page_length_);
+    logprintf(5,
+              "Log: TEST_INJECTION phase=post_initial_fill "
+              "sat_block=0 words=%d\n",
+              test_corrupt_after_fill_words_);
   }
-  fill_vector.clear();
-  fill_status.Destroy();
-  logprintf(12, "Log: Done filling pages.\n");
+#endif
+
+  // Fill에서 종료 요청이 기록되면 진단용 대기를 생략합니다.
+  if (post_fill_delay_seconds_ > 0 && !error_stop_requested()) {
+    logprintf(5,
+              "Log: DIAG phase=post_fill_delay_begin seconds=%d\n",
+              post_fill_delay_seconds_);
+    sat_sleep(post_fill_delay_seconds_);
+    logprintf(5,
+              "Log: DIAG phase=post_fill_delay_end seconds=%d\n",
+              post_fill_delay_seconds_);
+  }
+
+  if (verify_after_fill_ && !error_stop_requested()) {
+    // Runtime용 Valid·Empty 상태를 구성하기 전에 초기 Pattern을 검사합니다.
+    // --stop_on_errors가 설정되면 현재 작업 단위의 상세 검사 후 종료합니다.
+    WorkerStatus verify_status;
+    PostFillCheckThread *verify_thread = new PostFillCheckThread();
+    verify_thread->SetPagesToCheck(pages_);
+    verify_thread->InitThread(fill_threads_, this, os_, patternlist_,
+                              &verify_status);
+    verify_status.Initialize();
+    if (!verify_thread->SpawnThread()) {
+      verify_thread->RemoveUnspawnedWorker();
+      delete verify_thread;
+      verify_status.Destroy();
+      bad_status();
+      return false;
+    }
+    verify_thread->JoinThread();
+
+    initialization_errorcount_ += verify_thread->GetErrorCount();
+    if (verify_thread->GetStatus() != 1) {
+      logprintf(0,
+                "Process Error: post-fill verification failed with status %d\n",
+                verify_thread->GetStatus());
+      result = false;
+      bad_status();
+    }
+    delete verify_thread;
+    verify_status.Destroy();
+    LogVmStats("post_fill_check");
+
+    if (!result)
+      return false;
+  }
+
+  logprintf(5,
+            "Log: DIAG phase=queue_split_begin pages=%lld empty_target=%lld\n",
+            pages_, freepages_);
   logprintf(12, "Log: Allocating pages.\n");
 
   AddrMapInit();
 
-  // Initialize page locations.
+  // 전체 작업 단위를 다시 가져와 물리 region tag와 Runtime 상태를 설정합니다.
   for (int64 i = 0; i < pages_; i++) {
     struct page_entry pe;
     // Only get valid pages with uninitialized tags here.
@@ -571,13 +831,12 @@ bool Sat::InitializePages() {
       pe.tag = 1 << region;
       region_mask_ |= pe.tag;
 
-      // Generate a physical region map
+      // 선택 옵션이 활성화된 경우 접근한 물리 페이지를 bitmap에 기록합니다.
       AddrMapUpdate(&pe);
 
-      // Note: this does not allocate free pages among all regions
-      // fairly. However, with large enough (thousands) random number
-      // of pages being marked free in each region, the free pages
-      // count in each region end up pretty balanced.
+      // 앞에서 계산한 수만큼 Empty로 전환하고 나머지는 Valid로 유지합니다.
+      // Region별 Empty 개수를 별도로 강제하지 않으므로 실제 분포는 실행마다
+      // 달라질 수 있습니다.
       if (i < freepages_) {
         result &= PutEmpty(&pe);
       } else {
@@ -590,6 +849,10 @@ bool Sat::InitializePages() {
     }
   }
   logprintf(12, "Log: Done allocating pages.\n");
+  logprintf(5,
+            "Log: DIAG phase=queue_split_end valid=%lld empty=%lld\n",
+            pages_ - freepages_, freepages_);
+  LogVmStats("queue_split");
 
   AddrMapPrint();
 
@@ -600,6 +863,17 @@ bool Sat::InitializePages() {
     }
   }
   logprintf(5, "Log: Region mask: 0x%x\n", region_mask_);
+
+  // 초기 검사에서 종료 요청이 기록되면 Runtime 전 대기를 수행하지 않습니다.
+  if (runtime_start_delay_seconds_ > 0 && !error_stop_requested()) {
+    logprintf(5,
+              "Log: DIAG phase=runtime_start_delay_begin seconds=%d\n",
+              runtime_start_delay_seconds_);
+    sat_sleep(runtime_start_delay_seconds_);
+    logprintf(5,
+              "Log: DIAG phase=runtime_start_delay_end seconds=%d\n",
+              runtime_start_delay_seconds_);
+  }
 
   return true;
 }
@@ -619,6 +893,7 @@ bool Sat::PrintVersion() {
 // Returns true on success, false on error, and will exit() on help message.
 bool Sat::Initialize() {
   g_sat = this;
+  diagnostic_start_us_ = sat_get_time_us();
 
   // Initializes sync'd log file to ensure output is saved.
   if (!InitializeLogfile())
@@ -679,6 +954,7 @@ bool Sat::Initialize() {
   // Allocate the memory to test.
   if (!AllocateMemory())
     return false;
+  LogVmStats("allocation");
 
   logprintf(5, "Stats: Starting SAT, %dM, %d seconds\n",
             static_cast<int>(size_/kMegabyte),
@@ -687,8 +963,8 @@ bool Sat::Initialize() {
   if (!InitializePatterns())
     return false;
 
-  // Put the initial pattern fill under the first requested DDR frequency.
-  // Sweep timing is restarted when Run() begins.
+  // 초기 Pattern Fill 전에 목록의 첫 DDR 요청값을 전달합니다.
+  // Runtime 시작 시 첫 값을 다시 전달하고 sweep 간격을 새로 계산합니다.
   if (!dram_frequencies_.empty() &&
       !ApplyDramFrequency(dram_frequencies_[0])) {
     bad_status();
@@ -697,6 +973,78 @@ bool Sat::Initialize() {
 
   // Initialize memory allocation.
   pages_ = size_ / page_length_;
+  if (diag_phase_summary_) {
+    const char *final_mode = skip_final_check_
+        ? "skip"
+        : (final_check_threads_explicit_ ? "separate" : "legacy_drain");
+    const int configured_final_threads = skip_final_check_
+        ? 0
+        : (final_check_threads_explicit_
+               ? final_check_threads_ : fill_threads_);
+    const char *fill_preset =
+        fill_preset_ == FILL_PRESET_ZERO
+            ? "zero"
+            : (fill_preset_ == FILL_PRESET_ONE ? "one" : "none");
+    logprintf(5,
+              "Log: DIAG_CONFIG blocks=%lld block_bytes=%d queue=%s "
+              "workers(fill=%d,copy=%d,invert=%d,check=%d) "
+              "invert_range=%s final_mode=%s final_threads=%d "
+              "ddr_mode=%s ddr_count=%zu ddr_step_s=%d "
+              "ddr_sweep_phase=runtime\n",
+              pages_, page_length_,
+              pe_q_implementation_ == SAT_FINELOCK ? "fine" : "coarse",
+              fill_threads_, memory_threads_, invert_threads_, check_threads_,
+              invert_range_ == INVERT_RANGE_FULL ? "full" : "legacy",
+              final_mode, configured_final_threads,
+              dram_frequency_mode(), dram_frequencies_.size(),
+              dram_step_seconds_);
+    // 비교 실행에서 workload를 바꾸는 옵션의 누락을 확인할 수 있도록
+    // 해석된 값을 시작 시 한 번 기록합니다. 시험 메모리에는 접근하지 않습니다.
+    logprintf(5,
+              "Log: DIAG_CONFIG_OPTIONS pattern_offset=%d "
+              "fill_preset=%s prefault=%d fill_direction=%s "
+              "fill_verify_every=%d fill_yield_bytes=%d "
+              "verify_after_fill=%d post_fill_delay_s=%d "
+              "runtime_start_delay_s=%d copy_verify_destination=%d "
+              "strict=%d warm=%d tag_mode=%d cpu_stress=%d affinity=%d "
+              "block_history=%d vm_stats=%d "
+              "error_log_limit=%lld stop_on_errors=%d dram_map=%s\n",
+              pattern_byte_offset_, fill_preset, prefault_pages_ ? 1 : 0,
+              fill_direction_ == FILL_DIRECTION_DOWN ? "down" : "up",
+              fill_verify_every_, fill_yield_bytes_,
+              verify_after_fill_ ? 1 : 0, post_fill_delay_seconds_,
+              runtime_start_delay_seconds_,
+              copy_verify_destination_ ? 1 : 0, strict_,
+              warm_, tag_mode_, cpu_stress_threads_, use_affinity_ ? 1 : 0,
+              diag_block_history_ ? 1 : 0, diag_vm_stats_ ? 1 : 0,
+              error_log_limit_, stop_on_error_ ? 1 : 0,
+              dram_address_map_profile_ == DRAM_ADDRESS_MAP_LPDDR_V1
+                  ? "lpddr-v1" : "none");
+  }
+  if (diag_block_history_) {
+    block_history_ = new (std::nothrow) BlockHistory[pages_];
+    if (!block_history_) {
+      logprintf(0,
+                "Process Error: failed to allocate block history for "
+                "%lld SAT blocks\n",
+                pages_);
+      bad_status();
+      return false;
+    }
+    for (int64 i = 0; i < pages_; ++i) {
+      block_history_[i].generation = 0;
+      block_history_[i].write_complete_us = -1;
+      block_history_[i].frequency_epoch_begin = 0;
+      block_history_[i].frequency_epoch_end = 0;
+      block_history_[i].writer_thread = -1;
+      block_history_[i].writer_cpu = -1;
+      block_history_[i].writer = BLOCK_WRITER_UNKNOWN;
+    }
+    logprintf(5,
+              "Log: DIAG block_history=enabled blocks=%lld bytes=%lld\n",
+              pages_,
+              static_cast<int64>(sizeof(BlockHistory)) * pages_);
+  }
 
   // Allocate page queue depending on queue implementation switch.
   if (pe_q_implementation_ == SAT_FINELOCK) {
@@ -736,11 +1084,15 @@ Sat::Sat() {
   channel_hash_ = kCacheLineSize;
   channel_width_ = 64;
   pattern_selector_ = "";
+  pattern_byte_offset_ = 0;
+  post_fill_delay_seconds_ = 0;
+  runtime_start_delay_seconds_ = 0;
   dram_frequencies_.clear();
   dram_sweep_ = false;
   dram_step_seconds_ = 3;
   dram_frequency_node_ = kDefaultDramFrequencyNode;
   current_dram_frequency_.store(-1, std::memory_order_relaxed);
+  dram_frequency_epoch_.store(0, std::memory_order_relaxed);
   dram_address_map_profile_ = DRAM_ADDRESS_MAP_NONE;
 
   user_break_ = false;
@@ -749,6 +1101,23 @@ Sat::Sat() {
   print_delay_ = 10;
   strict_ = 1;
   warm_ = 0;
+  verify_after_fill_ = false;
+  copy_verify_destination_ = false;
+  prefault_pages_ = false;
+  diag_vm_stats_ = false;
+  diag_block_history_ = false;
+  diag_phase_summary_ = false;
+  fill_preset_ = FILL_PRESET_NONE;
+  fill_direction_ = FILL_DIRECTION_UP;
+  fill_verify_every_ = 0;
+  fill_yield_bytes_ = 0;
+  // 옵션을 지정하지 않은 실행은 upstream의 Invert workload를 보존합니다.
+  // 전체 SAT 작업 단위 반전은 --invert-range full로 명시합니다.
+  invert_range_ = INVERT_RANGE_LEGACY;
+  final_check_threads_ = 8;
+  final_check_threads_explicit_ = false;
+  skip_final_check_ = false;
+  error_stop_requested_.store(false, std::memory_order_relaxed);
   run_on_anything_ = 0;
   use_logfile_ = false;
   logfile_ = 0;
@@ -758,8 +1127,15 @@ Sat::Sat() {
   address_mode_ = sizeof(pvoid) * 8;
   error_injection_ = false;
   crazy_error_injection_ = false;
+#ifdef STRESSAPPTEST_ENABLE_TEST_HOOKS
+  test_corrupt_after_fill_words_ = 0;
+#endif
   max_errorcount_ = 0;  // Zero means no early exit.
   stop_on_error_ = false;
+  error_log_limit_ = -1;
+  error_log_attempted_.store(0, std::memory_order_relaxed);
+  error_log_detailed_.store(0, std::memory_order_relaxed);
+  error_log_suppressed_.store(0, std::memory_order_relaxed);
   error_poll_ = true;
   findfiles_ = false;
 
@@ -780,6 +1156,7 @@ Sat::Sat() {
   cpu_freq_round_ = 10;     // Round the computed frequency to this value.
 
   sat_assert(0 == pthread_mutex_init(&worker_lock_, NULL));
+  sat_assert(0 == pthread_mutex_init(&diagnostic_stats_lock_, NULL));
   file_threads_ = 0;
   net_threads_ = 0;
   listen_threads_ = 0;
@@ -801,7 +1178,22 @@ Sat::Sat() {
   region_mode_ = 0;
 
   errorcount_ = 0;
+  initialization_errorcount_ = 0;
   statuscount_ = 0;
+  vm_stats_last_minor_faults_ = -1;
+  vm_stats_last_major_faults_ = -1;
+  block_history_ = NULL;
+  diagnostic_start_us_ = sat_get_time_us();
+  for (int i = 0; i < DIAG_PHASE_COUNT; ++i) {
+    diagnostic_phase_stats_[i].blocks = 0;
+    diagnostic_phase_stats_[i].read_bytes = 0;
+    diagnostic_phase_stats_[i].write_bytes = 0;
+    diagnostic_phase_stats_[i].checksum_mismatch_regions = 0;
+    diagnostic_phase_stats_[i].word_mismatches = 0;
+    diagnostic_phase_stats_[i].first_error_us = -1;
+    diagnostic_phase_stats_[i].first_error_epoch = 0;
+    diagnostic_phase_stats_[i].first_error_worker_bytes = 0;
+  }
 
   valid_ = 0;
   empty_ = 0;
@@ -882,7 +1274,7 @@ bool Sat::ParseArgs(int argc, char **argv) {
     // Set number of seconds to run.
     ARG_IVALUE("-s", runtime_seconds_);
 
-    // Select one or more patterns by zero-based ID or name.
+    // 0부터 시작하는 ID 또는 Pattern 이름을 하나 이상 입력받습니다.
     if (!strcmp(argv[i], "-P")) {
       if (++i >= argc) {
         logprintf(0,
@@ -894,7 +1286,152 @@ bool Sat::ParseArgs(int argc, char **argv) {
       continue;
     }
 
-    // Hold one Qualcomm DDR frequency, or sweep a list in input order.
+    // SAT 작업 단위 시작점을 기준으로 Pattern 위치를 이동합니다.
+    if (!strcmp(argv[i], "--pattern-byte-offset")) {
+      if (++i >= argc ||
+          !ParseNonNegativeInt(argv[i], &pattern_byte_offset_) ||
+          (pattern_byte_offset_ % static_cast<int>(sizeof(unsigned int))) != 0) {
+        logprintf(0,
+                  "Process Error: --pattern-byte-offset requires a "
+                  "non-negative multiple of 4 bytes\n");
+        return false;
+      }
+      continue;
+    }
+
+    // 최종 Pattern을 기록하기 전에 전체 영역에 동일값을 사전 기록합니다.
+    if (!strcmp(argv[i], "--fill-preset")) {
+      if (++i >= argc) {
+        logprintf(0,
+                  "Process Error: --fill-preset requires none, zero, or one\n");
+        return false;
+      }
+      if (!strcmp(argv[i], "none")) {
+        fill_preset_ = FILL_PRESET_NONE;
+      } else if (!strcmp(argv[i], "zero")) {
+        fill_preset_ = FILL_PRESET_ZERO;
+      } else if (!strcmp(argv[i], "one")) {
+        fill_preset_ = FILL_PRESET_ONE;
+      } else {
+        logprintf(0,
+                  "Process Error: --fill-preset requires none, zero, or one\n");
+        return false;
+      }
+      continue;
+    }
+
+    ARG_KVALUE("--verify-after-fill", verify_after_fill_, true);
+    ARG_KVALUE("--copy-verify-destination", copy_verify_destination_, true);
+    ARG_KVALUE("--prefault-pages", prefault_pages_, true);
+    ARG_KVALUE("--diag-vm-stats", diag_vm_stats_, true);
+    ARG_KVALUE("--diag-block-history", diag_block_history_, true);
+    ARG_KVALUE("--diag-phase-summary", diag_phase_summary_, true);
+
+    if (!strcmp(argv[i], "--post-fill-delay")) {
+      if (++i >= argc ||
+          !ParseNonNegativeInt(argv[i], &post_fill_delay_seconds_)) {
+        logprintf(0,
+                  "Process Error: --post-fill-delay requires non-negative "
+                  "seconds\n");
+        return false;
+      }
+      continue;
+    }
+
+    if (!strcmp(argv[i], "--fill-threads")) {
+      if (++i >= argc || !ParsePositiveInt(argv[i], &fill_threads_) ||
+          fill_threads_ > kMaxDiagnosticWorkerCount) {
+        logprintf(0,
+                  "Process Error: --fill-threads requires a count from 1 "
+                  "to %d\n", kMaxDiagnosticWorkerCount);
+        return false;
+      }
+      continue;
+    }
+
+    if (!strcmp(argv[i], "--fill-direction")) {
+      if (++i >= argc) {
+        logprintf(0,
+                  "Process Error: --fill-direction requires up or down\n");
+        return false;
+      }
+      if (!strcmp(argv[i], "up")) {
+        fill_direction_ = FILL_DIRECTION_UP;
+      } else if (!strcmp(argv[i], "down")) {
+        fill_direction_ = FILL_DIRECTION_DOWN;
+      } else {
+        logprintf(0,
+                  "Process Error: --fill-direction requires up or down\n");
+        return false;
+      }
+      continue;
+    }
+
+    if (!strcmp(argv[i], "--fill-verify-every")) {
+      if (++i >= argc || !ParsePositiveInt(argv[i], &fill_verify_every_)) {
+        logprintf(0,
+                  "Process Error: --fill-verify-every requires a positive "
+                  "SAT block interval\n");
+        return false;
+      }
+      continue;
+    }
+
+    if (!strcmp(argv[i], "--fill-yield-bytes")) {
+      if (++i >= argc || !ParsePositiveInt(argv[i], &fill_yield_bytes_) ||
+          (fill_yield_bytes_ % kCacheLineSize) != 0) {
+        logprintf(0,
+                  "Process Error: --fill-yield-bytes requires a positive "
+                  "multiple of %d bytes\n", kCacheLineSize);
+        return false;
+      }
+      continue;
+    }
+
+    if (!strcmp(argv[i], "--runtime-start-delay")) {
+      if (++i >= argc ||
+          !ParseNonNegativeInt(argv[i], &runtime_start_delay_seconds_)) {
+        logprintf(0,
+                  "Process Error: --runtime-start-delay requires "
+                  "non-negative seconds\n");
+        return false;
+      }
+      continue;
+    }
+
+    if (!strcmp(argv[i], "--invert-range")) {
+      if (++i >= argc) {
+        logprintf(0,
+                  "Process Error: --invert-range requires legacy or full\n");
+        return false;
+      }
+      if (!strcmp(argv[i], "legacy")) {
+        invert_range_ = INVERT_RANGE_LEGACY;
+      } else if (!strcmp(argv[i], "full")) {
+        invert_range_ = INVERT_RANGE_FULL;
+      } else {
+        logprintf(0,
+                  "Process Error: --invert-range requires legacy or full\n");
+        return false;
+      }
+      continue;
+    }
+
+    if (!strcmp(argv[i], "--final-check-threads")) {
+      if (++i >= argc || !ParsePositiveInt(argv[i], &final_check_threads_) ||
+          final_check_threads_ > kMaxDiagnosticWorkerCount) {
+        logprintf(0,
+                  "Process Error: --final-check-threads requires a count "
+                  "from 1 to %d\n", kMaxDiagnosticWorkerCount);
+        return false;
+      }
+      final_check_threads_explicit_ = true;
+      continue;
+    }
+
+    ARG_KVALUE("--skip-final-check", skip_final_check_, true);
+
+    // 단일 요청값 또는 Runtime에서 순환할 요청값 목록을 설정합니다.
     if (!strcmp(argv[i], "--ddr-freq")) {
       if (++i >= argc) {
         logprintf(0,
@@ -915,7 +1452,7 @@ bool Sat::ParseArgs(int argc, char **argv) {
       continue;
     }
 
-    // Set the number of seconds between DDR sweep requests.
+    // Runtime 주파수 순환에서 다음 요청값을 전달할 간격을 설정합니다.
     if (!strcmp(argv[i], "--ddr-step")) {
       if (++i >= argc || !ParsePositiveInt(argv[i], &dram_step_seconds_)) {
         logprintf(0,
@@ -925,7 +1462,7 @@ bool Sat::ParseArgs(int argc, char **argv) {
       continue;
     }
 
-    // Override the Qualcomm AOSS debugfs node for device variants or testing.
+    // 대상 시스템이 제공하는 DDR 제어용 kernel interface 경로를 지정합니다.
     if (!strcmp(argv[i], "--ddr-node")) {
       if (++i >= argc || argv[i][0] == '\0') {
         logprintf(0, "Process Error: --ddr-node requires a path\n");
@@ -935,7 +1472,7 @@ bool Sat::ParseArgs(int argc, char **argv) {
       continue;
     }
 
-    // Select an opt-in physical-to-DRAM address mapping profile.
+    // 오류 로그에 적용할 선택형 물리 주소-DRAM 좌표 변환 프로필을 설정합니다.
     if (!strcmp(argv[i], "--dram-map")) {
       if (++i >= argc) {
         logprintf(0, "Process Error: --dram-map requires a profile\n");
@@ -994,8 +1531,16 @@ bool Sat::ParseArgs(int argc, char **argv) {
     // Verbosity level.
     ARG_IVALUE("-v", verbosity_);
 
-    // Chatty printout level.
-    ARG_IVALUE("--printsec", print_delay_);
+    // Runtime 진행 로그의 출력 간격입니다. 누락된 값, 숫자 뒤의 문자,
+    // int 범위 초과값을 ParsePositiveInt()에서 함께 거부합니다.
+    if (!strcmp(argv[i], "--printsec")) {
+      if (++i >= argc || !ParsePositiveInt(argv[i], &print_delay_)) {
+        logprintf(0,
+                  "Process Error: --printsec requires positive seconds\n");
+        return false;
+      }
+      continue;
+    }
 
     // Turn off timestamps logging.
     ARG_KVALUE("--no_timestamps", log_timestamps_, false);
@@ -1023,8 +1568,35 @@ bool Sat::ParseArgs(int argc, char **argv) {
     if (crazy_error_injection_)
       error_injection_ = true;
 
-    // Stop immediately on any arror, for debugging HW problems.
+#ifdef STRESSAPPTEST_ENABLE_TEST_HOOKS
+    // 공개 release에 포함하지 않는 결정적 memory mismatch 주입 옵션입니다.
+    if (!strcmp(argv[i], "--test-corrupt-after-fill-words")) {
+      if (++i >= argc ||
+          !ParsePositiveInt(argv[i], &test_corrupt_after_fill_words_)) {
+        logprintf(0,
+                  "Process Error: --test-corrupt-after-fill-words requires "
+                  "a positive count\n");
+        return false;
+      }
+      continue;
+    }
+#endif
+
+    // 상세 mismatch 처리 후 메인 제어 경로에 종료를 요청합니다.
     ARG_KVALUE("--stop_on_errors", stop_on_error_, 1);
+
+    if (!strcmp(argv[i], "--error-log-limit")) {
+      int parsed_limit = 0;
+      if (++i >= argc ||
+          !ParseNonNegativeInt(argv[i], &parsed_limit)) {
+        logprintf(0,
+                  "Process Error: --error-log-limit requires a "
+                  "non-negative count\n");
+        return false;
+      }
+      error_log_limit_ = parsed_limit;
+      continue;
+    }
 
     // Don't use internal error polling, allow external detection.
     ARG_KVALUE("--no_errors", error_poll_, 0);
@@ -1074,8 +1646,19 @@ bool Sat::ParseArgs(int argc, char **argv) {
     // Specify the physical address base to test.
     ARG_IVALUE("--paddr_base", paddr_base_);
 
-    // Specify the frequency for power spikes.
-    ARG_IVALUE("--pause_delay", pause_delay_);
+    // 전력 부하 pause의 반복 간격입니다. time_t에 대입하기 전에 int
+    // 범위의 양의 정수인지 검사하여 파싱 및 시간 계산 overflow를 막습니다.
+    if (!strcmp(argv[i], "--pause_delay")) {
+      int parsed_pause_delay = 0;
+      if (++i >= argc ||
+          !ParsePositiveInt(argv[i], &parsed_pause_delay)) {
+        logprintf(0,
+                  "Process Error: --pause_delay requires positive seconds\n");
+        return false;
+      }
+      pause_delay_ = parsed_pause_delay;
+      continue;
+    }
 
     // Specify the duration of each pause (for power spikes).
     ARG_IVALUE("--pause_duration", pause_duration_);
@@ -1175,6 +1758,32 @@ bool Sat::ParseArgs(int argc, char **argv) {
     return false;
   }
 
+  if (fill_yield_bytes_ > page_length_) {
+    logprintf(0,
+              "Process Error: --fill-yield-bytes %d exceeds SAT block "
+              "size %d\n", fill_yield_bytes_, page_length_);
+    return false;
+  }
+
+#ifdef STRESSAPPTEST_ENABLE_TEST_HOOKS
+  if (test_corrupt_after_fill_words_ >
+      page_length_ / static_cast<int>(sizeof(uint64))) {
+    logprintf(0,
+              "Process Error: --test-corrupt-after-fill-words exceeds "
+              "the SAT block size\n");
+    return false;
+  }
+#endif
+
+  // NextOccurance()는 출력과 pause 간격을 나눌셈에 사용합니다.
+  // 0 이하의 값을 초기에 거부하여 Runtime 중 나눌셈 오류를 방지합니다.
+  if (print_delay_ <= 0 || pause_delay_ <= 0) {
+    logprintf(0,
+              "Process Error: --printsec and --pause_delay must be greater "
+              "than zero\n");
+    return false;
+  }
+
   // Set disk_pages_ if filesize or page size changed.
   if (filesize != static_cast<uint64>(page_length_) *
                   static_cast<uint64>(disk_pages_)) {
@@ -1237,17 +1846,36 @@ bool Sat::ParseArgs(int argc, char **argv) {
 void Sat::PrintHelp() {
   printf("Usage: ./sat(32|64) [options]\n"
          " -M mbytes        megabytes of ram to test\n"
-         " --reserve-memory If not using hugepages, the amount of memory to "
+         " --reserve_memory If not using hugepages, the amount of memory to "
          " reserve for the system\n"
          " -H mbytes        minimum megabytes of hugepages to require\n"
          " -s seconds       number of seconds to run\n"
-         " -P list          pattern IDs or names, used in the given order\n"
+         " -P list          cycle IDs or names across initial-fill blocks\n"
+         "                  address order follows queue selection\n"
+         " --pattern-byte-offset bytes  shift pattern start (multiple of 4)\n"
+         " --fill-preset mode  prefill with none, zero, or one\n"
+         " --prefault-pages  touch each OS page before parallel fill\n"
+         " --diag-vm-stats  log VM state at execution phase boundaries\n"
+         " --diag-block-history  log the last completed writer on mismatch\n"
+         " --diag-phase-summary  log resolved config and phase work counts\n"
+         " --fill-threads n initial fill workers, 1-256 (default 8)\n"
+         " --fill-direction up|down  Fill address traversal (default up)\n"
+         " --fill-verify-every n  verify every nth block immediately\n"
+         " --fill-yield-bytes bytes  yield at this Fill byte interval\n"
+         " --verify-after-fill  check every page before runtime workers\n"
+         " --post-fill-delay secs  wait before post-fill check/runtime\n"
+         " --runtime-start-delay secs  wait after queue setup\n"
+         " --copy-verify-destination  read back each Copy destination\n"
+         " --invert-range legacy|full  bytes touched by each Invert pass\n"
+         " --final-check-threads n  use 1-256 separate final Valid checkers\n"
+         " --skip-final-check  omit the remaining Valid-page check\n"
          " --ddr-freq list  hold one frequency or sweep 'all'/comma list\n"
          " --ddr-step secs  seconds per sweep frequency (default 3)\n"
-         " --ddr-node path  Qualcomm AOSS message node\n"
+         " --ddr-node path  target DDR control node\n"
          " --dram-map name  physical-to-DRAM map: none or lpddr-v1\n"
          " -m threads       number of memory copy threads to run\n"
          " -i threads       number of memory invert threads to run\n"
+         " -c threads       number of memory check threads to run\n"
          " -C threads       number of memory CPU stress threads to run\n"
          " --findfiles      find locations to do disk IO automatically\n"
          " -d device        add a direct write disk thread with block "
@@ -1256,9 +1884,9 @@ void Sat::PrintHelp() {
          "tempfile 'filename'\n"
          " -l logfile       log output to file 'logfile'\n"
          " --no_timestamps  do not prefix timestamps to log messages\n"
-         " --max_errors n   exit early after finding 'n' errors\n"
+         " --max_errors n   exit when the total error count exceeds n\n"
          " -v level         verbosity (0-20), default is 8\n"
-         " --printsec secs  How often to print 'seconds remaining'\n"
+         " --printsec secs  positive interval for 'seconds remaining'\n"
          " -W               Use more CPU-stressful memory copy\n"
          " -A               run in degraded mode on incompatible systems\n"
          " -p pagesize      size in bytes of memory chunks\n"
@@ -1271,8 +1899,11 @@ void Sat::PrintHelp() {
          " --force_errors   inject false errors to test error handling\n"
          " --force_errors_like_crazy   inject a lot of false errors "
          "to test error handling\n"
-         " -F               don't result check each transaction\n"
-         " --stop_on_errors  Stop after finding the first error.\n"
+         " -F               without -W, use memcpy; skip Invert pre/post "
+         "checks\n"
+         " --stop_on_errors  Request test termination after a detected "
+         "miscompare.\n"
+         " --error-log-limit n  limit detailed memory miscompare logs\n"
          " --read-block-size     size of block for reading (-d)\n"
          " --write-block-size    size of block for writing (-d). If not "
          "defined, the size of block for writing will be defined as the "
@@ -1302,7 +1933,7 @@ void Sat::PrintHelp() {
          " --cpu_freq_round round the computed frequency to this value, if set"
          " to zero, only round to the nearest MHz\n"
          " --paddr_base     allocate memory starting from this address\n"
-         " --pause_delay    delay (in seconds) between power spikes\n"
+         " --pause_delay    positive delay (in seconds) between power spikes\n"
          " --pause_duration duration (in seconds) of each pause\n"
          " --no_affinity    do not set any cpu affinity\n"
          " --local_numa     choose memory regions associated with "
@@ -1646,9 +2277,9 @@ int Sat::ReadInt(const char *filename, int *value) {
   return err;
 }
 
-// Submit one fixed DDR frequency through Qualcomm's AOSS debugfs message
-// interface. A successful write records the selected frequency so
-// memory errors can capture it at the time of the first mismatching read.
+// 설정된 kernel interface에 고정 DDR 주파수 요청을 전달합니다. Write가
+// 성공하면 마지막 성공 요청값으로 저장합니다. 실제 적용 주파수는 대상
+// 시스템의 계측값으로 확인합니다.
 bool Sat::ApplyDramFrequency(int frequency) {
   char message[128];
   int message_length = snprintf(message, sizeof(message),
@@ -1700,9 +2331,187 @@ bool Sat::ApplyDramFrequency(int frequency) {
   }
 
   current_dram_frequency_.store(frequency, std::memory_order_release);
-  logprintf(5, "Log: DDR_FREQ write=%d monotonic_us=%lld node=%s\n",
-            frequency, sat_get_time_us(), dram_frequency_node_.c_str());
+  uint64 epoch = dram_frequency_epoch_.fetch_add(
+      1, std::memory_order_acq_rel) + 1;
+  logprintf(5,
+            "Log: DDR_FREQ write=%d epoch=%llu monotonic_us=%lld node=%s\n",
+            frequency, epoch, sat_get_time_us(),
+            dram_frequency_node_.c_str());
   return true;
+}
+
+// 한 SAT 작업 단위에서 추적하는 write 작업이 완료된 뒤 provenance를
+// 갱신합니다. Invert legacy는 선택 범위 완료를 기록합니다.
+// Queue가 같은 작업 단위를 한 Worker에만 전달하므로 별도 hot-path lock을
+// 사용하지 않습니다. 옵션 비활성 시에는 배열 접근과 시간 확인을 생략합니다.
+void Sat::RecordBlockWrite(uint64 page_offset,
+                           BlockWriter writer,
+                           int writer_thread,
+                           int writer_cpu,
+                           uint64 frequency_epoch_begin,
+                           uint64 frequency_epoch_end) {
+  if (!diag_block_history_ || !block_history_ || page_length_ <= 0)
+    return;
+  uint64 block = page_offset / page_length_;
+  if (block >= static_cast<uint64>(pages_))
+    return;
+
+  BlockHistory *history = &block_history_[block];
+  history->generation++;
+  history->write_complete_us = sat_get_time_us();
+  history->frequency_epoch_begin = frequency_epoch_begin;
+  history->frequency_epoch_end = frequency_epoch_end;
+  history->writer_thread = writer_thread;
+  history->writer_cpu = writer_cpu;
+  history->writer = writer;
+}
+
+// 오류가 발생한 SAT 작업 단위의 마지막 추적 write 정보를 구성합니다.
+bool Sat::FormatBlockHistory(uint64 page_offset,
+                             char *buffer,
+                             size_t buffer_size) const {
+  if (!diag_block_history_ || !block_history_ || !buffer ||
+      buffer_size == 0 || page_length_ <= 0) {
+    return false;
+  }
+  uint64 block = page_offset / page_length_;
+  if (block >= static_cast<uint64>(pages_))
+    return false;
+
+  const BlockHistory *history = &block_history_[block];
+  const char *writer = "unknown";
+  switch (history->writer) {
+    case BLOCK_WRITER_PRESET: writer = "preset"; break;
+    case BLOCK_WRITER_INITIAL_FILL: writer = "initial_fill"; break;
+    case BLOCK_WRITER_COPY: writer = "copy"; break;
+    case BLOCK_WRITER_INVERT: writer = "invert"; break;
+    case BLOCK_WRITER_REPAIR: writer = "repair"; break;
+    case BLOCK_WRITER_FILE: writer = "file"; break;
+    case BLOCK_WRITER_NETWORK: writer = "network"; break;
+    case BLOCK_WRITER_UNKNOWN: break;
+  }
+
+  int64 age_us = history->write_complete_us >= 0
+      ? sat_get_time_us() - history->write_complete_us
+      : -1;
+  const char *frequency_span =
+      history->frequency_epoch_begin == history->frequency_epoch_end
+          ? "single" : "mixed";
+  snprintf(buffer, buffer_size,
+           "last_writer:%s,generation:%llu,writer_thread:%d,writer_cpu:%d,"
+           "write_age_us:%lld,freq_epoch_begin:%llu,freq_epoch_end:%llu,"
+           "freq_span:%s",
+           writer, history->generation, history->writer_thread,
+           history->writer_cpu, age_us,
+           history->frequency_epoch_begin, history->frequency_epoch_end,
+           frequency_span);
+  return true;
+}
+
+// Worker 종료 후 local 통계를 합산합니다. Worker당 한 번만 호출되므로
+// 작업 단위 hot loop에서는 전역 lock과 atomic counter를 사용하지 않습니다.
+void Sat::MergeDiagnosticPhaseStats(const DiagnosticPhaseStats *stats,
+                                    int count) {
+  if (!diag_phase_summary_ || !stats)
+    return;
+  sat_assert(0 == pthread_mutex_lock(&diagnostic_stats_lock_));
+  const int limit = count < DIAG_PHASE_COUNT ? count : DIAG_PHASE_COUNT;
+  for (int i = 0; i < limit; ++i) {
+    DiagnosticPhaseStats *total = &diagnostic_phase_stats_[i];
+    total->blocks += stats[i].blocks;
+    total->read_bytes += stats[i].read_bytes;
+    total->write_bytes += stats[i].write_bytes;
+    total->checksum_mismatch_regions += stats[i].checksum_mismatch_regions;
+    total->word_mismatches += stats[i].word_mismatches;
+    if (stats[i].first_error_us >= 0 &&
+        (total->first_error_us < 0 ||
+         stats[i].first_error_us < total->first_error_us)) {
+      total->first_error_us = stats[i].first_error_us;
+      total->first_error_epoch = stats[i].first_error_epoch;
+      total->first_error_worker_bytes =
+          stats[i].first_error_worker_bytes;
+    }
+  }
+  sat_assert(0 == pthread_mutex_unlock(&diagnostic_stats_lock_));
+}
+
+// 단계별 처리 block과 논리 read/write 양을 한 번씩 출력합니다.
+// first_error_worker_bytes는 가장 먼저 오류를 보고한 Worker가 같은 phase에서
+// 오류 작업 단위를 시작하기 전에 완료한 논리 byte 수입니다.
+void Sat::PrintDiagnosticPhaseSummary() {
+  if (!diag_phase_summary_)
+    return;
+  for (int i = 0; i < DIAG_PHASE_COUNT; ++i) {
+    const DiagnosticPhaseStats *stats = &diagnostic_phase_stats_[i];
+    if (stats->blocks == 0 && stats->checksum_mismatch_regions == 0 &&
+        stats->word_mismatches == 0) {
+      continue;
+    }
+    logprintf(5,
+              "Log: DIAG_SUMMARY phase=%s blocks=%llu read_bytes=%llu "
+              "write_bytes=%llu checksum_mismatch_regions=%llu "
+              "word_mismatches=%llu first_error_us=%lld "
+              "first_error_epoch=%llu first_error_worker_bytes=%llu\n",
+              DiagnosticPhaseName(static_cast<DiagnosticPhase>(i)),
+              stats->blocks, stats->read_bytes, stats->write_bytes,
+              stats->checksum_mismatch_regions, stats->word_mismatches,
+              stats->first_error_us, stats->first_error_epoch,
+              stats->first_error_worker_bytes);
+  }
+}
+
+// 실행 단계 경계의 VM 상태를 한 줄로 기록합니다. 이 함수는
+// --diag-vm-stats가 없으면 syscall과 /proc 접근 없이 즉시 반환합니다.
+void Sat::LogVmStats(const char *phase) {
+  if (!diag_vm_stats_)
+    return;
+
+  struct rusage usage;
+  const bool have_usage = getrusage(RUSAGE_SELF, &usage) == 0;
+  int64 minor_faults = have_usage ? usage.ru_minflt : -1;
+  int64 major_faults = have_usage ? usage.ru_majflt : -1;
+  int64 minor_delta =
+      have_usage && vm_stats_last_minor_faults_ >= 0
+          ? minor_faults - vm_stats_last_minor_faults_
+          : -1;
+  int64 major_delta =
+      have_usage && vm_stats_last_major_faults_ >= 0
+          ? major_faults - vm_stats_last_major_faults_
+          : -1;
+  if (have_usage) {
+    vm_stats_last_minor_faults_ = minor_faults;
+    vm_stats_last_major_faults_ = major_faults;
+  }
+
+  int64 max_rss_kb = have_usage ? usage.ru_maxrss : -1;
+#if defined(__APPLE__)
+  // macOS getrusage()의 ru_maxrss 단위는 byte입니다.
+  if (max_rss_kb >= 0)
+    max_rss_kb /= 1024;
+#endif
+
+  const int64 vm_rss_kb =
+      ReadProcKbTotal("/proc/self/status", "VmRSS:");
+  int64 anon_huge_kb =
+      ReadProcKbTotal("/proc/self/smaps_rollup", "AnonHugePages:");
+  if (anon_huge_kb < 0)
+    anon_huge_kb = ReadProcKbTotal("/proc/self/smaps", "AnonHugePages:");
+  long os_page_size = sysconf(_SC_PAGESIZE);
+
+  logprintf(5,
+            "Log: DIAG_VM phase=%s monotonic_us=%lld backend=%s "
+            "mapping=%s os_page_bytes=%ld minor_faults=%lld "
+            "minor_delta=%lld major_faults=%lld major_delta=%lld "
+            "vm_rss_kb=%lld max_rss_kb=%lld anon_huge_kb=%lld "
+            "voluntary_cs=%lld involuntary_cs=%lld\n",
+            phase, sat_get_time_us(),
+            os_ ? os_->test_memory_backend() : "unknown",
+            os_ && os_->dynamic_test_mapping() ? "dynamic" : "static",
+            os_page_size,
+            minor_faults, minor_delta, major_faults, major_delta,
+            vm_rss_kb, max_rss_kb, anon_huge_kb,
+            have_usage ? static_cast<int64>(usage.ru_nvcsw) : -1,
+            have_usage ? static_cast<int64>(usage.ru_nivcsw) : -1);
 }
 
 // Return the worst case (largest) cache line size of the various levels of
@@ -1753,35 +2562,55 @@ void Sat::JoinThreads() {
   ReleaseWorkerLock();
 
   QueueStats();
+  LogVmStats("runtime");
 
-  // Finish up result checking.
-  // Spawn 4 check threads to minimize check time.
+  // Runtime 종료 시점에 Valid queue에 남은 작업 단위를 검사할 Worker를
+  // 생성합니다. 옵션 미지정 실행은 기존 코드와 같이 Fill Worker 수를
+  // 사용하고, --final-check-threads를 명시한 실행만 지정값을 사용합니다.
   logprintf(12, "Log: Finished countdown, begin to result check\n");
   WorkerStatus reap_check_status;
   WorkerVector reap_check_vector;
+  const bool final_check_enabled =
+      !monitor_mode_ && !skip_final_check_ && !error_stop_requested();
 
-  // No need for check threads for monitor mode.
-  if (!monitor_mode_) {
+  // monitor mode, 명시적 생략 또는 오류 종료 요청에서는 종료 검사 Worker를
+  // 생성하지 않습니다. 오류 종료 뒤의 추가 mismatch 로그를 제한합니다.
+  if (final_check_enabled) {
+    const int reap_check_threads =
+        final_check_threads_explicit_ ? final_check_threads_ : fill_threads_;
     // Initialize the check threads.
-    for (int i = 0; i < fill_threads_; i++) {
+    for (int i = 0; i < reap_check_threads; i++) {
       CheckThread *thread = new CheckThread();
       thread->InitThread(total_threads_++, this, os_, patternlist_,
                          &reap_check_status);
+      thread->SetCheckPhase("final_check");
       logprintf(12, "Log: Finished countdown, begin to result check\n");
       reap_check_vector.push_back(thread);
     }
+  } else if (skip_final_check_ || error_stop_requested()) {
+    logprintf(5, "Log: DIAG phase=final_check_skipped reason=%s\n",
+              error_stop_requested() ? "stop_on_errors" : "option");
   }
 
   reap_check_status.Initialize();
   // Check threads should be marked to stop ASAP.
   reap_check_status.StopWorkers();
 
-  // Spawn the check threads.
+  // 생성에 성공한 종료 검사 Worker만 join 대상에 남깁니다.
+  WorkerVector spawned_reap_check_vector;
   for (WorkerVector::const_iterator it = reap_check_vector.begin();
        it != reap_check_vector.end(); ++it) {
     logprintf(12, "Log: Spawning thread %d\n", (*it)->ThreadID());
-    (*it)->SpawnThread();
+    if ((*it)->SpawnThread()) {
+      spawned_reap_check_vector.push_back(*it);
+    } else {
+      (*it)->RemoveUnspawnedWorker();
+      delete (*it);
+      bad_status();
+    }
   }
+  reap_check_vector.swap(spawned_reap_check_vector);
+  spawned_reap_check_vector.clear();
 
   // Join the check threads.
   for (WorkerVector::const_iterator it = reap_check_vector.begin();
@@ -1842,11 +2671,20 @@ void Sat::JoinThreads() {
   }
   reap_check_vector.clear();
   reap_check_status.Destroy();
+  LogVmStats(final_check_enabled ? "final_check" : "final_check_skipped");
 }
 
 // Print queuing information.
 void Sat::QueueStats() {
-  finelock_q_->QueueAnalysis();
+  if (pe_q_implementation_ == SAT_FINELOCK && finelock_q_) {
+    finelock_q_->QueueAnalysis();
+    return;
+  }
+
+  // OneLock queue에는 FineLock 전용 touch/tries histogram이 없습니다.
+  // 통계 부재를 정상 상태로 기록하고 null queue를 역참조하지 않습니다.
+  logprintf(12,
+            "Log: Queue histogram unavailable for coarse-grain queue\n");
 }
 
 void Sat::AnalysisAllStats() {
@@ -2020,7 +2858,7 @@ void Sat::RunAnalysis() {
 
 // Get total error count, summing across all threads..
 int64 Sat::GetTotalErrorCount() {
-  int64 errors = 0;
+  int64 errors = initialization_errorcount_;
 
   AcquireWorkerLock();
   for (WorkerMap::const_iterator map_it = workers_map_.begin();
@@ -2035,7 +2873,8 @@ int64 Sat::GetTotalErrorCount() {
 }
 
 
-void Sat::SpawnThreads() {
+bool Sat::SpawnThreads() {
+  bool result = true;
   logprintf(12, "Log: Initializing WorkerStatus objects\n");
   power_spike_status_.Initialize();
   continuous_status_.Initialize();
@@ -2045,9 +2884,16 @@ void Sat::SpawnThreads() {
     for (WorkerVector::const_iterator it = map_it->second->begin();
          it != map_it->second->end(); ++it) {
       logprintf(12, "Log: Spawning thread %d\n", (*it)->ThreadID());
-      (*it)->SpawnThread();
+      if (!(*it)->SpawnThread()) {
+        // 생성되지 않은 Worker가 pause barrier 수에 남지 않도록
+        // InitThread()에서 등록한 수를 즉시 복원합니다.
+        (*it)->RemoveUnspawnedWorker();
+        bad_status();
+        result = false;
+      }
     }
   }
+  return result;
 }
 
 // Delete used worker thread objects.
@@ -2088,7 +2934,24 @@ inline time_t NextOccurance(time_t frequency, time_t start, time_t now) {
 
 // Run the actual test.
 bool Sat::Run() {
+  // 초기 Fill 또는 post-fill 검사에서 첫 오류가 검출된 경우 Runtime Worker를
+  // 생성하지 않습니다. 초기 단계에서 누적한 오류 수는 최종 결과에 반영합니다.
+  if (error_stop_requested()) {
+    errorcount_ = GetTotalErrorCount();
+    logprintf(5,
+              "Log: DIAG phase=runtime_skipped reason=stop_on_errors "
+              "errors=%lld\n",
+              errorcount_);
+    logprintf(5,
+              "Log: DIAG phase=final_check_skipped reason=stop_on_errors\n");
+    LogVmStats("runtime_skipped");
+    PrintDiagnosticPhaseSummary();
+    return true;
+  }
+
   size_t dram_frequency_index = 0;
+  // Runtime 시작 직전에 첫 요청값을 다시 전달합니다. Sweep은 이 시점을
+  // 기준으로 --ddr-step 간격마다 다음 목록 값으로 이동합니다.
   if (!dram_frequencies_.empty() &&
       !ApplyDramFrequency(dram_frequencies_[dram_frequency_index])) {
     bad_status();
@@ -2127,7 +2990,7 @@ bool Sat::Run() {
   // Kick off all the worker threads.
   logprintf(12, "Log: Launching worker threads\n");
   InitializeThreads();
-  SpawnThreads();
+  bool run_ok = SpawnThreads();
   pthread_sigmask(SIG_SETMASK, &prev_blocked_signals, NULL);
 
   logprintf(12, "Log: Starting countdown with %d seconds\n", runtime_seconds_);
@@ -2156,15 +3019,16 @@ bool Sat::Run() {
     next_injection = 0;
   }
 
-  bool run_ok = true;
-  while (now < end) {
+  // 생성 실패 시 이미 생성된 Worker를 즉시 정지하고 회수합니다.
+  while (run_ok && now < end) {
     // This is an int because it's for logprintf().
     const int seconds_remaining = end - now;
 
-    if (user_break_) {
+    if (user_break_ || error_stop_requested()) {
       // Handle early exit.
-      logprintf(0, "Log: User exiting early (%d seconds remaining)\n",
-                seconds_remaining);
+      logprintf(0, "Log: Exiting early (%d seconds remaining), reason=%s\n",
+                seconds_remaining,
+                error_stop_requested() ? "stop_on_errors" : "signal");
       break;
     }
 
@@ -2198,6 +3062,7 @@ bool Sat::Run() {
     }
 
     if (next_dram_frequency && now >= next_dram_frequency) {
+      // 두 번째 값부터 목록 끝까지 이동한 후 첫 값으로 돌아갑니다.
       dram_frequency_index =
           (dram_frequency_index + 1) % dram_frequencies_.size();
       if (!ApplyDramFrequency(dram_frequencies_[dram_frequency_index])) {
@@ -2234,6 +3099,7 @@ bool Sat::Run() {
   }
 
   JoinThreads();
+  PrintDiagnosticPhaseSummary();
 
   logprintf(0, "Stats: Found %lld hardware incidents\n", errorcount_);
 
@@ -2286,6 +3152,10 @@ bool Sat::Cleanup() {
     delete finelock_q_;
     finelock_q_ = 0;
   }
+  if (block_history_) {
+    delete[] block_history_;
+    block_history_ = NULL;
+  }
   if (page_bitmap_) {
     delete[] page_bitmap_;
   }
@@ -2309,6 +3179,7 @@ bool Sat::Cleanup() {
   }
 
   sat_assert(0 == pthread_mutex_destroy(&worker_lock_));
+  sat_assert(0 == pthread_mutex_destroy(&diagnostic_stats_lock_));
 
   return true;
 }
@@ -2317,6 +3188,15 @@ bool Sat::Cleanup() {
 // Pretty print really obvious results.
 bool Sat::PrintResults() {
   bool result = true;
+
+  if (error_log_limit_ >= 0) {
+    logprintf(5,
+              "Log: DIAG_ERROR_LOG limit=%lld detailed=%llu "
+              "suppressed=%llu\n",
+              error_log_limit_,
+              error_log_detailed_.load(std::memory_order_acquire),
+              error_log_suppressed_.load(std::memory_order_acquire));
+  }
 
   logprintf(4, "\n");
   if (statuscount_) {

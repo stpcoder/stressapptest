@@ -47,6 +47,36 @@ struct cc_cacheline_data {
   char *num;
 };
 
+// Memory 진단 단계별 처리량을 Worker local counter로 수집합니다.
+// 전역 합산은 Worker 종료 후 한 번만 수행하여 hot loop의 lock을 피합니다.
+enum DiagnosticPhase {
+  DIAG_PHASE_PRESET_FILL = 0,
+  DIAG_PHASE_INITIAL_FILL,
+  DIAG_PHASE_FILL_IMMEDIATE_CHECK,
+  DIAG_PHASE_POST_FILL_CHECK,
+  DIAG_PHASE_COPY_TRANSFER,
+  DIAG_PHASE_COPY_DESTINATION_CHECK,
+  DIAG_PHASE_INVERT_PRECHECK,
+  DIAG_PHASE_INVERT_RMW,
+  DIAG_PHASE_INVERT_POSTCHECK,
+  DIAG_PHASE_RUNTIME_CHECK,
+  DIAG_PHASE_FINAL_CHECK,
+  DIAG_PHASE_COUNT
+};
+
+struct DiagnosticPhaseStats {
+  uint64 blocks;
+  uint64 read_bytes;
+  uint64 write_bytes;
+  uint64 checksum_mismatch_regions;
+  uint64 word_mismatches;
+  int64 first_error_us;
+  uint64 first_error_epoch;
+  uint64 first_error_worker_bytes;
+};
+
+const char *DiagnosticPhaseName(DiagnosticPhase phase);
+
 // Typical usage:
 // (Other workflows may be possible, see function comments for details.)
 // - Control thread creates object.
@@ -221,13 +251,16 @@ class WorkerThread {
 
   // This function is DEPRECATED, it does nothing.
   void SetPriority(Priority priority) { priority_ = priority; }
-  // Spawn the worker thread, by running Work().
-  int SpawnThread();
+  // Work()를 실행할 pthread를 생성합니다. 생성 성공 여부를 반환합니다.
+  bool SpawnThread();
+  // pthread 생성 실패 시 InitThread()가 등록한 Worker 수를 복원합니다.
+  // WorkerStatus::Initialize() 이후, 실패한 Worker에 한 번만 호출합니다.
+  void RemoveUnspawnedWorker();
   // Only for ThreadSpawnerGeneric().
   void StartRoutine();
   bool InitPriority();
 
-  // Wait for the thread to complete its cleanup.
+  // 생성된 pthread가 정리될 때까지 기다립니다. 생성 실패 Worker는 건너뜁니다.
   virtual bool JoinThread();
   // Kill worker thread with SIGINT.
   virtual bool KillThread();
@@ -324,21 +357,32 @@ class WorkerThread {
                           int64 length,
                           int offset,
                           int64 patternoffset,
-                          int write_dram_frequency = -1);
+                          int write_dram_frequency = -1,
+                          const char *worker_name = "unknown",
+                          const char *phase = "unknown",
+                          uint64 sat_page_offset = ~static_cast<uint64>(0));
 
   // Fast compare a block of memory.
-  virtual int CrcCheckPage(struct page_entry *srcpe);
+  virtual int CrcCheckPage(struct page_entry *srcpe,
+                           const char *worker_name = "unknown",
+                           const char *phase = "unknown");
 
   // Fast copy a block of memory, while verifying correctness.
   virtual int CrcCopyPage(struct page_entry *dstpe,
-                          struct page_entry *srcpe);
+                          struct page_entry *srcpe,
+                          const char *worker_name = "copy",
+                          const char *phase = "source_check");
 
   // Fast copy a block of memory, while verifying correctness, and heating CPU.
   virtual int CrcWarmCopyPage(struct page_entry *dstpe,
-                              struct page_entry *srcpe);
+                              struct page_entry *srcpe,
+                              const char *worker_name = "copy",
+                              const char *phase = "source_check");
 
-  // Fill a page with its specified pattern.
+  // SAT 작업 단위 전체에 pe가 가리키는 Pattern을 기록합니다.
   virtual bool FillPage(struct page_entry *pe);
+  // SAT 작업 단위 전체에 지정한 64-bit 값을 기록합니다.
+  virtual bool FillPageWithConstant(struct page_entry *pe, uint64 value);
 
   // Copy with address tagging.
   virtual bool AdlerAddrMemcpyC(uint64 *dstmem64,
@@ -373,6 +417,17 @@ class WorkerThread {
 
   // A worker thread can yield itself to give up CPU until it's scheduled again
   bool YieldSelf();
+  // 선택형 phase summary의 Worker local counter를 갱신합니다.
+  void RecordDiagnosticOperation(DiagnosticPhase phase,
+                                 uint64 read_bytes,
+                                 uint64 write_bytes,
+                                 int errors);
+  void RecordDiagnosticChecksumMismatch(DiagnosticPhase phase);
+  // 실제 word mismatch를 처음 확인한 시점과 DDR 요청 세대를 기록합니다.
+  void RecordDiagnosticFirstError(DiagnosticPhase phase);
+  DiagnosticPhase GetDiagnosticPhase(const char *worker_name,
+                                     const char *phase) const;
+  void PublishDiagnosticStats();
 
  protected:
   // General state variables that all subclasses need.
@@ -393,6 +448,9 @@ class WorkerThread {
   // Function passed to pthread_create.
   void *(*thread_spawner_)(void *args);
   pthread_t thread_;                // Pthread thread ID.
+  bool spawned_;                    // pthread_create() 성공 여부.
+  DiagnosticPhaseStats *diagnostic_phase_stats_;
+  bool diagnostic_stats_published_;
   Priority priority_;               // Worker thread priority.
   class Sat *sat_;                  // Reference to parent stest object.
   class OsLayer *os_;               // Os abstraction: put hacks here.
@@ -522,14 +580,20 @@ class NetworkThread : public WorkerThread {
 class NetworkSlaveThread : public NetworkThread {
  public:
   NetworkSlaveThread();
+  virtual ~NetworkSlaveThread();
   // Set socket for IO.
   virtual void SetSock(int sock);
+  // Listener 종료 시 blocking send/recv를 깨우기 위해 socket 통신을 종료합니다.
+  virtual void ShutdownSocket();
+  // 소유한 socket을 한 번만 닫고 descriptor를 무효화합니다.
+  virtual void CloseOwnedSocket();
   virtual bool Work();
 
  protected:
   virtual bool IsNetworkStopSet();
 
  private:
+  pthread_mutex_t socket_lock_;
   DISALLOW_COPY_AND_ASSIGN(NetworkSlaveThread);
 };
 
@@ -541,7 +605,8 @@ class NetworkListenThread : public NetworkThread {
 
  private:
   virtual bool Listen();
-  virtual bool Wait();
+  // 1은 연결 준비, 0은 timeout, -1은 select 오류를 나타냅니다.
+  virtual int Wait();
   virtual bool GetConnection(int *pnewsock);
   virtual bool SpawnSlave(int newsock, int threadid);
   virtual bool ReapSlaves();
@@ -573,15 +638,15 @@ class CopyThread : public WorkerThread {
 // Worker thread to perform Memory Invert.
 class InvertThread : public WorkerThread {
  public:
-  InvertThread() {}
+  InvertThread() : bytes_processed_(0) {}
   virtual bool Work();
-  // Calculate worker thread specific bandwidth.
-  virtual float GetMemoryCopiedData()
-    {return GetCopiedData()*4;}
+  // 네 번의 read-modify-write에서 실제로 처리한 byte 수를 반환합니다.
+  virtual float GetMemoryCopiedData();
 
  private:
   virtual int InvertPageUp(struct page_entry *srcpe);
   virtual int InvertPageDown(struct page_entry *srcpe);
+  int64 bytes_processed_;
   DISALLOW_COPY_AND_ASSIGN(InvertThread);
 };
 
@@ -589,30 +654,51 @@ class InvertThread : public WorkerThread {
 class FillThread : public WorkerThread {
  public:
   FillThread();
-  // Set how many pages this thread should fill before exiting.
+  // 이 Worker가 처리할 SAT 작업 단위 수와 사전 채움 여부를 설정합니다.
   virtual void SetFillPages(int64 num_pages_to_fill_init);
+  void SetPresetOnly(bool preset_only) { preset_only_ = preset_only; }
   virtual bool Work();
 
  private:
   // Fill a page with the data pattern in pe->pattern.
   virtual bool FillPageRandom(struct page_entry *pe);
   int64 num_pages_to_fill_;
+  bool preset_only_;
   DISALLOW_COPY_AND_ASSIGN(FillThread);
 };
 
-// Worker thread to verify page data matches pattern data.
-// Thread will check and replace pages until "done" flag is set,
-// then it will check and discard pages until no more remain.
+// Runtime에서는 Valid 작업 단위를 반복 검사합니다. 기본 종료 정책은
+// STOP 이후 남은 Valid 작업 단위를 검사하여 Empty로 옮깁니다. 명시형
+// 종료 정책과 생략 정책은 보유 작업 단위를 Valid로 반환하고 종료합니다.
+// stop_on_errors 요청도 보유 작업 단위를 Valid로 반환합니다.
+// final_check 단계는 남은 Valid 작업 단위를 검사하여 Empty로 옮깁니다.
 class CheckThread : public WorkerThread {
  public:
-  CheckThread() {}
+  CheckThread() : check_phase_("runtime_check") {}
   virtual bool Work();
+  // 같은 CheckThread 구현을 Runtime 검사와 종료 검사에서 구분합니다.
+  void SetCheckPhase(const string &phase) { check_phase_ = phase; }
   // Calculate worker thread specific bandwidth.
   virtual float GetMemoryCopiedData()
     {return GetCopiedData();}
 
  private:
+  string check_phase_;
   DISALLOW_COPY_AND_ASSIGN(CheckThread);
+};
+
+
+// Runtime용 Valid·Empty 상태를 구성하기 전에 초기 Fill 결과를 검사하는
+// 단발성 Worker입니다. --stop_on_errors 요청 시 현재 작업 단위 후 종료합니다.
+class PostFillCheckThread : public WorkerThread {
+ public:
+  PostFillCheckThread() : pages_to_check_(0) {}
+  void SetPagesToCheck(int64 pages) { pages_to_check_ = pages; }
+  virtual bool Work();
+
+ private:
+  int64 pages_to_check_;
+  DISALLOW_COPY_AND_ASSIGN(PostFillCheckThread);
 };
 
 
@@ -730,6 +816,10 @@ class DiskThread : public WorkerThread {
 
   // Main work loop.
   virtual bool DoWork(int fd);
+
+  // 종료 또는 I/O 실패 시 writer가 보유한 block reference를 table에서
+  // 제거하여 다음 Worker와 종료 정리 경로에 남기지 않습니다.
+  virtual bool RemoveInFlightBlocks();
 
   int read_block_size_;       // Size of blocks read from disk, in bytes.
   int write_block_size_;      // Size of blocks written to disk, in bytes.

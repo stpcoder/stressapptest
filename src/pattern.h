@@ -55,13 +55,28 @@ class Pattern {
   int Initialize(const struct PatternData &pattern_init,
                  int buswidth,
                  bool invert,
-                 int weight);
+                 int weight,
+                 unsigned int byte_offset);
 
-  // Access data members.
-  // "busshift_" allows for repeating each pattern word 1, 2, 4, etc. times.
-  // in order to create patterns of different width.
+  // Pattern byte offset이 0인 Fill에서 주소의 Pattern 값을 계산합니다.
+  // Word offset 덧셈을 생략하여 기존 Fill 계산 경로를 유지합니다.
+  unsigned int pattern_unshifted(unsigned int offset) {
+    unsigned int data =
+        pattern_->pat[(offset >> busshift_) & pattern_->mask];
+    if (inverse_)
+      data = ~data;
+    return data;
+  }
+
+  // offset은 SAT 작업 단위 시작점부터 계산한 32-bit word 번호입니다.
+  // 256-bit Pattern의 busshift_ 값은 3이므로 Pattern 배열의 한 원소를
+  // 8개 word, 즉 32 byte 동안 반복합니다. Fill은 두 word를 묶어 한 번의
+  // 64-bit store를 수행합니다. 설정된 byte offset도 word 번호에 반영합니다.
   unsigned int pattern(unsigned int offset) {
-    unsigned int data = pattern_->pat[(offset >> busshift_) & pattern_->mask];
+    if (word_offset_ == 0)
+      return pattern_unshifted(offset);
+    unsigned int data = pattern_->pat[
+        ((offset + word_offset_) >> busshift_) & pattern_->mask];
     if (inverse_)
       data = ~data;
     return data;
@@ -69,12 +84,14 @@ class Pattern {
   const AdlerChecksum *crc() {return crc_;}
   unsigned int mask() {return pattern_->mask;}
   unsigned int weight() {return weight_;}
+  unsigned int byte_offset() {return word_offset_ * sizeof(unsigned int);}
   const char *name() {return name_.c_str();}
 
  private:
   int CalculateCrc();
   const struct PatternData *pattern_;
   int busshift_;        // Target data bus width.
+  unsigned int word_offset_;  // Pattern 시작 위치를 나타내는 32-bit word 수.
   bool inverse_;        // Invert the data from the original pattern.
   AdlerChecksum *crc_;  // CRC of this pattern.
   string name_;         // The human readable pattern name.
@@ -93,11 +110,17 @@ class PatternList {
   int Initialize();
   int Destroy();
 
+  // 모든 Pattern의 시작 위치를 byte 단위로 이동합니다. Initialize() 전에
+  // 호출해야 하며 입력값은 32-bit Pattern word 경계에 정렬되어야 합니다.
+  void SetByteOffset(unsigned int byte_offset) {
+    pattern_byte_offset_ = byte_offset;
+  }
+
   // Return the pattern designated by index i.
   Pattern *GetPattern(int i);
-  // Select patterns by zero-based ID or exact name, in comma-separated order.
+  // 쉼표로 구분한 0 기반 ID 또는 전체 이름을 입력 순서대로 등록합니다.
   bool SetPatternSequence(const string &selectors);
-  // Return a random pattern according to the specified weighted probability.
+  // 선택 목록이 있으면 순서대로 순환하고, 목록이 없으면 가중치로 선택합니다.
   Pattern *GetRandomPattern();
   // Return the number of patterns available.
   int Size() {return size_;}
@@ -109,6 +132,7 @@ class PatternList {
   int initialized_;
   vector<int> selected_pattern_ids_;
   std::atomic<unsigned int> selected_pattern_cursor_;
+  unsigned int pattern_byte_offset_;
   DISALLOW_COPY_AND_ASSIGN(PatternList);
 };
 

@@ -290,11 +290,13 @@ int Pattern::CalculateCrc() {
 int Pattern::Initialize(const struct PatternData &pattern_init,
                         int buswidth,
                         bool invert,
-                        int weight) {
+                        int weight,
+                        unsigned int byte_offset) {
   int result = 1;
 
   pattern_ = &pattern_init;
   busshift_ = 2;
+  word_offset_ = byte_offset / sizeof(unsigned int);
   inverse_ = invert;
   weight_ = weight;
 
@@ -333,7 +335,8 @@ PatternList::PatternList()
     : weightcount_(0),
       size_(0),
       initialized_(0),
-      selected_pattern_cursor_(0) {}
+      selected_pattern_cursor_(0),
+      pattern_byte_offset_(0) {}
 
 PatternList::~PatternList() {
   if (initialized_) {
@@ -351,30 +354,38 @@ int PatternList::Initialize() {
     // Non inverted.
     weightcount += pattern_array[i].weight[0];
     patterns_[patterncount++].Initialize(pattern_array[i], 32, false,
-                                         pattern_array[i].weight[0]);
+                                         pattern_array[i].weight[0],
+                                         pattern_byte_offset_);
     weightcount += pattern_array[i].weight[1];
     patterns_[patterncount++].Initialize(pattern_array[i], 64, false,
-                                         pattern_array[i].weight[1]);
+                                         pattern_array[i].weight[1],
+                                         pattern_byte_offset_);
     weightcount += pattern_array[i].weight[2];
     patterns_[patterncount++].Initialize(pattern_array[i], 128, false,
-                                         pattern_array[i].weight[2]);
+                                         pattern_array[i].weight[2],
+                                         pattern_byte_offset_);
     weightcount += pattern_array[i].weight[3];
     patterns_[patterncount++].Initialize(pattern_array[i], 256, false,
-                                         pattern_array[i].weight[3]);
+                                         pattern_array[i].weight[3],
+                                         pattern_byte_offset_);
 
     // Inverted.
     weightcount += pattern_array[i].weight[0];
     patterns_[patterncount++].Initialize(pattern_array[i], 32, true,
-                                         pattern_array[i].weight[0]);
+                                         pattern_array[i].weight[0],
+                                         pattern_byte_offset_);
     weightcount += pattern_array[i].weight[1];
     patterns_[patterncount++].Initialize(pattern_array[i], 64, true,
-                                         pattern_array[i].weight[1]);
+                                         pattern_array[i].weight[1],
+                                         pattern_byte_offset_);
     weightcount += pattern_array[i].weight[2];
     patterns_[patterncount++].Initialize(pattern_array[i], 128, true,
-                                         pattern_array[i].weight[2]);
+                                         pattern_array[i].weight[2],
+                                         pattern_byte_offset_);
     weightcount += pattern_array[i].weight[3];
     patterns_[patterncount++].Initialize(pattern_array[i], 256, true,
-                                         pattern_array[i].weight[3]);
+                                         pattern_array[i].weight[3],
+                                         pattern_byte_offset_);
   }
   size_ = patterncount;
   weightcount_ = weightcount;
@@ -409,8 +420,8 @@ Pattern *PatternList::GetPattern(int i) {
   return 0;
 }
 
-// Select patterns by zero-based numeric ID or pattern name. Multiple entries
-// are consumed in the same order as the comma-separated command-line list.
+// 0부터 시작하는 Pattern ID 또는 대소문자를 구분하지 않는 전체 이름을
+// 해석합니다. 여러 항목은 입력 순서대로 selected_pattern_ids_에 저장합니다.
 bool PatternList::SetPatternSequence(const string &selectors) {
   if (!initialized_ || selectors.empty())
     return false;
@@ -475,7 +486,10 @@ bool PatternList::SetPatternSequence(const string &selectors) {
   return true;
 }
 
-// Return a randomly selected pattern.
+// -P 목록이 있으면 동시 호출 사이의 전역 선택 순서에 따라 목록을
+// 순환합니다. Queue가 Empty 작업 단위를 무작위로 선택하므로 Fill Worker가
+// 한 개여도 각 Pattern과 논리 주소의 대응 순서는 고정되지 않습니다. 목록이
+// 없으면 가중치 기반 무작위 선택을 사용합니다.
 Pattern *PatternList::GetRandomPattern() {
   if (!selected_pattern_ids_.empty()) {
     unsigned int cursor = selected_pattern_cursor_.fetch_add(

@@ -45,7 +45,8 @@ struct page_entry {
   uint32 touch;  // Counter of the number of reads from this page.
   uint64 ts;     // Timestamp of the last read from this page.
   uint32 lastcpu; // Last CPU to write this page.
-  int write_dram_frequency;  // DDR value at the latest whole-page write.
+  // 최근 작업 단위 write pass 시작 시 저장된 마지막 성공 DDR 요청값.
+  int write_dram_frequency;
   class Pattern *lastpattern;  // Expected Pattern at last read.
 };
 

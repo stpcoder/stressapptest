@@ -1,6 +1,6 @@
 # 부하와 오류를 측정하는 방법
 
-Stressapptest의 출력은 프로그램이 논리적으로 처리한 데이터양을 보여줍니다. 실제 LPDDR 읽기·쓰기 데이터양과 명령 수를 확인하려면 CPU cache, SLC, NoC, DMC의 측정값을 함께 확인해야 합니다.
+Stressapptest의 출력은 프로그램이 논리적으로 처리한 데이터 양입니다. 실제 LPDDR 읽기·쓰기 데이터 양과 명령 수는 CPU cache, SLC, NoC와 DMC의 측정값으로 확인합니다.
 
 ## 어디에서 무엇을 측정하는가
 
@@ -92,7 +92,7 @@ Event 이름과 접근 권한은 kernel과 SoC에 따라 다릅니다. `cache-mi
 - 요청 장치별 측정이 가능하면 CPU·UFS·GPU 분리
 - slice/bank별 occupancy 또는 bandwidth
 
-L2 miss가 SLC hit로 완료되면 데이터는 SLC에서 반환되고 LPDDR read counter는 그대로 유지됩니다.
+L2 miss가 SLC hit로 완료되면 데이터는 SLC에서 반환됩니다. 해당 cache miss는 LPDDR read 요청을 추가하지 않습니다.
 
 ## NoC PMU
 
@@ -121,11 +121,11 @@ DMC는 LPDDR 명령을 직접 배치하므로 다음 counter를 LPDDR 부하 분
 - channel별 utilization
 - DMC clock/devfreq state
 
-명령 수 counter에서 데이터양을 계산할 때는 burst length, data width, rank·channel, 부분 쓰기, 압축, DBI와 ECC의 반영 방식을 확인합니다.
+명령 수 counter에서 데이터 양을 계산할 때는 burst length, data width, rank·channel, 부분 쓰기, 압축, DBI와 ECC의 반영 방식을 확인합니다.
 
-## 초기 쓰기·Worker 실행·마지막 검사 구분
+## 초기 쓰기·Worker 실행·종료 검사 구분
 
-`-s`는 Worker 실행 구간을 지정합니다. 초기 데이터 쓰기는 이 구간 전에, 마지막 전체 검사는 이 구간 후에 실행됩니다. Stressapptest 로그와 PMU 측정 시각을 맞춰 다음 작동 단계를 구분합니다.
+`-s`는 Runtime Worker 실행 구간을 지정합니다. 초기 데이터 쓰기는 이 구간 전에, 종료 시점의 Valid 검사는 이 구간 후에 실행됩니다. Stressapptest 로그와 PMU 측정 시각을 맞춰 다음 작동 단계를 구분합니다.
 
 ```text
 T0 프로그램 시작
@@ -136,7 +136,7 @@ T4 본 시험 Worker 시작
 T5 Worker 일시 정지
 T6 Worker 재시작
 T7 본 시험 Worker 종료
-T8 마지막 전체 검사 시작과 종료
+T8 종료 시점 Valid 검사 시작과 종료
 T9 프로그램 종료
 ```
 
@@ -156,7 +156,7 @@ T9 프로그램 종료
 | `--cc_test` | CPU 사이 쓰기 권한 이동 | Snoop과 ownership 요청 | DRAM bandwidth는 낮을 수 있음 |
 | `-C N` | 부동소수점 연산 | L1에 데이터가 남을 수 있음 | DRAM에 미치는 직접 영향이 작음 |
 
-## Physical address와 channel별 접근량 확인
+## 물리 주소와 channel별 접근량 확인
 
 `/proc/self/pagemap`과 `--memory_channel`은 주소를 분석하기 위한 프로그램의 추정값을 제공합니다. 실제 channel별 접근량은 channel별 DMC counter로 측정해야 합니다.
 
@@ -167,9 +167,9 @@ Channel별 DMC counter를 사용할 수 있으면 같은 명령을 여러 번 �
 
 - channel 0/1 read bytes 균형
 - Worker 수 증가에 따른 처리량 변화
-- Physical page 할당 상태에 따른 실행별 차이
+- 물리 페이지 할당 상태에 따른 실행별 차이
 
-Physical address에서 channel을 선택하는 규칙을 모르면 SAT block 주소만으로 channel 불균형의 원인을 확정하기 어렵습니다.
+물리 주소에서 channel을 선택하는 규칙을 모르면 SAT block 주소만으로 channel 불균형의 원인을 확정하기 어렵습니다.
 
 ## 최소 기록 항목
 

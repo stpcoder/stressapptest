@@ -1,10 +1,10 @@
 # 테스트 메모리 준비 과정
 
-stressapptest는 먼저 프로세스가 사용할 virtual memory 영역을 확보합니다. 이후 초기 데이터를 쓰는 과정에서 kernel이 실제 physical page를 연결합니다. 이 장에서는 테스트 메모리의 크기와 주소가 변환되는 과정을 설명합니다.
+stressapptest는 먼저 프로세스가 사용할 가상 메모리 영역을 확보합니다. 이후 초기 데이터를 쓰는 과정에서 kernel이 실제 물리 페이지를 연결합니다. 이 장에서는 테스트 메모리의 크기와 주소가 변환되는 과정을 설명합니다.
 
 ## 테스트할 메모리 크기 정하기
 
-`-M`의 기본값은 `OsLayer::FindFreeMemSize()`가 자동으로 계산합니다 (`src/os.cc:411`).
+`-M`의 기본값은 `src/os.cc`의 `OsLayer::FindFreeMemSize()`가 자동으로 계산합니다.
 
 일반 page를 사용하는 경우의 계산 기준은 다음과 같습니다.
 
@@ -13,19 +13,19 @@ stressapptest는 먼저 프로세스가 사용할 virtual memory 영역을 확�
 | 2 GiB 미만 | 전체 RAM의 약 85% |
 | 2 GiB 이상 | 전체 RAM의 약 95%에서 192 MiB를 뺀 크기 |
 
-로그에는 현재 available physical page 수도 표시됩니다. 자동 테스트 크기는 전체 RAM의 비율을 기준으로 계산합니다. 메모리 사용량이 큰 Android 기기에서는 메모리 할당 실패, swap·zram 사용 증가, LMKD 종료와 시스템 응답 저하가 발생할 수 있습니다.
+로그에는 현재 사용 가능한 물리 페이지 수도 표시됩니다. 자동 테스트 크기는 전체 RAM의 비율을 기준으로 계산합니다. 메모리 사용량이 큰 Android 기기에서는 메모리 할당 실패, swap·zram 사용 증가, LMKD 종료와 시스템 응답 저하가 발생할 수 있습니다.
 
-모바일 시험에서는 다음 명령 형식으로 `-M`을 명시한다.
+모바일 시험에서는 다음 명령 형식으로 `-M`을 명시합니다.
 
 ```bash
 stressapptest -M 512 -s 60 -m 4
 ```
 
-`--reserve_memory N`은 테스트 크기를 계산할 때 운영체제와 다른 프로그램이 사용할 메모리를 최소 N MiB 남깁니다. 실제 옵션 처리 코드는 밑줄이 있는 `--reserve_memory`를 인식합니다. 프로그램의 도움말에는 `--reserve-memory`로 표시되지만 실행 명령에는 `--reserve_memory`를 사용해야 합니다.
+`--reserve_memory N`은 테스트 크기를 계산할 때 운영체제와 다른 프로그램이 사용할 메모리를 최소 N MiB 남깁니다. 옵션 이름에는 밑줄을 사용합니다.
 
 ## 메모리 할당 방식
 
-`AllocateTestMem()`은 다음 순서로 메모리 할당을 시도합니다 (`src/os.cc:508`).
+`src/os.cc`의 `OsLayer::AllocateTestMem()`은 다음 순서로 메모리 할당을 시도합니다.
 
 1. 충분한 huge page가 있으면 SysV `SHM_HUGETLB`
 2. 32-bit 환경에서 큰 메모리가 필요하면 POSIX shared memory 또는 동적 매핑
@@ -41,7 +41,7 @@ mmap(NULL, length,
      -1, 0)
 ```
 
-이 메모리에는 운영체제가 정한 일반 cacheable userspace memory 속성이 적용됩니다. Physical page는 kernel page allocator가 배정하며 CPU access는 cache hierarchy를 통과합니다.
+이 메모리에는 운영체제가 정한 일반 cacheable userspace memory 속성이 적용됩니다. 물리 페이지는 kernel page allocator가 배정하며 CPU access는 cache hierarchy를 통과합니다.
 
 ### Android/Linux에서 사용하는 mmap 방식
 
@@ -60,12 +60,12 @@ if (!use_hugepages_ && !use_posix_shm_) {
 }
 ```
 
-**코드 설명:** `mmap()`은 프로세스가 사용할 virtual address의 시작 위치를 반환합니다. Kernel page allocator가 각 virtual page의 physical page를 선택합니다. DRAM channel, bank와 row는 이후 memory-controller address mapping에 따라 결정됩니다. 실제 page 연결은 해당 page의 최초 접근 시점에 이루어집니다.
+**코드 설명:** `mmap()`은 프로세스가 사용할 가상 주소의 시작 위치를 반환합니다. Kernel page allocator가 각 가상 페이지의 물리 페이지를 선택합니다. DRAM channel, bank와 row는 이후 memory-controller address mapping에 따라 결정됩니다. 실제 페이지 연결은 해당 페이지의 최초 접근 시점에 이루어집니다.
 
 <sub><em>Memory attribute: page table과 MAIR를 통해 memory type, cacheability 및 shareability를 지정하는 속성입니다.</em></sub>
 <sub><em>Normal cacheable memory: CPU cache hierarchy와 coherency protocol을 통해 접근하는 일반 데이터 메모리 유형입니다.</em></sub>
 
-## Virtual address를 physical address로 변환하는 코드
+## 가상 주소를 물리 주소로 변환하는 코드
 
 > **파일:** `src/os.cc` · **함수:** `OsLayer::VirtualToPhysical()` · **기준:** `73b9df2`
 
@@ -87,13 +87,13 @@ paddr = ((frame & pfnmask) * pagesize) | ((uintptr_t)vaddr & pagemask);
 return paddr;
 ```
 
-**코드 설명:** `/proc/self/pagemap`에서 page의 RAM·swap 상태를 확인합니다. RAM page는 PFN과 page 내부 offset으로 system physical address를 계산합니다. Android kernel의 PFN 접근 정책에 따라 0 또는 읽기 오류가 반환될 수 있습니다. LPDDR channel·bank·row 변환에는 DMC address map을 추가로 적용합니다.
+**코드 설명:** `/proc/self/pagemap`에서 페이지의 RAM·swap 상태를 확인합니다. RAM 페이지는 PFN과 페이지 내부 offset으로 시스템 물리 주소를 계산합니다. Android kernel의 PFN 접근 정책에 따라 0 또는 읽기 오류가 반환될 수 있습니다. LPDDR channel·bank·row 변환에는 DMC address map을 추가로 적용합니다.
 
-## Virtual memory 예약과 physical page 할당
+## 가상 메모리 예약과 물리 페이지 할당
 
-anonymous `mmap()`의 성공은 사용할 virtual address 범위를 확보했다는 의미입니다. 각 virtual page에 연결되는 physical page는 일반적으로 처음 읽거나 쓸 때 발생하는 page fault를 통해 준비됩니다.
+anonymous `mmap()`의 성공은 사용할 가상 주소 범위를 확보했다는 의미입니다. 각 가상 페이지에 연결되는 물리 페이지는 일반적으로 처음 읽거나 쓸 때 발생하는 page fault를 통해 준비됩니다.
 
-stressapptest의 초기 `FillThread`는 테스트 범위 전체에 데이터를 씁니다. 이때 아직 physical page가 없는 주소에서는 kernel이 physical page를 할당하고 page table을 설정합니다.
+stressapptest의 초기 `FillThread`는 테스트 범위 전체에 데이터를 씁니다. 이때 아직 물리 페이지가 없는 주소에서는 kernel이 물리 페이지를 할당하고 page table을 설정합니다.
 
 ```text
 mmap 성공
@@ -102,7 +102,7 @@ mmap 성공
    ↓ FillThread가 데이터 쓰기
 minor page fault
    ↓
-kernel이 physical page를 선택하고 PTE 설정
+kernel이 물리 페이지를 선택하고 PTE 설정
    ↓
 쓴 데이터가 cache 계층에 반영
 ```
@@ -112,22 +112,22 @@ kernel이 physical page를 선택하고 PTE 설정
 ## 주소가 변환되는 단계
 
 ```text
-프로그램이 사용하는 virtual address
+프로그램이 사용하는 가상 주소
           ↓ MMU·TLB·page table
-system physical address
+시스템 물리 주소
           ↓ NoC·DMC의 주소 해석과 주소 분산 규칙
 LPDDR channel·rank·bank group·bank·row·column
 ```
 
-### Virtual address
+### 가상 주소
 
-프로그램의 pointer에 저장되는 주소입니다. 프로세스마다 독립된 page table을 사용하므로, 같은 virtual address라도 서로 다른 physical page에 연결될 수 있습니다.
+프로그램의 pointer에 저장되는 주소입니다. 프로세스마다 독립된 page table을 사용하므로, 같은 가상 주소라도 서로 다른 물리 페이지에 연결될 수 있습니다.
 
-<sub><em>Virtual address, VA: 프로세스의 address space에서 CPU 명령이 읽기·쓰기 대상으로 사용하는 주소입니다.</em></sub>
+<sub><em>가상 주소, VA: 프로세스의 address space에서 CPU 명령이 읽기·쓰기 대상으로 사용하는 주소입니다.</em></sub>
 
-### System physical address
+### 시스템 물리 주소
 
-MMU가 주소를 변환한 뒤 SoC 내부 연결망이 사용하는 주소입니다. Linux page 크기가 4 KiB인 경우는 다음과 같이 계산합니다.
+MMU가 주소를 변환한 뒤 SoC 내부 연결망이 사용하는 주소입니다. Linux page 크기가 4 KiB이면 다음 계산식을 적용합니다.
 
 ```text
 PA = PFN × 4096 + VA의 하위 12-bit offset
@@ -135,36 +135,36 @@ PA = PFN × 4096 + VA의 하위 12-bit offset
 
 Linux page 크기가 16 KiB이면 16 KiB와 그에 맞는 page 내부 offset bit 수를 적용합니다.
 
-<sub><em>System physical address, PA: MMU translation 이후 CPU와 NoC가 memory transaction에 사용하는 주소입니다.</em></sub>
-<sub><em>PFN: Physical Frame Number의 약어이며 physical page의 번호입니다.</em></sub>
+<sub><em>시스템 물리 주소, PA: MMU translation 이후 CPU와 NoC가 memory transaction에 사용하는 주소입니다.</em></sub>
+<sub><em>PFN: Physical Frame Number의 약어이며 물리 페이지의 번호입니다.</em></sub>
 
 ### LPDDR channel·bank·row 좌표
 
-DMC는 physical address의 bit를 해석하여 channel, rank, bank, row, column을 선택합니다. 최신 모바일 DMC는 여러 channel과 bank를 동시에 사용하기 위해 주소 bit를 XOR하거나 연속 주소를 여러 위치에 나누어 배치할 수 있습니다.
+DMC는 물리 주소의 bit를 해석하여 channel, rank, bank, row, column을 선택합니다. 최신 모바일 DMC는 여러 channel과 bank를 동시에 사용하기 위해 주소 bit를 XOR하거나 연속 주소를 여러 위치에 나누어 배치할 수 있습니다.
 
-따라서 physical address가 연속이어도 LPDDR 내부 위치가 연속이라고 판단할 수 없습니다. 실제 위치는 SoC 제조사의 DMC 주소 배치 규칙에 따라 결정됩니다.
+따라서 물리 주소가 연속이어도 LPDDR 내부 위치가 연속이라고 판단할 수 없습니다. 실제 위치는 대상 시스템의 DMC 주소 배치 규칙에 따라 결정됩니다.
 
 <sub><em>DRAM coordinate: channel, rank, bank group, bank, row 및 column으로 구성되는 DRAM 내부 위치 정보입니다.</em></sub>
 <sub><em>Interleaving: 연속 주소를 여러 channel 또는 bank에 분산하여 병렬성을 높이는 주소 배치 방식입니다.</em></sub>
 
 ## 선택형 DRAM 주소 변환 프로필
 
-`--dram-map lpddr-v1`은 오류에서 확인한 system physical address에 `lpddr-v1` 주소 변환 프로필을 적용합니다.
+`--dram-map lpddr-v1`은 오류에서 확인한 시스템 물리 주소에 `lpddr-v1` 주소 변환 프로필을 적용합니다.
 
-프로필의 적용 가능성은 대상 시스템의 memory-controller 설정과 memory topology를 기준으로 확인합니다. Physical address는 `/proc/self/pagemap`의 PFN 읽기가 허용된 실행 환경에서 확인할 수 있습니다.
+프로필의 적용 가능성은 대상 시스템의 memory-controller 설정과 memory topology를 기준으로 확인합니다. 물리 주소는 `/proc/self/pagemap`의 PFN 읽기가 허용된 실행 환경에서 확인할 수 있습니다.
 
 ```bash
 stressapptest -M 1024 -m 4 -s 600 \
   --dram-map lpddr-v1
 ```
 
-<sub><em>Address-map profile: system physical address를 DRAM 좌표 필드로 해석하는 변환 규칙의 묶음입니다.</em></sub>
+<sub><em>Address-map profile: 시스템 물리 주소를 DRAM 좌표 필드로 해석하는 변환 규칙의 묶음입니다.</em></sub>
 
-## Virtual address와 physical address의 연속성
+## 가상 주소와 물리 주소의 연속성
 
-`-M 1024`로 확보한 1 GiB virtual address 범위는 연속입니다. 각 Linux page의 physical 위치는 kernel page allocator가 개별적으로 결정합니다.
+`-M 1024`로 확보한 1 GiB 가상 주소 범위는 연속입니다. 각 Linux 페이지의 물리 위치는 kernel page allocator가 개별적으로 결정합니다.
 
-SAT block도 virtual address의 offset을 기준으로 나눕니다.
+SAT block도 가상 주소의 offset을 기준으로 나눕니다.
 
 ```text
 SAT block 0: VA base + 0 MiB
@@ -172,11 +172,11 @@ SAT block 1: VA base + 1 MiB
 SAT block 2: VA base + 2 MiB
 ```
 
-각 1 MiB block은 여러 Linux page로 구성되며 PFN 배치는 kernel page allocator가 결정합니다. Stressapptest는 virtual address 범위에서 1 MiB block을 선택합니다. DRAM row는 각 page의 physical address와 memory-controller mapping으로 결정됩니다.
+각 1 MiB block은 여러 Linux 페이지로 구성되며 PFN 배치는 kernel page allocator가 결정합니다. Stressapptest는 가상 주소 범위에서 1 MiB block을 선택합니다. DRAM row는 각 페이지의 물리 주소와 memory-controller mapping으로 결정됩니다.
 
 ## `/proc/self/pagemap`
 
-`OsLayer::VirtualToPhysical()`은 `/proc/self/pagemap`에서 PFN을 읽어 physical address를 계산합니다 (`src/os.cc:141`). 이 값은 오류 위치 진단에 사용합니다. Worker의 접근 주소는 queue가 선택한 virtual block으로 결정됩니다.
+`OsLayer::VirtualToPhysical()`은 `/proc/self/pagemap`에서 PFN을 읽어 물리 주소를 계산합니다. 이 값은 오류 위치 확인에 사용합니다. Worker의 접근 주소는 queue가 선택한 가상 작업 단위로 결정됩니다.
 
 Linux 4.2 이후에는 `CAP_SYS_ADMIN` 권한이 없을 때 PFN이 0으로 가려질 수 있습니다. Android의 shell 권한과 보안 정책에 따라 다음 문제가 발생할 수 있습니다.
 
@@ -189,30 +189,30 @@ PFN을 얻더라도 SoC 제조사의 DMC 주소 배치 규칙이 없으면 DRAM 
 
 ## `--paddr_base`의 의미와 한계
 
-공개 저장소의 공통 `OsLayer::AllocateTestMem()`은 `paddr_base == 0` 조건의 anonymous allocation을 지원합니다. 다른 값을 입력하면 경고를 출력하고 anonymous allocation을 계속합니다 (`src/os.cc:514`).
+공개 저장소의 공통 `OsLayer::AllocateTestMem()`은 `paddr_base == 0` 조건의 anonymous allocation을 지원합니다. 다른 값을 입력하면 경고를 출력하고 anonymous allocation을 계속합니다.
 
 일반 Android build에서 다음 명령은 anonymous allocation을 사용합니다.
 
 ```bash
-stressapptest --paddr_base 0x80000000 ...
+stressapptest --paddr_base <physical-base> ...
 ```
 
-특정 reserved memory나 MMIO 영역을 시험하려면 kernel driver 또는 해당 SoC에 맞춘 `OsLayer` 구현이 필요합니다. 임의의 physical memory를 userspace에 노출하면 시스템 손상과 보안 문제가 발생할 수 있습니다.
+특정 reserved memory나 MMIO 영역을 시험하려면 kernel driver 또는 대상 시스템에 맞춘 `OsLayer` 구현이 필요합니다. 임의의 물리 메모리를 userspace에 노출하면 시스템 손상과 보안 문제가 발생할 수 있습니다.
 
 ## `--do_page_map`
 
-이 옵션은 접근한 4 KiB physical page를 bitmap에 기록합니다. 현재 구현은 다음 조건을 전제로 합니다.
+이 옵션은 접근한 4 KiB 물리 페이지를 bitmap에 기록합니다. 현재 구현은 다음 조건을 전제로 합니다.
 
 - 4 KiB page granularity
-- physical address 범위가 0에 가까운 주소에서 시작함
+- 물리 주소 범위가 0에 가까운 주소에서 시작함
 - userspace에서 PFN을 읽을 수 있음
-- 최대 physical address가 프로그램이 예상한 범위 안에 있음
+- 최대 물리 주소가 프로그램이 예상한 범위 안에 있음
 
 이 기능은 4 KiB page와 PFN 접근을 전제로 합니다. 16 KiB page 또는 PFN 제한 환경에서는 대상 build의 page 크기 처리와 권한을 먼저 검증합니다.
 
 ## Channel과 DIMM을 추정하는 옵션
 
-`--memory_channel`, `--channel_hash`, `--channel_width`는 physical address에서 channel과 package 이름을 추정하여 오류 로그에 추가합니다.
+`--memory_channel`, `--channel_hash`, `--channel_width`는 물리 주소에서 channel과 package 이름을 추정하여 오류 로그에 추가합니다.
 
 공통 구현의 제한은 다음과 같습니다.
 
@@ -226,14 +226,14 @@ stressapptest --paddr_base 0x80000000 ...
 
 ## DMA에서 사용하는 IOVA
 
-UFS, GPU, NPU와 같은 장치는 IOVA를 사용할 수 있습니다. IOMMU 또는 SMMU가 IOVA를 system physical address로 변환합니다.
+UFS, GPU, NPU 등의 장치는 IOVA를 사용할 수 있습니다. IOMMU 또는 SMMU가 IOVA를 시스템 물리 주소로 변환합니다.
 
 ```text
-장치가 사용하는 IOVA → SMMU → system physical address → DMC → LPDDR
+장치가 사용하는 IOVA → SMMU → 시스템 물리 주소 → DMC → LPDDR
 ```
 
 `FileThread`의 `O_DIRECT`는 Linux filesystem page cache를 가능한 범위에서 우회하도록 요청하는 옵션입니다. DMA coherency, CPU cache, SLC, SMMU, DMC는 기기의 I/O 구성에 따라 계속 사용됩니다.
 
 <sub><em>IOVA: DMA device가 transaction address로 사용하는 I/O virtual address입니다.</em></sub>
-<sub><em>SMMU: device의 IOVA를 system physical address로 변환하고 접근 권한을 적용하는 System MMU입니다.</em></sub>
+<sub><em>SMMU: device의 IOVA를 시스템 물리 주소로 변환하고 접근 권한을 적용하는 System MMU입니다.</em></sub>
 <sub><em>O_DIRECT: filesystem page cache 사용을 최소화하도록 kernel에 요청하는 file open flag입니다.</em></sub>

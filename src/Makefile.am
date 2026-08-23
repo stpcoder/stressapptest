@@ -2,7 +2,7 @@ bin_PROGRAMS = stressapptest
 noinst_PROGRAMS = findmask
 
 AM_DEFAULT_SOURCE_EXT=.cc
-EXTRA_DIST = dram_address_test.cc
+EXTRA_DIST = dram_address_test.cc invert_workload_test.cc
 
 MAINFILES = main.cc
 CFILES = os.cc
@@ -31,6 +31,7 @@ HFILES += disk_blocks.h
 HFILES += adler32memcpy.h
 HFILES += logger.h
 HFILES += clock.h
+HFILES += invert_workload.h
 
 stressapptest_SOURCES = $(MAINFILES) $(CFILES) $(HFILES)
 findmask_SOURCES = findmask.c findmask.inc

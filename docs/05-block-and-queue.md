@@ -13,7 +13,7 @@ block 수 = 전체 테스트 메모리 byte / SAT block byte
 소스 코드에서는 이 단위를 `page`라고 부릅니다. 이 문서는 Linux page와 구분하기 위해 `SAT block`으로 표기합니다.
 
 <sub><em>SAT block: stressapptest의 queue가 원본, 대상, 검사 상태를 관리하는 메모리 구역입니다.</em></sub>
-<sub><em>Linux page: kernel과 MMU가 virtual-to-physical mapping을 관리하는 최소 page 단위입니다.</em></sub>
+<sub><em>Linux page: kernel과 MMU가 가상-물리 주소 매핑을 관리하는 최소 page 단위입니다.</em></sub>
 
 | 개념 | 기본 크기 | 누가 관리하는가 |
 |---|---:|---|
@@ -25,7 +25,7 @@ block 수 = 전체 테스트 메모리 byte / SAT block byte
 
 ## 각 block의 정보를 담는 `page_entry`
 
-각 SAT block의 상태는 다음 `page_entry` 구조체에 기록됩니다 (`src/queue.h:38`).
+각 SAT 작업 단위의 상태는 `src/queue.h`의 `page_entry` 구조체에 기록됩니다.
 
 > **파일:** `src/queue.h` · **구조체:** `page_entry` · **기준:** `73b9df2`
 
@@ -39,6 +39,7 @@ struct page_entry {
   uint32 touch;
   uint64 ts;
   uint32 lastcpu;
+  int write_dram_frequency;
   class Pattern *lastpattern;
 };
 ```
@@ -47,17 +48,18 @@ struct page_entry {
 
 | 항목 | 의미 |
 |---|---|
-| `offset` | 전체 테스트 메모리의 시작 위치에서 해당 block까지의 virtual address 차이 |
-| `addr` | Worker가 해당 block에 접근할 때 사용하는 virtual address |
-| `paddr` | block 첫 주소에서 계산한 진단용 physical address |
+| `offset` | 전체 테스트 메모리의 시작 위치에서 해당 block까지의 가상 주소 차이 |
+| `addr` | Worker가 해당 block에 접근할 때 사용하는 가상 주소 |
+| `paddr` | block 첫 주소에서 계산한 진단용 물리 주소 |
 | `pattern` | 이 block에 있어야 하는 pattern. null이면 empty 상태 |
 | `tag` | 메모리 구역 또는 NUMA 조건을 선택하는 bit mask |
 | `touch` | valid block이 선택된 횟수를 기록하는 값 |
 | `ts` | 마지막으로 `GetValid`가 실행된 시각 |
 | `lastcpu` | 마지막 쓰기를 수행한 CPU |
+| `write_dram_frequency` | 최근 write pass 시작 시 저장한 마지막 성공 DDR 주파수 요청값 |
 | `lastpattern` | 마지막으로 읽었을 때 기록된 pattern |
 
-`paddr`에는 block의 첫 virtual address에 대응하는 physical address만 저장됩니다. Block 안에 있는 나머지 Linux page가 physical address에서도 연속인지는 별도로 확인해야 합니다.
+`paddr`에는 block의 첫 가상 주소에 대응하는 물리 주소만 저장됩니다. Block 안에 있는 나머지 Linux 페이지가 물리 주소에서도 연속인지는 별도로 확인해야 합니다.
 
 ## 읽을 block과 쓸 block 구분
 
@@ -71,9 +73,9 @@ struct page_entry {
 
 - `pattern == NULL`인 상태입니다.
 - 새 데이터를 써도 되는 대상 block입니다.
-- `mmap()`으로 확보한 virtual address와 연결된 physical page는 그대로 유지됩니다.
+- `mmap()`으로 확보한 가상 주소와 연결된 물리 페이지는 그대로 유지됩니다.
 
-상태 전이는 다음과 같다.
+상태는 다음 순서로 전환됩니다.
 
 ```text
 Empty
@@ -85,7 +87,7 @@ Valid(pattern=P)
 Empty
 ```
 
-`CheckThread`는 설정된 시험 시간이 남아 있으면 검사한 block을 다시 valid 상태로 반환합니다. 마지막 전체 검사에서는 block을 empty 상태로 바꾸면서 valid block을 모두 검사합니다.
+Runtime `CheckThread`는 시험 시간 동안 검사한 작업 단위를 Valid 상태로 반환합니다. 기본 종료 동작에서는 정지 요청 이후 Valid queue를 계속 검사하고 완료 항목을 Empty 상태로 변경합니다. `--final-check-threads`를 명시한 실행은 Runtime Check가 종료 drain을 수행하지 않으며 별도 종료 Check가 Valid 항목을 Empty로 이동합니다.
 
 ## 기본 block 관리 구조: FineLockPEQueue
 
@@ -104,7 +106,7 @@ for (uint64 i = 0; i < q_size_; i++) {
   if ((tag != kDontCareTag) && !(pages_[index].tag & tag))
     continue;
   if (pthread_mutex_trylock(&(pagelocks_[index])) == 0) {
-    // lock 획득 뒤 상태를 다시 검사한다.
+    // lock 획득 뒤 상태를 다시 검사합니다.
   }
 }
 ```
@@ -158,7 +160,7 @@ Stressapptest의 주소 순서는 `block 분산 선택, block 내부 순차 접�
 
 ## 읽을 block과 쓸 block의 비율
 
-초기 데이터 쓰기 단계에서는 모든 block을 valid 데이터로 채웁니다. 이후 기본 fine-lock 방식에서는 전체 block의 약 2/5를 empty, 약 3/5를 valid 상태로 설정합니다 (`src/sat.cc:415`, `src/sat.cc:526`).
+초기 데이터 쓰기 단계에서는 모든 작업 단위를 Valid 데이터로 채웁니다. 이후 기본 FineLock 방식에서는 전체 작업 단위의 약 2/5를 Empty, 나머지를 Valid 상태로 설정합니다. 구현은 `src/sat.cc`의 `Sat::InitializePages()`에 있습니다.
 
 empty block이 필요한 이유:
 
@@ -166,7 +168,7 @@ empty block이 필요한 이유:
 - 파일·네트워크에서 읽은 데이터를 저장할 대상 block이 필요합니다.
 - 여러 Worker가 대상 block을 얻기 위해 대기하는 시간을 줄입니다.
 
-초기 단계에서 모든 block에 pattern 데이터를 기록합니다. Empty 상태 전환은 `pattern` metadata를 제거합니다. 데이터 byte와 연결된 physical page는 테스트 메모리 안에 유지됩니다.
+초기 단계에서 모든 block에 pattern 데이터를 기록합니다. Empty 상태 전환은 `pattern` 상태 정보를 제거합니다. 데이터 byte와 연결된 물리 페이지는 테스트 메모리 안에 유지됩니다.
 
 ## 전체 queue를 한 번에 잠그는 방식
 
@@ -187,9 +189,9 @@ Queue 처리 과정에서 CPU는 `page_entry`, mutex, counter와 로그 정보�
 
 ## Tag를 이용한 block 구역 선택
 
-초기화 과정에서 block 첫 physical address를 공통 규칙에 따라 메모리 구역으로 분류하고 bit mask tag를 기록합니다. `--local_numa` 또는 `--remote_numa`를 사용하면 Worker는 조건에 맞는 tag의 block만 선택합니다.
+초기화 과정에서 block 첫 물리 주소를 공통 규칙에 따라 메모리 구역으로 분류하고 bit mask tag를 기록합니다. `--local_numa` 또는 `--remote_numa`를 사용하면 Copy Worker는 설정에 맞는 tag의 block을 선택합니다.
 
-현재 공통 `OsLayer`의 메모리 구역은 Linux NUMA 정보를 기준으로 계산합니다. 모바일 SoC의 LPDDR channel 관계는 제조사의 address map을 반영한 `OsLayer` 구현에서 추가합니다.
+현재 공통 `OsLayer::FindRegion()`은 시스템 물리 주소 범위를 일정 크기의 내부 region으로 나눕니다. CPU mask는 `OsLayer`가 확인한 node·CPU 수를 기준으로 생성합니다. 실제 NUMA topology와 LPDDR channel 관계는 대상 시스템에 맞는 `OsLayer` 구현에서 제공합니다.
 
 <sub><em>Region tag: worker가 local/remote 조건으로 block을 선택할 때 사용하는 software bit mask입니다.</em></sub>
 <sub><em>NUMA locality: CPU와 memory node 사이의 topology에 따라 access latency와 bandwidth가 달라지는 특성입니다.</em></sub>

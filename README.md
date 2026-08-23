@@ -1,6 +1,6 @@
 # StressAppTest Android ARM64 확장판
 
-이 저장소는 공개 [stressapptest](https://github.com/stressapptest/stressapptest)에 Android AArch64 실장기 테스트 기능을 추가한 개인 fork입니다. 기본 branch인 `master`에서 소스, 한글 매뉴얼과 Android ARM64 배포 파일을 함께 관리합니다.
+이 저장소는 공개 [stressapptest](https://github.com/stressapptest/stressapptest)에 Android ARM64 기기 실행 및 진단 기능을 추가한 개인 fork입니다. 기본 branch인 `master`에서 소스, 한글 매뉴얼과 Android ARM64 배포 파일을 함께 관리합니다.
 
 [![Android ARM64 최신 버전 다운로드](https://img.shields.io/badge/Android_ARM64-최신_버전_다운로드-1976d2?style=for-the-badge&logo=android&logoColor=white)](https://github.com/stpcoder/stressapptest/releases/latest/download/stressapptest-android-arm64)
 [![최신 Release](https://img.shields.io/github/v/release/stpcoder/stressapptest?display_name=tag&style=for-the-badge&label=Latest%20Release&color=455a64)](https://github.com/stpcoder/stressapptest/releases/latest)
@@ -24,11 +24,34 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | 기능 | 옵션 | 설명 |
 |---|---|---|
 | 패턴 선택 | `-P <ID\|이름[,ID\|이름...]>` | 하나 또는 여러 pattern을 지정한 순서대로 block에 순환 배정 |
-| DRAM 주소 해석 | `--dram-map lpddr-v1` | 오류의 system physical address를 선택형 프로필로 해석 |
+| Pattern 위치 변경 | `--pattern-byte-offset <byte>` | Pattern 시작 위치를 4 byte 단위로 이동하여 cache-line 내부 배치를 비교 |
+| 초기 데이터 상태 | `--fill-preset <none\|zero\|one>` | 최종 pattern을 쓰기 전에 전체 영역을 지정값으로 기록 |
+| 운영체제 페이지 사전 접근 | `--prefault-pages` | 병렬 Fill 전에 각 SAT 작업 단위를 운영체제 page 크기 간격으로 순차 기록 |
+| Fill 동시성 | `--fill-threads <개수>` | 초기 Fill Worker 수를 1~256 범위에서 지정 |
+| Fill 주소 방향 | `--fill-direction <up\|down>` | SAT 작업 단위 내부 store 진행 방향을 지정 |
+| Fill 중 즉시 검사 | `--fill-verify-every <간격>` | 지정한 순서 간격의 SAT 작업 단위를 Fill 직후 검사 |
+| Fill 연속 구간 | `--fill-yield-bytes <byte>` | 지정한 byte를 기록할 때마다 실행권을 양보 |
+| Fill 직후 검사 | `--verify-after-fill` | Runtime Worker 시작 전에 전체 SAT 작업 단위를 한 번씩 검사 |
+| Fill 이후 대기 | `--post-fill-delay <초>` | 초기 Fill 종료 후 검사와 runtime 시작까지의 대기 시간 지정 |
+| Runtime 시작 대기 | `--runtime-start-delay <초>` | Queue 구성 이후 Runtime Worker 시작까지 대기 |
+| Copy 목적지 검사 | `--copy-verify-destination` | Copy 직후 destination block을 즉시 검사 |
+| Invert 처리 범위 | `--invert-range <legacy\|full>` | 기존 공개 코드의 처리 범위 또는 SAT 작업 단위 전체를 선택 |
+| 단계별 작업량 | `--diag-phase-summary` | 단계별 block 수, 논리 read·write byte와 mismatch 수를 종료 시 출력 |
+| VM 상태 | `--diag-vm-stats` | 주요 단계 경계에서 page fault, RSS, page 크기와 mapping 방식을 출력 |
+| Block 기록 이력 | `--diag-block-history` | 오류가 발생한 SAT 작업 단위의 마지막 추적 write 정보를 출력 |
+| 상세 오류 로그 제한 | `--error-log-limit <개수>` | 오류 집계와 복구를 유지하면서 상세 mismatch 로그 수를 제한 |
+| 종료 검사 수 | `--final-check-threads <개수>` | Runtime Check와 종료 검사를 분리하고 종료 검사 Worker 수를 1~256 범위에서 지정 |
+| 종료 검사 생략 | `--skip-final-check` | Runtime Check의 종료 drain과 별도 종료 검사를 모두 생략 |
+| 오류 단계 표시 | 자동 | 오류 로그에 `worker`, `phase`, `pattern_offset` 기록 |
+| SAT 위치 표시 | 자동 | 오류 로그에 `sat_block`, `sat_offset`, `block_offset` 기록 |
+| DRAM 주파수 고정·순환 | `--ddr-freq <값\|목록\|all>` | 한 값을 유지하거나 여러 값을 입력 순서대로 순환 |
+| DRAM 주파수 변경 간격 | `--ddr-step <초>` | 여러 주파수를 사용할 때 변경 간격을 지정하며 기본값은 3초 |
+| DRAM 제어 경로 | `--ddr-node <경로>` | 대상 시스템이 제공하는 주파수 제어용 kernel interface 경로 지정 |
+| DRAM 주소 해석 | `--dram-map lpddr-v1` | 오류의 시스템 물리 주소를 선택형 프로필로 해석 |
 
 ## 선택 가능한 옵션 전체 정리
 
-아래 표는 이 저장소의 `Sat::ParseArgs()`가 실제로 인식하는 공개 옵션을 기준으로 작성했습니다. `-P`는 이 fork에서 추가했으며 나머지는 기존 stressapptest 옵션입니다.
+아래 표는 이 저장소의 `Sat::ParseArgs()`가 실제로 인식하는 공개 옵션을 기준으로 작성했습니다. 추가 진단 옵션은 초기 Fill, Pattern 배치와 Copy 검출 단계를 구분하는 데 사용합니다.
 
 ### 메모리와 실행 시간
 
@@ -37,14 +60,30 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | `-M <MiB>` | 자동 | 시험에 사용할 메모리 크기입니다. Android에서는 LMKD와 system process를 고려하여 직접 지정하는 것이 안전합니다. |
 | `--reserve_memory <MiB>` | 0 | `-M` 자동 계산에서 운영체제용으로 남길 메모리입니다. 옵션 이름에는 밑줄을 사용합니다. |
 | `-H <MiB>` | 0 | 시험에 필요한 최소 huge page 용량입니다. |
-| `-s <초>` | 20 | Worker가 동작하는 시험 시간입니다. 초기 pattern 기록과 마지막 정리는 이 시간의 앞뒤에서 실행됩니다. |
+| `-s <초>` | 20 | Worker가 동작하는 시험 시간입니다. 초기 Pattern 기록과 종료 시점 Valid 검사는 이 시간의 앞뒤에서 실행됩니다. |
 | `-p <byte>` | 1 MiB | stressapptest가 queue에서 관리하는 한 memory block의 크기입니다. 1,024 byte 이상의 2의 거듭제곱이어야 합니다. |
 | `-m <개수>` | online CPU 수 | 메모리를 읽고 다른 block에 복사하면서 checksum을 계산하는 Copy Worker 수입니다. |
-| `-i <개수>` | 0 | block 데이터를 반전하여 읽기·쓰기와 cache 관리 동작을 반복하는 Invert Worker 수입니다. |
+| `-i <개수>` | 0 | 선택 범위를 네 번 반전 저장하는 Invert Worker 수입니다. 기본 범위는 기존 공개 코드와 동일한 `legacy`입니다. |
 | `-c <개수>` | 0 | Block의 checksum과 pattern을 검사하는 Check Worker 수입니다. |
+| `--fill-threads <개수>` | 8 | 초기 전체 영역을 Pattern으로 기록하는 Fill Worker 수입니다. 허용 범위는 1~256입니다. 종료 검사 옵션을 지정하지 않은 기존 동작에서는 남은 Valid 검사 Worker 수도 이 값을 사용합니다. |
+| `--fill-direction <up\|down>` | `up` | 각 SAT 작업 단위 안에서 Pattern을 기록하는 주소 진행 방향입니다. |
+| `--fill-verify-every <간격>` | 사용 안 함 | SAT 작업 단위 번호를 기준으로 지정 간격의 작업 단위를 queue 반환 전에 검사합니다. `1`은 전체 즉시 검사입니다. |
+| `--fill-yield-bytes <byte>` | 사용 안 함 | 지정한 byte를 기록할 때마다 `sched_yield()`를 실행합니다. 64 byte 배수와 SAT 작업 단위 이하 값을 사용합니다. |
+| `--verify-after-fill` | 사용 안 함 | 초기 Fill 완료 직후 전체 SAT 작업 단위를 단일 검사 Worker가 각각 한 번씩 검사합니다. |
+| `--post-fill-delay <초>` | 0 | 초기 Fill 완료 후 post-fill 검사와 runtime Worker 시작 전까지 대기합니다. |
+| `--runtime-start-delay <초>` | 0 | Queue 구성이 끝난 후 Runtime Worker 시작 전까지 대기합니다. |
+| `--copy-verify-destination` | 사용 안 함 | Copy Worker가 destination block을 쓴 직후 같은 block의 checksum을 검사합니다. |
+| `--invert-range <legacy\|full>` | `legacy` | 각 Invert pass의 처리 범위를 선택합니다. `legacy`는 기존 공개 코드의 pointer 단위 계산을 유지합니다. `full`은 `-p`로 정한 SAT 작업 단위 전체를 처리합니다. |
+| `--diag-phase-summary` | 사용 안 함 | 해석된 실행 구성을 `DIAG_CONFIG`와 `DIAG_CONFIG_OPTIONS`로 기록하고 Fill, post-fill, Copy, Invert, Runtime Check와 final check의 block 수, 논리 read·write byte, mismatch 수, 첫 mismatch 시각과 DDR 요청 epoch를 출력합니다. |
+| `--diag-vm-stats` | 사용 안 함 | Allocation, Fill, queue 구성, Runtime과 final check 경계에서 page fault, RSS, page 크기, allocator와 mapping 방식을 출력합니다. |
+| `--diag-block-history` | 사용 안 함 | SAT 작업 단위별 별도 metadata를 유지하고 mismatch 상세 로그에 마지막 추적 write 주체, 완료 시각과 DDR 요청 epoch 범위를 추가합니다. Fill과 Copy는 작업 단위 전체, Invert는 선택 범위의 완료를 기록합니다. CPU 필드는 작업 완료 직후의 CPU 표본입니다. |
+| `--final-check-threads <개수>` | 명시하지 않음 | 이 옵션을 지정하면 Runtime Check Worker가 종료 drain을 수행하지 않고, 지정한 1~256개의 별도 Check Worker가 남은 Valid 작업 단위를 검사합니다. 옵션을 생략하면 기존 종료 drain 동작과 `--fill-threads` 수의 보조 검사 Worker를 유지합니다. |
+| `--skip-final-check` | 사용 안 함 | Runtime Check Worker의 종료 drain과 별도 종료 Check Worker 생성을 생략합니다. `--final-check-threads`와 함께 지정하면 생략 설정이 우선합니다. |
+| `--fill-preset <none\|zero\|one>` | `none` | 최종 pattern Fill 전에 전체 영역을 `0x00` 또는 `0xFF`로 기록합니다. |
+| `--prefault-pages` | 사용 안 함 | 각 SAT 작업 단위의 offset 0부터 운영체제 page 크기 간격으로 1 byte를 순차 기록합니다. `-p`가 운영체제 page보다 작으면 각 SAT 작업 단위의 첫 byte를 기록합니다. 미할당 주소의 page fault와 물리 할당을 이 단계에서 유도합니다. |
 | `-C <개수>` | 0 | 부동소수점 연산으로 CPU 부하를 추가하는 CPU Stress Worker 수입니다. |
 | `-W` | 사용 안 함 | AArch64에서는 NEON load/store와 checksum을 사용하는 CPU 부하가 큰 복사 경로를 선택합니다. |
-| `-F` | 사용 안 함 | transaction마다 수행하는 checksum 검사를 생략하고 일반 `memcpy()` 경로를 사용합니다. |
+| `-F` | 사용 안 함 | `-W`가 없으면 Copy에 `memcpy()`를 사용합니다. Copy source, Invert 전·후, File·Network source/destination의 strict checksum을 생략합니다. `-W -F`에서는 Copy만 Warm checksum 경로를 사용합니다. |
 | `-A` | 사용 안 함 | 일부 호환성 검사를 완화하여 제한된 기능으로 실행합니다. |
 | `--coarse_grain_lock` | 사용 안 함 | Queue 전체를 하나의 lock으로 관리합니다. Queue lock 방식 비교에 사용합니다. |
 | `--random-threads <개수>` | 0 | 각 raw disk write thread에 추가할 random disk thread 수입니다. |
@@ -53,15 +92,28 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 
 | 옵션 | 기본값 | 설명 |
 |---|---:|---|
-| `-P <ID\|이름[,ID\|이름...]>` | 가중치 기반 무작위 | 지정한 pattern을 입력 순서대로 block에 순환 배정합니다. |
+| `-P <ID\|이름[,ID\|이름...]>` | 가중치 기반 무작위 | 지정한 pattern을 입력 순서대로 block에 순환 배정합니다. 여러 항목은 한 실행의 서로 다른 SAT 작업 단위에 혼합됩니다. Pattern별 독립 비교에는 실행마다 한 항목을 사용합니다. |
+| `--pattern-byte-offset <byte>` | 0 | Pattern 위치를 SAT 작업 단위 시작점에서 지정한 byte만큼 이동합니다. 0 이상의 4 byte 배수를 사용합니다. |
+
+### DRAM 주파수 제어
+
+| 옵션 | 기본값 | 설명 |
+|---|---:|---|
+| `--ddr-freq <값\|목록\|all>` | 제어 안 함 | 한 값은 fixed mode로 유지합니다. 첫 값은 초기 Fill 전과 Runtime 직전에 요청합니다. 쉼표 목록과 `all`의 순환은 Runtime에서 시작합니다. |
+| `--ddr-step <초>` | 3 | Sweep mode에서 다음 주파수로 변경하는 간격입니다. |
+| `--ddr-node <경로>` | Build 기본 경로 | `{class:ddr, res:fixed, val:<값>}` 형식의 요청을 수용하는 kernel interface 경로를 지정합니다. 해당 경로의 write 권한이 필요합니다. |
+
+`--ddr-freq`를 지정하지 않으면 프로그램은 DRAM 주파수 제어 경로에 값을 쓰지 않습니다. 적용 가능한 주파수와 제어 경로는 대상 환경에서 확인합니다. 오류 로그는 `cur_mode`, `cur_freq`와 write·read·reread 시점의 주파수 정보를 기록합니다.
+
+현재 구현은 `--ddr-node` 경로에 `{class:ddr, res:fixed, val:<값>}` 형식의 한 줄을 기록합니다. 숫자만 받는 sysfs 파일과는 호환되지 않습니다. `<값>`의 단위와 허용 범위는 대상 interface 규격을 따릅니다.
 
 ### DRAM 주소 변환 프로필
 
 | 옵션 | 기본값 | 설명 |
 |---|---:|---|
-| `--dram-map lpddr-v1` | `none` | 오류에서 확인한 system physical address에 `lpddr-v1` 주소 변환 프로필을 적용합니다. |
+| `--dram-map lpddr-v1` | `none` | 오류에서 확인한 시스템 물리 주소에 `lpddr-v1` 주소 변환 프로필을 적용합니다. |
 
-주소 변환 결과는 대상 시스템의 memory-controller 설정과 memory topology를 기준으로 확인합니다. Physical address는 `/proc/self/pagemap`의 PFN 읽기가 허용된 실행 환경에서 확인할 수 있습니다.
+주소 변환 결과는 대상 시스템의 memory-controller 설정과 memory topology를 기준으로 확인합니다. 물리 주소는 `/proc/self/pagemap`의 PFN 읽기가 허용된 실행 환경에서 확인할 수 있습니다.
 
 ### 로그와 오류 처리
 
@@ -69,10 +121,11 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 |---|---:|---|
 | `-l <파일>` | stdout만 사용 | 같은 로그를 지정한 파일과 stdout에 기록합니다. |
 | `-v <0-20>` | 8 | 로그 상세도를 지정합니다. 숫자가 클수록 더 많은 로그가 출력됩니다. |
-| `--printsec <초>` | 10 | 남은 실행 시간을 출력하는 간격입니다. |
+| `--printsec <초>` | 10 | 남은 실행 시간을 출력하는 간격입니다. 1 이상을 사용합니다. |
 | `--no_timestamps` | 사용 안 함 | 각 로그 앞의 wall-clock timestamp를 제거합니다. |
 | `--max_errors <개수>` | 제한 없음 | 전체 오류 수가 지정값을 초과하면 main control loop가 종료 절차를 시작합니다. 확인 주기에 따라 종료 시점이 결정됩니다. |
-| `--stop_on_errors` | 사용 안 함 | 첫 오류 이후 종료 절차를 요청합니다. 일반 RAM miscompare는 Worker별 처리 중인 작업을 마친 뒤 정리됩니다. 옵션 철자는 `errors`입니다. |
+| `--stop_on_errors` | 사용 안 함 | 상세 mismatch 처리 후 종료를 요청합니다. 초기 검사에서는 Fill과 queue 구성 후 Runtime을 생략합니다. Runtime Memory Worker는 현재 SAT 작업 단위를 반환하고, 다른 Runtime Worker도 현재 반복의 정리 지점에서 멈춥니다. 종료 검사는 생략됩니다. 옵션 철자는 `errors`입니다. |
+| `--error-log-limit <개수>` | 제한 없음 | 기본 memory mismatch 상세 로그를 전체 Worker 합계 N개까지 출력합니다. 오류 수, reread, expected 복구와 종료 요청은 계속 처리합니다. `0`은 상세 로그를 출력하지 않습니다. |
 | `--no_errors` | 사용 안 함 | 운영체제 오류를 확인하는 `ErrorPollThread`를 중지합니다. Pattern 비교는 계속 실행됩니다. |
 | `--force_errors` | 사용 안 함 | 오류 처리 경로 점검용 데이터 오류를 삽입합니다. 시험 환경 검증에 사용합니다. |
 | `--force_errors_like_crazy` | 사용 안 함 | 다량의 인위적 오류를 반복 삽입합니다. 로그와 오류 처리 시험용입니다. |
@@ -87,19 +140,19 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | `--cc_line_count <개수>` | 2 | Cache coherency 시험에 사용하는 cache-line 크기 객체 수입니다. |
 | `--cc_line_size <byte>` | 자동 | 자동 검출한 cache line 크기를 덮어씁니다. |
 | `--no_affinity` | 사용 안 함 | stressapptest 내부 CPU affinity 설정을 비활성화합니다. 외부 `taskset`과 함께 사용할 때 유용합니다. |
-| `--local_numa` | 사용 안 함 | Worker가 실행되는 NUMA node의 메모리를 우선 사용합니다. |
-| `--remote_numa` | 사용 안 함 | Worker와 다른 NUMA node의 메모리를 우선 사용합니다. NUMA 정보를 제공하는 target에서 적용됩니다. |
-| `--tag_mode` | 사용 안 함 | 각 cache line의 첫 8 byte에 virtual address 기반 tag를 기록하여 주소 전달 오류를 검사합니다. |
-| `--do_page_map` | 사용 안 함 | 시험에서 접근한 physical page 범위를 출력합니다. `/proc/self/pagemap` 접근이 허용된 Android 환경에서 주소를 표시합니다. |
+| `--local_numa` | 사용 안 함 | Copy Worker를 한 region의 CPU에 배치하고 같은 region tag의 SAT 작업 단위를 선택합니다. NUMA topology를 제공하는 target에서 적용됩니다. |
+| `--remote_numa` | 사용 안 함 | Copy Worker를 한 region의 CPU에 배치하고 다른 region tag의 SAT 작업 단위를 선택합니다. NUMA 정보를 제공하는 target에서 적용됩니다. |
+| `--tag_mode` | 사용 안 함 | 각 cache line의 첫 8 byte에 가상 주소 기반 tag를 기록하여 주소 전달 오류를 검사합니다. `-f`, `-d`, `-n`과 함께 지정하면 초기화가 실패합니다. |
+| `--do_page_map` | 사용 안 함 | 시험에서 접근한 물리 페이지 범위를 출력합니다. `/proc/self/pagemap` 접근이 허용된 Android 환경에서 주소를 표시합니다. |
 | `--paddr_base <주소>` | 0 | Physical base 지정 기능을 제공하는 memory allocator에서 시작 주소를 설정합니다. 공통 Android allocator는 anonymous memory를 사용합니다. |
-| `--pause_delay <초>` | 600 | Worker를 일시 정지하여 power spike를 만드는 주기입니다. |
+| `--pause_delay <초>` | 600 | Worker를 일시 정지하여 power spike를 만드는 주기입니다. 1 이상을 사용합니다. |
 | `--pause_duration <초>` | 15 | 각 pause 상태를 유지하는 시간입니다. |
-| `--cpu_freq_test` | 사용 안 함 | CPU clock 측정 시험을 추가합니다. |
+| `--cpu_freq_test` | 사용 안 함 | x86 전용 CPU clock 측정 시험입니다. 공통 AArch64 build에서는 초기화 단계에서 지원되지 않는 옵션으로 처리됩니다. |
 | `--cpu_freq_threshold <MHz>` | 0 | CPU frequency가 이 값보다 낮으면 실패 처리합니다. `--cpu_freq_test`를 사용할 때 0보다 큰 값이 필요합니다. |
 | `--cpu_freq_round <MHz>` | 10 | 측정한 CPU frequency를 반올림하는 단위입니다. |
-| `--channel_hash <mask>` | `0x40` | Physical address를 memory channel로 해석할 때 사용하는 address bit mask입니다. |
+| `--channel_hash <mask>` | `0x40` | 물리 주소를 memory channel로 해석할 때 사용하는 address bit mask입니다. |
 | `--channel_width <bit>` | 64 | Memory channel 폭을 지정합니다. |
-| `--memory_channel <이름,...>` | 사용 안 함 | Channel별 module 이름을 지정합니다. LPDDR bank·row 계산에는 vendor address map이 필요합니다. |
+| `--memory_channel <이름,...>` | 사용 안 함 | Channel별 module 이름을 지정합니다. LPDDR bank·row 계산에는 대상 시스템의 address map이 필요합니다. |
 
 ### File, raw disk와 network 시험
 
@@ -112,12 +165,12 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | `--destructive` | 사용 안 함 | `-d` 대상에 데이터를 기록합니다. Partition 데이터가 삭제될 수 있으므로 시험 전 대상을 반드시 확인해야 합니다. |
 | `--read-block-size <byte>` | 512 | Raw disk read block 크기입니다. |
 | `--write-block-size <byte>` | read 크기 | Raw disk write block 크기입니다. |
-| `--segment-size <byte>` | 자동 | Raw disk 공간을 나누는 segment 크기입니다. |
-| `--cache-size <byte>` | 자동 | Disk cache 크기 추정값을 지정합니다. |
-| `--blocks-per-segment <개수>` | 자동 | 한 번의 반복에서 segment마다 처리할 block 수입니다. |
-| `--read-threshold <µs>` | 제한 없음 | Disk read 시간이 이 값을 초과하면 성능 경고를 출력합니다. |
-| `--write-threshold <µs>` | 제한 없음 | Disk write 시간이 이 값을 초과하면 성능 경고를 출력합니다. |
-| `-n <IP 또는 host>` | 사용 안 함 | 원격 stressapptest listener와 page를 송수신하는 Network Worker를 추가합니다. |
+| `--segment-size <byte>` | 전체 장치 | Raw disk 공간을 나누는 segment 크기입니다. |
+| `--cache-size <byte>` | 16 MiB | Disk cache 크기 추정값을 지정합니다. |
+| `--blocks-per-segment <개수>` | 32 | 한 번의 반복에서 segment마다 처리할 block 수입니다. |
+| `--read-threshold <µs>` | 100,000 | Disk read 시간이 이 값을 초과하면 성능 경고를 출력합니다. |
+| `--write-threshold <µs>` | 100,000 | Disk write 시간이 이 값을 초과하면 성능 경고를 출력합니다. |
+| `-n <IPv4>` | 사용 안 함 | 점으로 구분한 IPv4 주소의 stressapptest listener와 page를 송수신하는 Network Worker를 추가합니다. |
 | `--listen` | 사용 안 함 | 다른 stressapptest Network Worker의 연결을 받는 listener를 실행합니다. |
 | `-h`, `--help` | 해당 없음 | 프로그램 도움말을 출력하고 종료합니다. |
 
@@ -132,7 +185,7 @@ adb push stressapptest-android-arm64 /data/local/tmp/stressapptest
 adb shell chmod 0755 /data/local/tmp/stressapptest
 ```
 
-`adb root`를 지원하는 `userdebug` 또는 `eng` build에서는 다음과 같이 실행할 수 있습니다.
+`adb root`를 지원하는 `userdebug` 또는 `eng` build에서는 다음 명령을 실행할 수 있습니다.
 
 ```bash
 adb root
@@ -176,6 +229,8 @@ lowercase `-p`는 기존 memory block 크기 옵션입니다. 패턴 선택에�
 ```
 
 Pattern은 입력 목록의 순서대로 선택됩니다. 여러 Fill Worker가 block을 병렬로 처리하므로 주소별 배치 순서는 실행 시점에 결정됩니다. `-P`는 pattern 목록을 block 단위로 순환 배정합니다.
+
+쉼표 목록은 한 실행의 SAT 작업 단위에 여러 Pattern을 혼합합니다. Pattern별 독립 비교에는 `-P` 항목 하나를 지정한 별도 프로세스를 사용합니다.
 
 ## Read와 reread를 수행하는 이유
 
@@ -242,7 +297,7 @@ void OsLayer::Flush(void *vaddr) {
 
 AArch64 `FastFlush()`는 `dc cvau`를 사용하여 data cache line을 PoU까지 clean합니다. Line은 valid 상태로 유지될 수 있습니다. Invert 경로의 다음 load 응답 계층은 해당 시점의 cache 상태에 따라 결정됩니다.
 
-Android ARM64의 강제 clean·invalidate 기능은 EL0 cache-maintenance 권한, SoC coherency 구조와 Point of Coherency를 반영한 경로로 구현합니다. 제품 시험에는 검증된 vendor kernel driver 또는 권한이 확인된 AArch64 cache-maintenance 경로를 사용합니다.
+Android ARM64의 강제 clean·invalidate 기능은 EL0 cache-maintenance 권한, SoC coherency 구조와 Point of Coherency를 반영한 경로로 구현합니다. 제품 시험에는 대상 시스템에서 검증한 kernel driver 또는 권한이 확인된 AArch64 cache-maintenance 경로를 사용합니다.
 
 ### Read와 reread 결과 해석
 
@@ -310,7 +365,7 @@ License: Apache License 2.0
 
 <sub><em>Worker: 특정 memory·CPU·I/O 부하 또는 검증 loop를 실행하는 pthread 단위입니다.</em></sub><br>
 <sub><em>Write-back: 수정된 cache line을 하위 cache 또는 system memory 방향으로 기록하는 동작입니다.</em></sub><br>
-<sub><em>Physical mapping: virtual address를 system physical address에 대응시키는 변환 관계입니다.</em></sub>
+<sub><em>Physical mapping: 가상 주소를 시스템 물리 주소에 대응시키는 변환 관계입니다.</em></sub>
 
 ### 한글 문서 목차
 
@@ -373,4 +428,10 @@ stressapptest -M 512 -s 60 -m 4 -C 4
 - 원본 README: <https://github.com/stressapptest/stressapptest/blob/73b9df227e89cd52b09852056843610722b7b7ae/README.md>
 - License: Apache License 2.0. 기존 `COPYING`과 `NOTICE`를 유지합니다.
 
-Physical address를 LPDDR channel, rank, bank, row와 column으로 변환하거나 DMC counter를 해석할 때는 target platform의 memory-controller 자료를 함께 사용합니다.
+물리 주소를 LPDDR channel, rank, bank, row와 column으로 변환하거나 DMC counter를 해석할 때는 대상 시스템의 memory-controller 자료를 함께 사용합니다.
+
+## 단계별 진단 명령
+
+OneZero256을 예시로 Fill 직후 검사, Runtime Worker 분리, 종료 검사 분리와 신규 옵션별 전체 실행 명령을 제공합니다.
+
+[단계별 오류 검출과 옵션 영향 분석](docs/18-stage-debugging-and-option-risk.md)에서 각 명령과 로그의 `worker`, `phase` 해석 방법을 확인할 수 있습니다.

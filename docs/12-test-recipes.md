@@ -1,6 +1,6 @@
 # 목적에 따른 테스트 명령
 
-이 장에서는 읽기·검사 중심, 기본 복사, read-modify-write, CPU 연산 결합처럼 시험 목적에 따라 실행 명령을 구분합니다. 한 번에 한 조건만 바꾸면 메모리 접근량이 달라진 원인을 비교하기 쉽습니다.
+이 장은 읽기·검사, 기본 복사, read-modify-write와 CPU 연산 결합 목적별 실행 명령을 정리합니다. 비교 시험에서는 한 번에 한 조건만 변경합니다.
 
 ## 테스트 조건 변경 순서
 
@@ -13,7 +13,7 @@
 5. `-W` 또는 `-F` 중 하나만 추가하여 비교
 6. 필요하면 CPU/UFS/coherency 부하 결합
 
-각 실행은 시작 온도, CPU governor, background 프로그램, 화면 상태, 충전기와 전원 조건을 같게 맞춥니다.
+각 실행은 시작 온도, CPU governor, 백그라운드 프로그램, 화면 상태, 충전기와 전원 조건을 동일하게 유지합니다.
 
 ## 명령별로 실행되는 Worker
 
@@ -30,7 +30,7 @@ if (sat_->warm()) {
 }
 ```
 
-**코드 설명:** `-W`는 ARM64 vector 명령과 checksum을 사용하는 복사, 기본 실행은 C 코드의 checksum 복사, `-F`는 C library의 `memcpy()`를 선택합니다. 조건 검사 순서 때문에 `-W -F`를 함께 지정하면 `-W`가 실행됩니다. 각 방식을 분리해서 실행해야 CPU 명령 구성과 DMC 접근량의 차이를 비교할 수 있습니다.
+**코드 설명:** `-W`는 ARM64 vector 명령과 checksum을 사용하는 복사, 기본 실행은 C 코드의 checksum 복사, `-F`는 C library의 `memcpy()`를 선택합니다. `-F`는 Copy source, Invert 전·후, File·Network source/destination의 strict checksum도 생략합니다. 조건 검사 순서 때문에 `-W -F`를 함께 지정하면 Copy는 `-W` 경로를 사용하며 다른 strict checksum은 생략됩니다. 각 방식을 분리해서 실행해야 CPU 명령 구성과 DMC 접근량의 차이를 비교할 수 있습니다.
 
 아래 명령의 512 MiB와 Worker 수는 예시입니다. 대상 휴대폰의 RAM 크기와 온도 여유에 맞게 조정해야 합니다.
 
@@ -46,7 +46,7 @@ stressapptest -M 512 -s 1 -m 0 -c 0 -v 12
 2. 본 시험 구간에는 데이터 처리 Worker가 없으므로 관리 정보만 처리합니다.
 3. 마지막 8개의 `CheckThread`가 valid block 전체를 읽고 검사합니다.
 
-`-s`를 짧게 설정해도 초기 데이터 쓰기와 마지막 전체 검사는 실행됩니다. 따라서 쓰기가 많은 초기 단계와 읽기가 많은 마지막 단계를 나누어 관찰할 수 있습니다. 각 단계가 매우 짧을 수 있으므로 trace의 timestamp를 함께 확인해야 합니다.
+`-s`를 짧게 설정해도 초기 데이터 쓰기와 종료 시점의 Valid 검사는 실행됩니다. 초기 쓰기와 종료 검사의 로그 시각을 구분하여 확인합니다.
 
 ## 1. 메모리 읽기와 검사 중심
 
@@ -58,11 +58,11 @@ stressapptest -M 512 -s 60 -m 0 -c 4
 
 - 4개의 `CheckThread`가 valid 1 MiB block을 분산해서 선택합니다.
 - Block 내부를 앞에서 뒤로 읽으며 4 KiB마다 checksum을 계산합니다.
-- 테스트 데이터 영역에 대상 쓰기는 없습니다.
+- 정상 일치 경로에는 테스트 데이터 write가 없습니다. Mismatch 상세 처리에는 expected 복구 write가 있습니다.
 - Queue와 block 상태 정보에는 쓰기가 발생합니다.
 - DMC 처리량에서 읽기의 비율이 높아질 수 있습니다.
 
-Worker 수는 다음과 같이 늘립니다.
+Worker 수를 늘릴 때는 다음 명령을 사용합니다.
 
 ```text
 -c 1 → 2 → 4 → 8
@@ -128,12 +128,12 @@ stressapptest -M 512 -s 60 -m 4 -W
 ## 5. Read-Modify-Write와 데이터 반전
 
 ```bash
-stressapptest -M 512 -s 60 -m 0 -i 4
+stressapptest -M 512 -s 60 -m 0 -i 4 --invert-range full
 ```
 
 예상:
 
-- 같은 block을 낮은 주소 방향과 높은 주소 방향으로 네 번 read-modify-write
+- 같은 SAT 작업 단위 전체를 낮은 주소 방향과 높은 주소 방향으로 네 번 read-modify-write
 - 작업 전과 후에 checksum 검사
 - 64 B마다 ARM64 `dc cvau` 기반 cache 관리 명령 실행
 - 여러 barrier와 cache 상태 변경
@@ -183,7 +183,7 @@ stressapptest -M 256 -s 60 -m 0 \
 stressapptest -M 512 -s 60 -m 4 --tag_mode
 ```
 
-각 cache line의 첫 word에 virtual address tag를 기록합니다. 일반 pattern 시험과 별도 항목으로 실행합니다. 이 항목은 memory Worker 구성으로 단독 실행합니다.
+각 cache line의 첫 word에 가상 주소 tag를 기록합니다. 일반 pattern 시험과 별도 항목으로 실행합니다. 이 항목은 memory Worker 구성으로 단독 실행합니다.
 
 ## 9. 주기적인 부하 정지와 재시작
 
@@ -226,7 +226,7 @@ stressapptest -M 512 -s 120 -m 4 \
 | G | `-m 0 --cc_test` | CPU 사이 cache line 쓰기 권한 이동 |
 | H | `-m N -f file` | 메모리와 저장 장치 DMA 동시 부하 |
 
-각 조건을 최소 3회 반복하고 낮은 온도에서 시작한 결과와 온도가 오른 뒤의 결과를 구분합니다.
+각 조건은 동일한 시작 온도와 전원 상태에서 3회 이상 반복합니다.
 
 ## 쓰기 전용 부하가 필요한 경우
 
@@ -238,3 +238,37 @@ stressapptest -M 512 -s 120 -m 4 \
 - `CheckThread`: 테스트 데이터를 읽고 검사합니다.
 
 Stressapptest의 기본 Worker는 데이터를 이동하면서 정확성을 검사합니다. 지속적인 write-only 접근은 별도 Worker 또는 memory bandwidth 도구로 구성합니다.
+
+## 추가 검증 옵션
+
+| 옵션 | 기능 | 로그와 비교 항목 |
+|---|---|---|
+| `-P <ID\|이름[,ID\|이름...]>` | Pattern을 지정하고 여러 항목을 입력 순서대로 SAT 작업 단위에 순환 배정 | Pattern 이름과 입력 순서 |
+| `--fill-threads <N>` | 초기 Pattern을 동시에 기록하는 Fill Worker 수 지정 | 병렬 write 수와 초기 write 부하 |
+| `--fill-direction <up\|down>` | SAT 작업 단위 내부의 Fill store 진행 방향 지정 | 주소 진행 방향과 prefetch 조건 |
+| `--fill-verify-every <N>` | SAT 작업 단위 번호 기준 N 간격의 작업 단위를 즉시 검사 | `fill/immediate_check` |
+| `--fill-yield-bytes <byte>` | 지정 byte 기록마다 실행권 양보 | 연속 write 길이와 Worker interleaving |
+| `--verify-after-fill` | 초기 Fill 직후 전체 SAT 작업 단위를 한 번씩 검사 | `post_fill/full_check` |
+| `--prefault-pages` | 메인 스레드가 각 SAT 작업 단위를 운영체제 page 크기 간격으로 기록한 후 Fill 시작 | 미할당 물리 페이지의 할당 시점과 순서 |
+| `--post-fill-delay <초>` | Fill 종료 후 post-fill 검사 또는 Runtime Worker 시작까지 대기 | 마지막 Fill write 이후 경과 시간 |
+| `--runtime-start-delay <초>` | Queue 구성 이후 Runtime Worker 시작까지 대기 | Runtime 시작 전 경과 시간 |
+| `--pattern-byte-offset <byte>` | Pattern 시작 위치와 expected checksum 위치를 함께 이동 | Pattern 전환 위치와 cache-line 주소 경계 |
+| `--fill-preset <none\|zero\|one>` | 최종 Pattern Fill 전에 전체 영역을 지정값으로 기록 | Bit 전환 방향과 선행 write 이력 |
+| `--copy-verify-destination` | Copy 직후 destination SAT 작업 단위를 검사 | `copy/destination_check` |
+| `--final-check-threads <N>` | Runtime Check와 종료 검사를 분리하고 종료 Worker 수 지정 | `check/final_check` read 동시성 |
+| `--skip-final-check` | Runtime Check 종료 drain과 별도 종료 검사 생략 | Fill·Runtime 단계 로그 분리 |
+| `--ddr-freq <값\|목록\|all>` | 한 주파수를 유지하거나 여러 주파수를 순환 | `cur_mode`, `cur_freq`, write·read·reread 주파수 |
+| `--ddr-step <초>` | Sweep mode의 주파수 변경 간격 지정 | 기본값 3초 |
+| `--ddr-node <경로>` | 대상 시스템의 주파수 제어용 kernel interface 경로 지정 | 제어 요청이 전달되는 파일 경로 |
+| `--dram-map lpddr-v1` | 선택형 물리 주소-DRAM 좌표 프로필 적용 | `ch`, `rk`, `sc`, `bg`, `bank`, `row`, `col` |
+| 자동 로그 필드 | 검출 Worker, 검사 단계와 Pattern offset 기록 | `worker`, `phase`, `pattern_offset` |
+
+<sub><em>First-touch: 예약된 가상 페이지에 처음 접근하는 동작입니다. 아직 연결된 물리 페이지가 없으면 kernel이 이 시점에 물리 페이지를 할당합니다.</em></sub>
+
+각 옵션이 추가하는 read·write, queue 상태와 검사 범위는 [단계별 오류 검출과 옵션 영향 분석](18-stage-debugging-and-option-risk.md)에서 확인합니다.
+
+## 단계별 진단 명령
+
+Fill, Runtime Check, Copy, Invert와 종료 검사를 분리하는 전체 Android 실행 명령은 [단계별 오류 검출과 옵션 영향 분석](18-stage-debugging-and-option-risk.md)에 정리되어 있습니다.
+
+각 비교에서는 옵션 하나를 변경하고 시작 온도, 전원 상태, CPU affinity와 백그라운드 부하를 동일하게 유지합니다.
