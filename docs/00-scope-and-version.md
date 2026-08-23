@@ -14,7 +14,7 @@
 | 기본 SAT block | 1 MiB |
 | 코드 cache-line 상수 | 64 B |
 
-문서의 코드 위치와 구현 설명은 위 commit을 기준으로 합니다. 원본 저장소가 변경되면 명령행 옵션 처리, ARM assembly, 기본값을 다시 확인해야 합니다.
+기본 동작 분석의 upstream 기준은 위 commit입니다. 추가 옵션과 진단 로그 설명은 이 fork의 현재 release source commit을 기준으로 합니다. 원본 저장소 또는 fork가 변경되면 명령행 옵션 처리, ARM assembly와 기본값을 다시 확인합니다.
 
 ## 코드에서 확인한 기본 크기
 
@@ -32,7 +32,7 @@ static const uint16_t kNetworkPort = 19996;
 
 ## GitHub master와 AOSP mirror의 버전 관계
 
-현재 분석한 GitHub master에서는 Android 전용 build 파일이 제거되었습니다. Android Open Source Project는 별도의 `platform/external/stressapptest` mirror와 `Android.bp`를 유지합니다.
+이 매뉴얼의 upstream 기준 commit에는 Android 전용 build 파일이 없습니다. Android Open Source Project는 별도의 `platform/external/stressapptest` mirror와 `Android.bp`를 유지합니다.
 
 두 저장소는 서로 다른 commit 이력을 가집니다. 분석과 시험에는 실제 실행 파일을 만든 저장소와 commit을 적용해야 합니다. 확인한 차이는 다음과 같습니다.
 
@@ -52,14 +52,14 @@ static const uint16_t kNetworkPort = 19996;
 - Fill·Copy·Check·Invert·File·Network·Disk·CPU·coherency·error Worker
 - Modified Adler checksum과 word 단위 상세 비교 과정
 - ARM64 NEON 복사, prefetch, cache 관리 명령의 실제 의미
-- Virtual address에서 physical address로 변환한 뒤 LPDDR 위치를 결정하는 경계
+- 가상 주소에서 물리 주소로 변환한 뒤 LPDDR 위치를 결정하는 경계
 - Android에서 가능한 측정과 소스만으로 알 수 없는 항목
 
 ## 분석 범위 외 항목
 
 - 제조사 전용 SoC DMC address map
 - SLC/LLCC inclusive/exclusive 정책
-- Physical address bit에서 LPDDR channel·bank·row를 계산하는 실제 공식
+- 물리 주소 bit에서 LPDDR channel·bank·row를 계산하는 실제 공식
 - Cache line 교체, 연속 쓰기, prefetch의 정확한 내부 알고리즘
 - SoC별 RAS·ECC interrupt와 kernel 로그 연결
 - stressapptest 실행 중 발생한 reboot/OOM/thermal shutdown의 원인 판정
@@ -76,9 +76,9 @@ static const uint16_t kNetworkPort = 19996;
 - `page`: 소스 코드에서는 queue가 관리하는 단위를 의미합니다. 문서에서는 Linux page와 구분하기 위해 기본 1 MiB `SAT block`이라고 합니다.
 - `CRC`: 함수 이름에 사용된 표현입니다. 실제 알고리즘은 `modified Adler checksum`입니다.
 - Pattern `bus width`: 32-bit pattern word가 반복되는 범위를 의미합니다.
-- `physical address`: CPU와 NoC가 사용하는 system physical address를 의미합니다.
+- `physical address`: CPU와 NoC가 사용하는 시스템 물리 주소를 의미합니다.
 
-문서에서는 `SAT block`, `Linux page`, `checksum`, `system physical address`, `DRAM 내부 위치`를 서로 다른 용어로 사용합니다.
+문서에서는 `SAT block`, `Linux page`, `checksum`, `시스템 물리 주소`, `DRAM 내부 위치`를 서로 다른 용어로 사용합니다.
 
 <sub><em>SAT block: stressapptest queue가 관리하는 논리적 메모리 단위이며 기본 크기는 1 MiB입니다.</em></sub>
 <sub><em>DRAM coordinate: DMC가 선택하는 channel, rank, bank, row 및 column의 조합입니다.</em></sub>

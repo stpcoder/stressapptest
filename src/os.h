@@ -360,6 +360,19 @@ class OsLayer {
 
   // Is SAT using normal malloc'd memory, or exotic mmap'd memory.
   bool normal_mem() const { return normal_mem_; }
+  // 시험 메모리를 확보한 allocator 경로를 진단 로그용 문자열로 반환합니다.
+  const char *test_memory_backend() const {
+    if (use_hugepages_)
+      return "sysv_hugepage";
+    if (use_posix_shm_ && dynamic_mapped_shmem_)
+      return "posix_shm_dynamic";
+    if (use_posix_shm_)
+      return "posix_shm_static";
+    if (mmapped_allocation_)
+      return "anonymous_mmap";
+    return "memalign";
+  }
+  bool dynamic_test_mapping() const { return dynamic_mapped_shmem_; }
 
   // Get numa config, if available..
   int num_nodes() const { return num_nodes_; }

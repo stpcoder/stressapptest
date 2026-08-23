@@ -1,21 +1,21 @@
-# 모바일 환경에서 알아둘 제한사항
+# 모바일 환경의 제한사항
 
 이 장에서는 stressapptest가 직접 제어하거나 확인할 수 없는 항목을 정리합니다. LPDDR channel·bank·row를 선택하는 주소 규칙과 controller의 명령 처리 순서를 확인하려면 SoC 문서 또는 hardware counter가 필요합니다.
 
 ## 소스 코드만으로 확인할 수 없는 항목
 
-소스 코드에서 확인할 수 있는 것은 virtual address를 선택하고 접근하는 순서입니다. 다음 항목은 SoC 문서 또는 실제 측정이 필요합니다.
+소스 코드에서 확인할 수 있는 것은 가상 주소를 선택하고 접근하는 순서입니다. 다음 항목은 SoC 문서 또는 실제 측정이 필요합니다.
 
 - 교체할 cache line을 선택하는 기준
 - Write allocate와 연속 쓰기 최적화의 전환 조건
-- Prefetch 거리와 동시에 요청하는 데이터양
+- Prefetch 거리와 동시에 요청하는 데이터 양
 - SLC가 하위 cache의 데이터를 포함하는지와 SLC 분할 방식
 - NoC의 QoS와 요청 순서 변경
 - DMC의 명령 배치와 읽기·쓰기 묶음 처리
-- Physical address에서 channel·bank·row를 계산하는 규칙
+- 물리 주소에서 channel·bank·row를 계산하는 규칙
 - LPDDR 명령과 실제 pin 신호
 
-## Userspace에서 제어할 수 있는 범위
+## 사용자 공간에서 제어할 수 있는 범위
 
 stressapptest는 Android application processor에서 일반 userspace 읽기·쓰기 명령을 사용합니다. 각 항목을 제어하는 주체는 다음과 같습니다.
 
@@ -28,12 +28,12 @@ stressapptest는 Android application processor에서 일반 userspace 읽기·�
 | refresh, timing, training | DMC/PHY firmware와 hardware |
 | DVFS | kernel governor, firmware 및 PMIC |
 
-Stressapptest가 직접 정하는 것은 virtual address 선택, 접근 순서, 데이터 pattern, Worker 수입니다.
+Stressapptest가 직접 정하는 것은 가상 주소 선택, 접근 순서, 데이터 pattern, Worker 수입니다.
 
-<sub><em>Userspace load/store: process virtual address와 운영체제가 지정한 memory attribute를 사용하여 수행하는 CPU memory access입니다.</em></sub>
+<sub><em>Userspace load/store: 프로세스 가상 주소와 운영체제가 지정한 memory attribute를 사용하여 수행하는 CPU memory access입니다.</em></sub>
 <sub><em>MAIR: Memory Attribute Indirection Register의 약어이며 page-table attribute index에 대응하는 memory type을 정의합니다.</em></sub>
 
-Firmware, bootloader, PHY 진단 도구는 controller와 PHY를 직접 제어할 수 있습니다. Stressapptest는 OS scheduling, physical page 할당, coherency, I/O DMA, 온도, DVFS가 함께 동작하는 운영체제 환경을 시험합니다.
+Firmware, bootloader, PHY 진단 도구는 controller와 PHY를 직접 제어할 수 있습니다. Stressapptest는 OS scheduling, 물리 페이지 할당, coherency, I/O DMA, 온도, DVFS가 함께 동작하는 운영체제 환경을 시험합니다.
 
 ## 메모리 크기를 자동으로 정할 때의 위험
 
@@ -87,17 +87,19 @@ int OsLayer::ErrorPoll() {
 
 ## 소스 버전에 따른 `-W` 동작 차이
 
-현재 분석한 GitHub master에는 ARM64 NEON 복사 코드가 있습니다. AOSP mirror 또는 이전 package는 C 코드로 대체될 수 있습니다. 실행 파일을 만든 저장소와 commit을 확인해야 합니다.
+이 저장소의 `master`에는 ARM64 NEON 복사 코드가 있습니다. AOSP mirror 또는 이전 package는 C 코드로 대체될 수 있습니다. 실행 파일을 만든 저장소와 commit을 확인해야 합니다.
+
+옵션을 지정하지 않은 Runtime Check Worker는 기존 코드의 종료 동작을 유지합니다. 정지 요청 이후 Valid queue를 끝까지 검사하고 완료 항목을 Empty로 이동합니다. `--final-check-threads N`을 명시한 실행은 Runtime Check와 종료 검사를 분리하며, `--skip-final-check`는 두 종료 검사 경로를 생략합니다. 이 옵션들은 종료 시점의 CPU 사용, cache 상태와 queue 처리 순서를 변경합니다.
 
 ARM64의 `-W`는 AArch64 `ld1`과 `st1`이 수행하는 일반 cacheable 읽기·쓰기로 분석합니다. Non-temporal store 분석은 x86 `movntdq` 경로에 적용합니다.
 
-## Physical address 변환의 제한
+## 물리 주소 변환의 제한
 
 - 권한이 없으면 `/proc/self/pagemap`의 PFN이 0으로 표시될 수 있습니다.
-- `paddr`에는 block의 첫 주소에 대응하는 physical address만 저장됩니다.
+- `paddr`에는 block의 첫 주소에 대응하는 물리 주소만 저장됩니다.
 - Block 안의 Linux page는 kernel page allocator가 각각 배치합니다.
-- 실행 중 kernel이 physical page를 이동할 수 있습니다.
-- `--do_page_map`은 4 KiB page와 0에 가까운 physical address 시작점을 가정합니다.
+- 실행 중 kernel이 물리 페이지를 이동할 수 있습니다.
+- `--do_page_map`은 4 KiB page와 0에 가까운 물리 주소 시작점을 가정합니다.
 - 공통 channel 계산은 1~2개 channel과 parity·XOR 규칙만 지원합니다.
 - `--paddr_base`는 공통 build에서 무시됩니다.
 
@@ -105,13 +107,17 @@ ARM64의 `-W`는 AArch64 `ld1`과 `st1`이 수행하는 일반 cacheable 읽기�
 
 Pattern 이름의 32·64·128·256은 32-bit word를 반복하는 범위를 나타냅니다. 실제 DQ 폭, burst length, channel 폭은 DMC와 LPDDR 설정에서 별도로 정합니다.
 
+## 4 KiB보다 작은 SAT 작업 단위
+
+`--invert-range legacy`의 처리 범위는 기존 공개 코드의 pointer 계산을 유지합니다. 이 범위는 `-p 1024`와 `-p 2048`에서 0 B, `-p 4096`에서 2 KiB, `-p 1048576`에서 512 KiB입니다. `--invert-range full`은 설정한 SAT 작업 단위 전체를 처리합니다. Copy와 Check는 4 KiB 미만 구간을 64-bit 단위로 검사합니다. Tag mode Copy는 destination 가상 주소 tag를 재생성합니다. 동적 shared-memory mapping은 mmap file offset을 운영체제 page 경계에 정렬한 뒤 SAT 작업 단위 offset을 적용합니다.
+
 ## 기본 Worker가 만드는 읽기·쓰기 조합
 
 지속적으로 쓰기만 수행하는 메모리 Worker는 없습니다. 초기 `FillThread`는 쓰기 중심이고, `CopyThread`는 읽기와 쓰기를 함께 수행하며, `InvertThread`는 read-modify-write를 수행합니다.
 
 ## 대상 block을 검사하는 시점
 
-기본 복사는 원본 checksum 계산과 대상 write를 함께 수행합니다. 대상 데이터 검사는 해당 block이 이후 원본으로 선택되는 시점 또는 마지막 전체 검사에서 실행됩니다.
+기본 복사는 원본 checksum 계산과 대상 write를 함께 수행합니다. 대상 데이터 검사는 해당 block이 이후 원본으로 선택되는 시점 또는 종료 시점의 Valid 검사에서 실행됩니다.
 
 ## Checksum 한계
 
@@ -119,7 +125,7 @@ Modified Adler checksum은 네 누산기로 데이터 변화를 빠르게 찾습
 
 ## 임의 선택 방식의 범위
 
-FineLock queue는 고정 초기값의 pseudo-random 계산으로 block 후보를 고릅니다. Pattern 선택은 `random()` 상태와 thread 실행 순서의 영향을 받습니다. Physical row 분포는 kernel page allocation과 DMC address map으로 측정합니다.
+FineLock queue는 고정 초기값의 pseudo-random 계산으로 block 후보를 고릅니다. Pattern 선택은 `random()` 상태와 thread 실행 순서의 영향을 받습니다. 물리 row 분포는 kernel page allocation과 DMC address map으로 측정합니다.
 
 `DiskThread`는 `srandom(time(NULL))`을 호출하므로 프로세스 전체가 사용하는 `random()` 상태에도 영향을 줄 수 있습니다.
 
@@ -143,20 +149,18 @@ CPU affinity 코드에는 사용 가능한 CPU 번호가 연속이라는 가정�
 
 ## ARM64 시간 측정 register
 
-AArch64 `GetTimestamp()`는 `CNTVCT_EL0`를 읽습니다. 실행 조건은 kernel의 userspace virtual counter 접근 허용입니다. Target 기기에서 이 권한과 trap 처리를 확인합니다.
+AArch64 `GetTimestamp()`는 `CNTVCT_EL0`를 읽습니다. 실행 조건은 kernel의 userspace virtual counter 접근 허용입니다. 대상 기기에서 이 권한과 trap 처리를 확인합니다.
 
-## 일시 정지 관련 값에 0을 사용할 때의 문제
+## 실행 주기 옵션의 허용 범위
 
-`--printsec 0` 또는 `--pause_delay 0`은 다음 실행 시점을 계산하는 내부 나눗셈에 문제가 될 수 있습니다. 0보다 큰 값을 사용해야 합니다.
+`--printsec`와 `--pause_delay`는 1 이상의 값을 사용합니다. Parser는 0 이하의 값을 거부하여 Runtime 주기 계산의 나눗셈 오류를 방지합니다.
 
-## 도움말과 실제 option 이름의 차이
+## 도움말에서 생략된 옵션
 
-- parser: `--reserve_memory`
-- help: `--reserve-memory`
-- help 누락: `-c`, `--coarse_grain_lock`, `--tag_mode`, `--do_page_map`
+- 도움말 누락: `--coarse_grain_lock`, `--tag_mode`, `--do_page_map`
 - Upstream README의 “processor당 두 thread” 설명은 현재 코드의 기본값인 `memory_threads = online CPUs`와 다름
 
-항상 대상 실행 파일과 같은 commit의 옵션 처리 코드를 기준으로 해야 합니다.
+항상 대상 실행 파일을 build한 commit의 옵션 처리 코드를 기준으로 확인합니다.
 
 ## 결과 해석 기준
 

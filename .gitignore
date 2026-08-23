@@ -1,3 +1,5 @@
 /out/
 /site/
 /.venv/
+/.private/
+/sat-step*.log

@@ -33,7 +33,7 @@ export ANDROID_API=30
 ./scripts/build_android_arm64.sh
 ```
 
-API level과 출력 경로는 다음과 같이 직접 지정할 수 있습니다.
+API level과 출력 경로는 명령행 인자로 직접 지정할 수 있습니다.
 
 ```bash
 ./scripts/build_android_arm64.sh 30 /tmp/stressapptest-arm64
@@ -87,7 +87,7 @@ Standalone build는 `STRESSAPPTEST_CONFIG_ANDROID`를 정의하여 `src/stressap
 
 **코드 설명:** NDK의 `aarch64-linux-android<API>-clang++`로 공개 소스 파일을 하나의 PIE 실행 파일로 연결합니다. C++ runtime은 실행 파일에 정적으로 연결됩니다. `STRESSAPPTEST_CPU_AARCH64`는 ARM64용 timestamp, cache 관리 명령과 NEON 복사 코드를 선택합니다.
 
-<sub><em>PIE: Position-Independent Executable의 약어이며 ASLR이 실행 시 virtual address를 배치할 수 있도록 생성한 실행 파일입니다.</em></sub>
+<sub><em>PIE: Position-Independent Executable의 약어이며 ASLR이 실행 시 가상 주소를 배치할 수 있도록 생성한 실행 파일입니다.</em></sub>
 <sub><em>Conditional compilation: compile-time macro 값에 따라 특정 architecture 또는 platform 구현만 binary에 포함하는 방식입니다.</em></sub>
 
 ## 빌드 결과 확인
@@ -201,7 +201,7 @@ User build에서는 `dmesg` 접근이 제한될 수 있습니다. 가능한 경�
 - `/sys/class/thermal/thermal_zone*/temp`
 - CPU/GPU/DMC devfreq
 - LMKD log
-- vendor RAS/ECC log
+- 대상 시스템의 RAS/ECC log
 - simpleperf/Perfetto
 - SLC/LLCC/NoC/DMC PMU
 
@@ -211,7 +211,7 @@ User build에서는 `dmesg` 접근이 제한될 수 있습니다. 가능한 경�
 adb shell 'pkill -INT stressapptest'
 ```
 
-SIGINT 또는 SIGTERM은 Worker 정리와 마지막 전체 검사를 실행합니다. `kill -9`, LMKD의 SIGKILL과 kernel panic은 프로세스를 즉시 종료하므로 pstore와 kernel log를 함께 수집합니다.
+SIGINT 또는 SIGTERM은 Worker 정리와 종료 시점의 Valid 검사를 실행합니다. `kill -9`, LMKD의 SIGKILL과 kernel panic은 프로세스를 즉시 종료하므로 pstore와 kernel log를 함께 수집합니다.
 
 ## Android에서 주의해야 할 실행 방법
 
@@ -220,11 +220,11 @@ SIGINT 또는 SIGTERM은 Worker 정리와 마지막 전체 검사를 실행합�
 stressapptest -s 3600
 
 # 실제 block device 파괴 위험
-stressapptest -d /dev/block/by-name/userdata --destructive
+stressapptest -d /dev/block/<dedicated-test-partition> --destructive
 
 # 공통 ARM 구현의 unsupported 결과 확인
 stressapptest --cpu_freq_test --cpu_freq_threshold 1000
 
 # 공통 OsLayer가 paddr_base를 무시하고 일반 메모리 할당 수행
-stressapptest --paddr_base 0x80000000
+stressapptest --paddr_base <physical-base>
 ```

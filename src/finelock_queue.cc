@@ -282,6 +282,25 @@ bool FineLockPEQueue::GetPageFromPhysical(uint64 paddr,
   return false;
 }
 
+// 논리 offset에 대응하는 entry를 잠시 lock하여 복사한 뒤 즉시 해제합니다.
+// Runtime Worker가 시작되기 전의 post-fill 검사에서 사용합니다.
+bool FineLockPEQueue::GetValidByOffset(uint64 offset,
+                                       struct page_entry *pe) {
+  if (!pe || page_size_ <= 0 || (offset % page_size_) != 0)
+    return false;
+  int64 index = offset / page_size_;
+  if (!valid_index(index))
+    return false;
+  if (pthread_mutex_lock(&pagelocks_[index]) != 0)
+    return false;
+  bool result = page_is_valid(&pages_[index]) &&
+                pages_[index].offset == offset;
+  if (result)
+    *pe = pages_[index];
+  pthread_mutex_unlock(&pagelocks_[index]);
+  return result;
+}
+
 
 // Get a random number from the slot we locked.
 uint64 FineLockPEQueue::GetRandom64FromSlot(int slot) {

@@ -1,6 +1,6 @@
 # 메모리를 복사하고 오류를 찾는 과정
 
-기본 복사 방식은 원본을 읽으면서 checksum을 계산하고 같은 반복문에서 대상에 씁니다. 원본의 checksum이 기대값과 다르면 해당 구간을 다시 자세히 비교합니다. 대상에 쓴 데이터는 이후 원본으로 선택되거나 마지막 전체 검사를 수행할 때 확인합니다.
+기본 복사 방식은 원본을 읽으면서 checksum을 계산하고 같은 반복문에서 대상에 씁니다. 원본의 checksum이 기대값과 다르면 해당 구간을 다시 자세히 비교합니다. 대상에 쓴 데이터는 이후 원본으로 선택되거나 종료 시점의 Valid 검사에서 확인합니다.
 
 ## 검증에 사용하는 checksum
 
@@ -99,7 +99,7 @@ dstpe->lastcpu = sched_getcpu();
 중요한 점:
 
 - 원본은 복사와 동시에 검사합니다.
-- 대상에 쓴 데이터는 해당 block을 이후 원본으로 사용하거나 마지막 전체 검사를 수행할 때 검사합니다.
+- 대상에 쓴 데이터는 해당 block을 이후 원본으로 사용하거나 종료 시점의 Valid 검사에서 확인합니다.
 - 잘못된 원본 데이터가 대상에 복사될 수 있으므로 오류 데이터를 복구하는 경로가 있습니다.
 
 ## 대상 block에 쓴 데이터를 검사하는 시점
@@ -109,7 +109,7 @@ dstpe->lastcpu = sched_getcpu();
 1. 대상 block이 나중에 `CopyThread`의 원본으로 선택될 때
 2. `CheckThread`가 해당 block을 검사할 때
 3. 파일·네트워크 Worker가 원본으로 사용하기 전에 검사할 때
-4. 설정한 시험 시간이 끝난 뒤 마지막 전체 검사를 수행할 때
+4. 설정한 시험 시간이 끝난 뒤 Valid queue에 남은 block을 검사할 때
 
 따라서 실제 오류가 발생한 시각과 로그에 오류가 기록된 시각은 다를 수 있습니다.
 
@@ -127,11 +127,11 @@ Checksum이 다르면 `CheckRegion()`이 해당 4 KiB 구간을 64-bit word 단�
 
 먼저 최대 128개의 상세 오류를 저장합니다. 불일치가 더 많으면 page 또는 block 단위 오류로 추가 처리합니다.
 
-## 일시적인 원본 읽기 오류 확인
+## Checksum mismatch 후 상세 비교가 일치한 경우
 
-Checksum mismatch 후 상세 비교에서 모든 word가 일치하면 일시적인 원본 읽기 오류 처리 경로를 실행합니다.
+Checksum mismatch 후 상세 비교에서 모든 word가 일치하면 destination에 저장된 첫 copy 값을 source로 되돌려 쓴 뒤 다시 검사합니다.
 
-이 결과는 첫 번째 읽기와 두 번째 읽기의 값이 달랐을 가능성을 의미합니다. 대상에는 첫 복사에서 읽은 값이 저장되어 있으므로 다음 절차로 다시 확인합니다.
+대상에는 첫 copy에서 읽은 값이 저장되어 있습니다. 재검사는 다음 순서로 진행됩니다.
 
 ```text
 첫 복사 때 대상에 저장된 데이터
@@ -139,7 +139,7 @@ Checksum mismatch 후 상세 비교에서 모든 word가 일치하면 일시적�
  → 원본을 기대 pattern과 word 단위로 비교
 ```
 
-이 과정은 일시적으로 잘못 읽힌 값을 메모리에 다시 기록하여 어느 주소의 값이 달랐는지 확인하기 위한 것입니다.
+이 재시도 경로는 checksum 계산 시 관찰한 값과 상세 비교 시 관찰한 값의 차이를 확인합니다.
 
 ## 오류가 발생한 위치의 재검사와 복구
 
@@ -147,8 +147,8 @@ Checksum mismatch 후 상세 비교에서 모든 word가 일치하면 일시적�
 
 - 현재 검사를 수행한 CPU
 - 마지막으로 데이터를 쓴 CPU
-- virtual address
-- 계산 가능한 경우 physical address
+- 가상 주소
+- 계산 가능한 경우 물리 주소
 - 실제값
 - 기대값
 - 다시 읽은 값
@@ -161,7 +161,7 @@ Checksum mismatch 후 상세 비교에서 모든 word가 일치하면 일시적�
 
 ## 다른 주소의 데이터가 읽힌 경우
 
-`--tag_mode`에서는 각 64 B cache line의 첫 8 B에 virtual address로 만든 tag를 기록합니다. `CheckRegion()`은 첫 8 B의 기대값을 현재 주소로 계산하고, 나머지 word는 pattern 값과 비교합니다.
+`--tag_mode`에서는 각 64 B cache line의 첫 8 B에 가상 주소로 만든 tag를 기록합니다. `CheckRegion()`은 첫 8 B의 기대값을 현재 주소로 계산하고, 나머지 word는 pattern 값과 비교합니다.
 
 다른 주소의 line이 잘못 들어오면:
 
@@ -176,19 +176,19 @@ Checksum mismatch 후 상세 비교에서 모든 word가 일치하면 일시적�
 
 `-F`는 `strict_ = false`로 설정하여 복사 중 즉시 검사를 줄입니다.
 
-꺼지는 항목:
+생략되는 검사:
 
 - `CopyThread`가 복사할 때 수행하는 원본 checksum
 - `InvertThread`가 반전 작업 전후에 수행하는 checksum
 - 파일·네트워크 Worker가 원본과 대상을 즉시 검사하는 checksum
 
-유지되는 항목:
+계속 실행되는 기능:
 
 - Pattern 상태 정보 전달
-- 설정한 시험 시간 종료 후 `CheckThread`의 마지막 전체 검사
+- 설정한 시험 시간 종료 후 `CheckThread`의 Valid queue 검사
 - Sector·network protocol 자체의 일부 오류 검사
 
-`-F`는 복사 작업에 `memcpy()`를 사용하고 마지막 전체 검사는 그대로 실행합니다.
+`-W`를 지정하지 않은 `-F` 실행은 복사 작업에 `memcpy()`를 사용합니다. `-W -F` 조합은 `-W`의 warm checksum 복사 경로를 사용합니다. `--copy-verify-destination`, `--verify-after-fill`과 종료 시점 Valid 검사는 `-F`의 영향을 받지 않습니다.
 
 ## 오류 검증 기능을 시험하는 옵션
 
@@ -197,11 +197,11 @@ Checksum mismatch 후 상세 비교에서 모든 word가 일치하면 일시적�
 
 이 옵션은 오류 보고 기능을 시험하기 위해 프로그램이 의도적으로 데이터 또는 상태 정보를 변경합니다. 메모리 접근 방식과 hardware 부하 강도는 Worker 관련 옵션으로 별도로 결정됩니다.
 
-<sub><em>Error injection: 오류 처리 경로를 시험하기 위해 software가 의도적으로 data 또는 metadata를 변경하는 기능입니다.</em></sub>
+<sub><em>Error injection: 오류 처리 경로를 시험하기 위해 software가 의도적으로 data 또는 상태 정보를 변경하는 기능입니다.</em></sub>
 
 ## 조기 종료 조건
 
-- `--stop_on_errors`: 지원되는 오류 처리 경로에서 첫 오류가 발생하면 즉시 프로그램을 종료합니다.
+- `--stop_on_errors`: 상세 mismatch 처리 후 종료 요청을 기록합니다. 현재 상세 검사에서는 여러 오류 로그가 출력될 수 있습니다. Runtime Memory Worker는 처리 중인 SAT 작업 단위를 queue에 반환하고, File·Network·Disk·Memory Region Worker는 현재 반복의 정리 지점에서 종료합니다. 제어 반복문은 Worker를 회수하고 종료 시점 Valid 검사를 생략합니다.
 - `--max_errors N`: 전체 오류 수가 N을 초과하면 주 실행 반복을 조기에 끝냅니다.
 
 현재 주 실행 반복문의 종료 조건은 `errors > max_errorcount_`입니다. `--max_errors N`은 누적 오류 수가 N을 초과하는 확인 주기에 종료 절차를 시작합니다.

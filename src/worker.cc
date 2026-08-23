@@ -51,12 +51,14 @@
 #include <sys/syscall.h>
 
 #include <set>
+#include <new>
 #include <string>
 
 // This file must work with autoconf on its public version,
 // so these includes are correct.
 #include "error_diag.h"  // NOLINT
 #include "dram_address.h"  // NOLINT
+#include "invert_workload.h"  // NOLINT
 #include "os.h"          // NOLINT
 #include "pattern.h"     // NOLINT
 #include "queue.h"       // NOLINT
@@ -100,7 +102,32 @@ namespace {
   inline uint64 addr_to_tag(void *address) {
     return reinterpret_cast<uint64>(address);
   }
+
+  // Invert workload 공통 루프가 운영체제별 cache clean hint를 호출하도록
+  // 정적 함수를 동일한 signature로 연결합니다.
+  void InvertFlushHintAdapter(void *address) {
+    OsLayer::FastFlushHint(address);
+  }
 }  // namespace
+
+const char *DiagnosticPhaseName(DiagnosticPhase phase) {
+  switch (phase) {
+    case DIAG_PHASE_PRESET_FILL: return "preset_fill";
+    case DIAG_PHASE_INITIAL_FILL: return "initial_fill";
+    case DIAG_PHASE_FILL_IMMEDIATE_CHECK: return "fill/immediate_check";
+    case DIAG_PHASE_POST_FILL_CHECK: return "post_fill/full_check";
+    case DIAG_PHASE_COPY_TRANSFER: return "copy/transfer";
+    case DIAG_PHASE_COPY_DESTINATION_CHECK:
+      return "copy/destination_check";
+    case DIAG_PHASE_INVERT_PRECHECK: return "invert/precheck";
+    case DIAG_PHASE_INVERT_RMW: return "invert/rmw";
+    case DIAG_PHASE_INVERT_POSTCHECK: return "invert/postcheck";
+    case DIAG_PHASE_RUNTIME_CHECK: return "check/runtime_check";
+    case DIAG_PHASE_FINAL_CHECK: return "check/final_check";
+    case DIAG_PHASE_COUNT: break;
+  }
+  return "unknown";
+}
 
 #if !defined(O_DIRECT)
 // Sometimes this isn't available.
@@ -108,7 +135,7 @@ namespace {
   #define O_DIRECT            0
 #endif
 
-// A struct to hold captured errors, for later reporting.
+// 상세 비교에서 수집한 오류 정보를 Logger가 처리할 때까지 보관합니다.
 struct ErrorRecord {
   ErrorRecord()
       : actual(0),
@@ -121,6 +148,11 @@ struct ErrorRecord {
         tagpaddr(0),
         lastcpu(0),
         patternname(NULL),
+        worker_name("unknown"),
+        phase("unknown"),
+        pattern_byte_offset(0),
+        sat_page_offset(~static_cast<uint64>(0)),
+        offset_in_page(~static_cast<uint64>(0)),
         write_dram_frequency(-1),
         read_dram_frequency(-1),
         reread_dram_frequency(-1) {}
@@ -135,13 +167,19 @@ struct ErrorRecord {
   uint64 tagpaddr;  // This holds the physical address corresponding to the tag.
   uint32 lastcpu;  // This holds the CPU recorded as probably writing this data.
   const char *patternname;  // This holds the pattern name of the expected data.
-  // DDR values captured at the latest whole-block write, first mismatching
-  // read, and cache-flushed reread.
+  const char *worker_name;  // Mismatch를 검출한 Worker 종류.
+  const char *phase;  // Worker 내부의 검사 단계.
+  unsigned int pattern_byte_offset;  // SAT 작업 단위 기준 Pattern byte 위치.
+  uint64 sat_page_offset;  // 시험 영역 기준 SAT 작업 단위 시작 byte offset.
+  uint64 offset_in_page;  // SAT 작업 단위 기준 mismatch word의 byte offset.
+  // 작업 단위의 최근 write pass 시작과 read·reread 직전에 프로그램에
+  // 저장되어 있던 마지막 성공 DDR 주파수 요청값입니다.
   int write_dram_frequency;
   int read_dram_frequency;
   int reread_dram_frequency;
 };
 
+// 주파수 요청 기록이 없으면 로그에 unknown을 출력합니다.
 static void FormatDramFrequencyValue(int frequency,
                                      char *buffer,
                                      size_t buffer_size) {
@@ -151,6 +189,8 @@ static void FormatDramFrequencyValue(int frequency,
     snprintf(buffer, buffer_size, "unknown");
 }
 
+// 최근 write pass와 오류 read·reread 시점의 주파수 요청값을 한 로그
+// 필드로 구성합니다.
 static void FormatDramFrequencies(struct ErrorRecord *error,
                                   char *buffer,
                                   size_t buffer_size) {
@@ -167,6 +207,8 @@ static void FormatDramFrequencies(struct ErrorRecord *error,
            write_frequency, read_frequency, reread_frequency);
 }
 
+// 선택한 주소 변환 프로필로 physical address를 DRAM 좌표로 해석합니다.
+// Physical address 확인 권한 또는 프로필이 없으면 모든 좌표를 unknown으로 둡니다.
 static void FormatDramCoordinates(class Sat *sat,
                                   uint64 physical_address,
                                   char *buffer,
@@ -313,14 +355,20 @@ WorkerThread::WorkerThread() {
   priority_ = Normal;
   worker_status_ = NULL;
   thread_spawner_ = &ThreadSpawnerGeneric;
+  spawned_ = false;
+  diagnostic_phase_stats_ = NULL;
+  diagnostic_stats_published_ = false;
   tag_mode_ = false;
 }
 
-WorkerThread::~WorkerThread() {}
+WorkerThread::~WorkerThread() {
+  delete[] diagnostic_phase_stats_;
+}
 
 // Constructors. Just init some default values.
 FillThread::FillThread() {
   num_pages_to_fill_ = 0;
+  preset_only_ = false;
 }
 
 // Initialize file name to empty.
@@ -350,6 +398,12 @@ NetworkThread::NetworkThread() {
 
 // Initialize?
 NetworkSlaveThread::NetworkSlaveThread() {
+  sat_assert(0 == pthread_mutex_init(&socket_lock_, NULL));
+}
+
+NetworkSlaveThread::~NetworkSlaveThread() {
+  CloseOwnedSocket();
+  sat_assert(0 == pthread_mutex_destroy(&socket_lock_));
 }
 
 // Initialize?
@@ -370,6 +424,29 @@ void WorkerThread::InitThread(int thread_num_init,
   os_ = os_init;
   patternlist_ = patternlist_init;
   worker_status_ = worker_status;
+
+  if (sat_->diag_phase_summary()) {
+    diagnostic_phase_stats_ =
+        new (std::nothrow) DiagnosticPhaseStats[DIAG_PHASE_COUNT];
+    if (!diagnostic_phase_stats_) {
+      logprintf(0,
+                "Process Error: failed to allocate phase statistics for "
+                "worker %d\n",
+                thread_num_);
+      sat_->bad_status();
+    } else {
+      for (int i = 0; i < DIAG_PHASE_COUNT; ++i) {
+        diagnostic_phase_stats_[i].blocks = 0;
+        diagnostic_phase_stats_[i].read_bytes = 0;
+        diagnostic_phase_stats_[i].write_bytes = 0;
+        diagnostic_phase_stats_[i].checksum_mismatch_regions = 0;
+        diagnostic_phase_stats_[i].word_mismatches = 0;
+        diagnostic_phase_stats_[i].first_error_us = -1;
+        diagnostic_phase_stats_[i].first_error_epoch = 0;
+        diagnostic_phase_stats_[i].first_error_worker_bytes = 0;
+      }
+    }
+  }
 
   AvailableCpus(&cpu_mask_);
   tag_ = 0xffffffff;
@@ -410,9 +487,16 @@ bool WorkerThread::InitPriority() {
   return true;
 }
 
-// Use pthreads to create a system thread.
-int WorkerThread::SpawnThread() {
-  // Create the new thread.
+// Work()를 실행할 pthread를 생성합니다.
+bool WorkerThread::SpawnThread() {
+  // 실행 중인 Worker 객체에 pthread를 중복 생성하지 않습니다.
+  if (spawned_) {
+    logprintf(0, "Process Error: worker thread %d was already spawned\n",
+              thread_num_);
+    status_ = false;
+    return false;
+  }
+
   int result = pthread_create(&thread_, NULL, thread_spawner_, this);
   if (result) {
     char buf[256];
@@ -424,23 +508,40 @@ int WorkerThread::SpawnThread() {
     return false;
   }
 
-  // 0 is pthreads success.
+  spawned_ = true;
   return true;
+}
+
+// pthread 생성 실패로 실행되지 않은 Worker를 WorkerStatus에서 제외합니다.
+// 실행된 Worker는 StartRoutine()의 마지막에서 직접 RemoveSelf()를 호출합니다.
+void WorkerThread::RemoveUnspawnedWorker() {
+  sat_assert(!spawned_);
+  sat_assert(worker_status_);
+  worker_status_->RemoveSelf();
 }
 
 // Kill the worker thread with SIGINT.
 bool WorkerThread::KillThread() {
+  if (!spawned_)
+    return true;
   return (pthread_kill(thread_, SIGINT) == 0);
 }
 
 // Block until thread has exited.
 bool WorkerThread::JoinThread() {
+  if (!spawned_)
+    return true;
+
   int result = pthread_join(thread_, NULL);
 
   if (result) {
     logprintf(0, "Process Error: pthread_join failed - error %d\n", result);
     status_ = false;
   }
+
+  if (!result)
+    PublishDiagnosticStats();
+  spawned_ = false;
 
   // 0 is pthreads success.
   return (!result);
@@ -536,10 +637,90 @@ bool WorkerThread::YieldSelf() {
   return (sched_yield() == 0);
 }
 
+// 문자열 로그 단계와 고정 통계 slot의 대응을 반환합니다.
+DiagnosticPhase WorkerThread::GetDiagnosticPhase(
+    const char *worker_name, const char *phase) const {
+  if (!worker_name || !phase)
+    return DIAG_PHASE_COUNT;
+  if (!strcmp(worker_name, "fill") && !strcmp(phase, "immediate_check"))
+    return DIAG_PHASE_FILL_IMMEDIATE_CHECK;
+  if (!strcmp(worker_name, "post_fill") && !strcmp(phase, "full_check"))
+    return DIAG_PHASE_POST_FILL_CHECK;
+  if (!strcmp(worker_name, "copy") && !strcmp(phase, "source_check"))
+    return DIAG_PHASE_COPY_TRANSFER;
+  if (!strcmp(worker_name, "copy") && !strcmp(phase, "destination_check"))
+    return DIAG_PHASE_COPY_DESTINATION_CHECK;
+  if (!strcmp(worker_name, "invert") && !strcmp(phase, "precheck"))
+    return DIAG_PHASE_INVERT_PRECHECK;
+  if (!strcmp(worker_name, "invert") && !strcmp(phase, "postcheck"))
+    return DIAG_PHASE_INVERT_POSTCHECK;
+  if (!strcmp(worker_name, "check") && !strcmp(phase, "runtime_check"))
+    return DIAG_PHASE_RUNTIME_CHECK;
+  if (!strcmp(worker_name, "check") && !strcmp(phase, "final_check"))
+    return DIAG_PHASE_FINAL_CHECK;
+  return DIAG_PHASE_COUNT;
+}
 
-// Fill this page with its pattern.
+// 한 SAT 작업 단위 처리가 끝난 시점에 Worker local counter를 갱신합니다.
+void WorkerThread::RecordDiagnosticOperation(DiagnosticPhase phase,
+                                             uint64 read_bytes,
+                                             uint64 write_bytes,
+                                             int errors) {
+  if (!diagnostic_phase_stats_ || phase >= DIAG_PHASE_COUNT)
+    return;
+  DiagnosticPhaseStats *stats = &diagnostic_phase_stats_[phase];
+  // 상세 비교 경로에서 시점을 기록하지 못한 오류 유형의 fallback입니다.
+  // 완료된 이전 작업량을 저장한 뒤 현재 작업 단위의 byte를 합산합니다.
+  if (errors > 0 && stats->first_error_us < 0) {
+    stats->first_error_us = sat_->diagnostic_elapsed_us();
+    stats->first_error_epoch = sat_->dram_frequency_epoch();
+    stats->first_error_worker_bytes =
+        stats->read_bytes + stats->write_bytes;
+  }
+  stats->blocks++;
+  stats->read_bytes += read_bytes;
+  stats->write_bytes += write_bytes;
+  if (errors > 0)
+    stats->word_mismatches += errors;
+}
+
+// Checksum mismatch로 64-bit 상세 비교에 진입한 4 KiB 구간을 집계합니다.
+void WorkerThread::RecordDiagnosticChecksumMismatch(
+    DiagnosticPhase phase) {
+  if (!diagnostic_phase_stats_ || phase >= DIAG_PHASE_COUNT)
+    return;
+  diagnostic_phase_stats_[phase].checksum_mismatch_regions++;
+}
+
+// CheckRegion()이 실제 word mismatch를 확인한 지점에서 최초 시점을
+// 기록합니다. 정상 데이터 경로에서는 호출되지 않습니다.
+void WorkerThread::RecordDiagnosticFirstError(DiagnosticPhase phase) {
+  if (!diagnostic_phase_stats_ || phase >= DIAG_PHASE_COUNT)
+    return;
+  DiagnosticPhaseStats *stats = &diagnostic_phase_stats_[phase];
+  if (stats->first_error_us >= 0)
+    return;
+  stats->first_error_us = sat_->diagnostic_elapsed_us();
+  stats->first_error_epoch = sat_->dram_frequency_epoch();
+  stats->first_error_worker_bytes =
+      stats->read_bytes + stats->write_bytes;
+}
+
+// pthread 종료 후 local 배열을 Sat 전역 통계에 한 번만 전달합니다.
+void WorkerThread::PublishDiagnosticStats() {
+  if (diagnostic_stats_published_ || !diagnostic_phase_stats_)
+    return;
+  sat_->MergeDiagnosticPhaseStats(
+      diagnostic_phase_stats_, DIAG_PHASE_COUNT);
+  diagnostic_stats_published_ = true;
+}
+
+
+// SAT 작업 단위 전체에 지정된 Pattern을 기록합니다. 기본 경로는 기존의
+// 연속 64-bit store를 유지하고, 진단 옵션이 설정된 경우 방향·yield·Pattern
+// offset을 반영합니다.
 bool WorkerThread::FillPage(struct page_entry *pe) {
-  // Error check arguments.
+  // 유효한 작업 단위가 전달되었는지 확인합니다.
   if (pe == 0) {
     logprintf(0, "Process Error: Fill Page entry null\n");
     return 0;
@@ -547,35 +728,57 @@ bool WorkerThread::FillPage(struct page_entry *pe) {
 
   int write_dram_frequency = sat_->current_dram_frequency();
 
-  // Tag this page as written from the current CPU.
+  // 마지막으로 기록한 CPU 번호를 오류 로그용 상태에 저장합니다.
   pe->lastcpu = sched_getcpu();
 
-  // Mask is the bitmask of indexes used by the pattern.
-  // It is the pattern size -1. Size is always a power of 2.
+  // Pattern은 32-bit 값을 만들고, Fill은 두 값을 묶어 64-bit로 저장합니다.
   uint64 *memwords = static_cast<uint64*>(pe->addr);
   int length = sat_->page_length();
+  const bool default_fill_path =
+      sat_->fill_direction() == Sat::FILL_DIRECTION_UP &&
+      sat_->fill_yield_bytes() == 0 &&
+      pe->pattern->byte_offset() == 0;
 
-  if (tag_mode_) {
-    // Select tag or data as appropriate.
-    for (int i = 0; i < length / wordsize_; i++) {
+  // Up 방향, yield 미사용과 Pattern offset 0의 조합에서는 기존 Fill의
+  // 주소 순회 반복문과 Pattern index 계산식을 사용합니다.
+  if (default_fill_path) {
+    if (tag_mode_) {
+      for (int i = 0; i < length / wordsize_; ++i) {
+        datacast_t data;
+        if ((i & 0x7) == 0) {
+          data.l64 = addr_to_tag(&memwords[i]);
+        } else {
+          data.l32.l = pe->pattern->pattern_unshifted(i << 1);
+          data.l32.h = pe->pattern->pattern_unshifted((i << 1) + 1);
+        }
+        memwords[i] = data.l64;
+      }
+    } else {
+      for (int i = 0; i < length / wordsize_; ++i) {
+        datacast_t data;
+        data.l32.l = pe->pattern->pattern_unshifted(i << 1);
+        data.l32.h = pe->pattern->pattern_unshifted((i << 1) + 1);
+        memwords[i] = data.l64;
+      }
+    }
+  } else {
+    const int words = length / wordsize_;
+    const int yield_words = sat_->fill_yield_bytes() / wordsize_;
+    for (int step = 0; step < words; ++step) {
+      int i = sat_->fill_direction() == Sat::FILL_DIRECTION_UP
+                  ? step : words - step - 1;
       datacast_t data;
 
-      if ((i & 0x7) == 0) {
+      if (tag_mode_ && ((i & 0x7) == 0)) {
         data.l64 = addr_to_tag(&memwords[i]);
       } else {
         data.l32.l = pe->pattern->pattern(i << 1);
         data.l32.h = pe->pattern->pattern((i << 1) + 1);
       }
       memwords[i] = data.l64;
-    }
-  } else {
-    // Just fill in untagged data directly.
-    for (int i = 0; i < length / wordsize_; i++) {
-      datacast_t data;
 
-      data.l32.l = pe->pattern->pattern(i << 1);
-      data.l32.h = pe->pattern->pattern((i << 1) + 1);
-      memwords[i] = data.l64;
+      if (yield_words > 0 && ((step + 1) % yield_words) == 0)
+        YieldSelf();
     }
   }
 
@@ -584,24 +787,65 @@ bool WorkerThread::FillPage(struct page_entry *pe) {
 }
 
 
-// Tell the thread how many pages to fill.
+// 사전 채움 단계에서 SAT 작업 단위 전체에 동일한 64-bit 값을 기록합니다.
+// 주소 방향과 yield 간격은 최종 Pattern Fill과 동일한 설정을 사용합니다.
+bool WorkerThread::FillPageWithConstant(struct page_entry *pe, uint64 value) {
+  if (pe == 0) {
+    logprintf(0, "Process Error: Constant fill page entry null\n");
+    return false;
+  }
+
+  uint64 *memwords = static_cast<uint64*>(pe->addr);
+  int length = sat_->page_length();
+  const int words = length / wordsize_;
+  if (sat_->fill_direction() == Sat::FILL_DIRECTION_UP &&
+      sat_->fill_yield_bytes() == 0) {
+    for (int i = 0; i < words; ++i)
+      memwords[i] = value;
+    return true;
+  }
+
+  const int yield_words = sat_->fill_yield_bytes() / wordsize_;
+  for (int step = 0; step < words; ++step) {
+    int i = sat_->fill_direction() == Sat::FILL_DIRECTION_UP
+                ? step : words - step - 1;
+    memwords[i] = value;
+    if (yield_words > 0 && ((step + 1) % yield_words) == 0)
+      YieldSelf();
+  }
+  return true;
+}
+
+
+// 이 Fill Worker가 처리할 SAT 작업 단위 수를 설정합니다.
 void FillThread::SetFillPages(int64 num_pages_to_fill_init) {
   num_pages_to_fill_ = num_pages_to_fill_init;
 }
 
-// Fill this page with a random pattern.
+// 지정한 -P 목록 또는 가중치 기반 선택으로 이 작업 단위의 Pattern을 정합니다.
 bool FillThread::FillPageRandom(struct page_entry *pe) {
-  // Error check arguments.
+  // 유효한 작업 단위가 전달되었는지 확인합니다.
   if (pe == 0) {
     logprintf(0, "Process Error: Fill Page entry null\n");
     return 0;
+  }
+  if (preset_only_) {
+    // Queue에서 완료 상태를 표시하기 위해 임시 Pattern 포인터를 설정합니다.
+    // 사전 채움 데이터는 이 임시 Pattern으로 검사하지 않습니다.
+    pe->pattern = patternlist_->GetPattern(0);
+    if (sat_->fill_preset() == Sat::FILL_PRESET_ZERO)
+      return FillPageWithConstant(pe, 0x0000000000000000ULL);
+    if (sat_->fill_preset() == Sat::FILL_PRESET_ONE)
+      return FillPageWithConstant(pe, 0xffffffffffffffffULL);
+    logprintf(0, "Process Error: preset Fill requested without a preset\n");
+    return false;
   }
   if ((patternlist_ == 0) || (patternlist_->Size() == 0)) {
     logprintf(0, "Process Error: No data patterns available\n");
     return 0;
   }
 
-  // Choose a random pattern for this block.
+  // -P 목록은 입력 순서대로 순환하고, 목록이 없으면 가중치로 선택합니다.
   pe->pattern = patternlist_->GetRandomPattern();
   pe->lastcpu = sched_getcpu();
 
@@ -610,20 +854,18 @@ bool FillThread::FillPageRandom(struct page_entry *pe) {
     return 0;
   }
 
-  // Actually fill the page.
+  // 선택한 Pattern을 작업 단위 전체에 기록합니다.
   return FillPage(pe);
 }
 
 
-// Memory fill work loop. Execute until alloted pages filled.
+// 할당된 수만큼 Empty 작업 단위를 가져와 기록하고 Valid로 반환합니다.
 bool FillThread::Work() {
   bool result = true;
 
   logprintf(9, "Log: Starting fill thread %d\n", thread_num_);
 
-  // We want to fill num_pages_to_fill pages, and
-  // stop when we've filled that many.
-  // We also want to capture early break
+  // 지정된 작업 단위 수를 채우거나 오류가 발생할 때까지 반복합니다.
   struct page_entry pe;
   int64 loops = 0;
   while (IsReadyToRun() && (loops < num_pages_to_fill_)) {
@@ -634,11 +876,42 @@ bool FillThread::Work() {
       break;
     }
 
-    // Fill the page with pattern
+    // 사전 채움 값 또는 선택한 Pattern을 기록합니다. Block history가
+    // 활성화되면 write 전체에 걸친 DDR 요청 epoch 범위를 저장합니다.
+    const bool record_history = sat_->diag_block_history();
+    uint64 frequency_epoch_begin =
+        record_history ? sat_->dram_frequency_epoch() : 0;
     result = result && FillPageRandom(&pe);
     if (!result) break;
+    if (record_history) {
+      sat_->RecordBlockWrite(
+          pe.offset,
+          preset_only_ ? Sat::BLOCK_WRITER_PRESET
+                       : Sat::BLOCK_WRITER_INITIAL_FILL,
+          thread_num_, sched_getcpu(),
+          frequency_epoch_begin, sat_->dram_frequency_epoch());
+    }
+    if (sat_->diag_phase_summary()) {
+      RecordDiagnosticOperation(
+          preset_only_ ? DIAG_PHASE_PRESET_FILL : DIAG_PHASE_INITIAL_FILL,
+          0, sat_->page_length(), 0);
+    }
 
-    // Put the page back on the queue.
+    // --stop_on_errors 요청 이후에도 queue 구성을 위해 Fill은 완료하며,
+    // 추가 즉시 검사는 생략하여 후속 오류 로그 생성을 제한합니다.
+    if (!preset_only_ && !sat_->error_stop_requested() &&
+        sat_->ShouldVerifyFilledPage(pe.offset)) {
+      int verify_errors =
+          CrcCheckPage(&pe, "fill", "immediate_check");
+      if (sat_->diag_phase_summary()) {
+        RecordDiagnosticOperation(
+            DIAG_PHASE_FILL_IMMEDIATE_CHECK,
+            sat_->page_length(), 0, verify_errors);
+      }
+    }
+
+    // 사전 채움과 최종 Fill 모두 완료 entry를 Valid로 반환합니다. 같은
+    // Fill 단계에서 다른 Worker가 해당 entry를 다시 선택할 수 없습니다.
     result = result && sat_->PutValid(&pe);
     if (!result) {
       logprintf(0, "Process Error: fill_thread failed to push pages, "
@@ -648,7 +921,7 @@ bool FillThread::Work() {
     loops++;
   }
 
-  // Fill in thread status.
+  // 처리 수와 종료 상태를 상위 제어 경로에 전달합니다.
   pages_copied_ = loops;
   status_ = result;
   logprintf(9, "Log: Completed %d: Fill thread. Status %d, %d pages filled\n",
@@ -657,7 +930,10 @@ bool FillThread::Work() {
 }
 
 
-// Print error information about a data miscompare.
+// 상세 비교에서 수집한 첫 read를 기준으로 같은 주소를 다시 load하고 오류
+// 위치와 검출 단계를 출력합니다. AArch64 공통 경로의 Flush()는 cache 관리
+// 명령 없이 반환하므로 read/write 문자열은 두 CPU load의 관계를 나타내는
+// 소프트웨어 분류입니다.
 void WorkerThread::ProcessError(struct ErrorRecord *error,
                                 int priority,
                                 const char *message) {
@@ -665,10 +941,14 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
   char dram_frequencies[128];
   char current_dram_frequency[32];
   char dram_coordinates[192];
+  char sat_location[128];
+  char block_history[256];
+  char block_history_suffix[288] = "";
 
   int core_id = sched_getcpu();
 
-  // Determine if this is a write or read error.
+  // 아키텍처별 Flush()를 호출한 뒤 같은 가상 주소를 다시 읽습니다.
+  // Reread 직전에 저장된 마지막 성공 DDR 주파수 요청값을 기록합니다.
   os_->Flush(error->vaddr);
   error->reread_dram_frequency = sat_->current_dram_frequency();
   error->reread = *(error->vaddr);
@@ -685,9 +965,30 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
   }
 
   error->vbyteaddr = reinterpret_cast<char*>(error->vaddr) + offset;
+  uint64 error_offset_in_page = error->offset_in_page;
+  if (error_offset_in_page != ~static_cast<uint64>(0))
+    error_offset_in_page += offset;
 
-  // Find physical address if possible.
-  error->paddr = os_->VirtualToPhysical(error->vbyteaddr);
+  if (error->sat_page_offset != ~static_cast<uint64>(0) &&
+      error_offset_in_page != ~static_cast<uint64>(0)) {
+    snprintf(sat_location, sizeof(sat_location),
+             "sat_block:%llu,sat_offset:0x%llx,block_offset:0x%llx",
+             error->sat_page_offset / sat_->page_length(),
+             error->sat_page_offset, error_offset_in_page);
+  } else {
+    snprintf(sat_location, sizeof(sat_location),
+             "sat_block:unknown,sat_offset:unknown,block_offset:unknown");
+  }
+  if (error->sat_page_offset != ~static_cast<uint64>(0) &&
+      sat_->FormatBlockHistory(error->sat_page_offset,
+                               block_history, sizeof(block_history))) {
+    snprintf(block_history_suffix, sizeof(block_history_suffix),
+             ", block_history(%s)", block_history);
+  }
+
+  // 로그의 가상 주소와 물리 주소가 같은 64-bit word를 가리키도록 변환합니다.
+  // Word 안의 첫 mismatch byte 위치는 block_offset에 반영합니다.
+  error->paddr = os_->VirtualToPhysical(error->vaddr);
   FormatDramCoordinates(sat_, error->paddr,
                         dram_coordinates, sizeof(dram_coordinates));
   FormatDramFrequencyValue(error->reread_dram_frequency,
@@ -697,46 +998,64 @@ void WorkerThread::ProcessError(struct ErrorRecord *error,
   // Pretty print DIMM mapping if available.
   os_->FindDimm(error->paddr, dimm_string, sizeof(dimm_string));
 
-  // Report parseable error.
+  // 기존 diagnoser와 외부 error report는 유지합니다. 선택형 예산은 상세
+  // 문자열 출력에만 적용하여 오류 보고 semantics를 바꾸지 않습니다.
   if (priority < 5) {
     // Run miscompare error through diagnoser for logging and reporting.
     os_->error_diagnoser_->AddMiscompareError(dimm_string,
                                               reinterpret_cast<uint64>
                                               (error->vaddr), 1);
 
-    logprintf(priority,
-              "%s: miscompare on CPU %d(<-%d) at %p(0x%llx:%s): "
-              "read:0x%016llx, reread:0x%016llx, expected:0x%016llx. "
-              "'%s'; %s, %s, cur_mode:%s, cur_freq:%s, "
-              "ddr_freq(%s).\n",
-              message,
-              core_id,
-              error->lastcpu,
-              error->vaddr,
-              error->paddr,
-              dimm_string,
-              error->actual,
-              error->reread,
-              error->expected,
-              (error->patternname) ? error->patternname : "None",
-              (error->reread == error->expected) ?
-                  "read error" : "write error",
-              dram_coordinates,
-              sat_->dram_frequency_mode(),
-              current_dram_frequency,
-              dram_frequencies);
+    if (priority <= sat_->verbosity() &&
+        sat_->ClaimDetailedErrorLog()) {
+      logprintf(priority,
+                "%s: miscompare on CPU %d(<-%d) at %p(0x%llx:%s): "
+                "read:0x%016llx, reread:0x%016llx, expected:0x%016llx. "
+                "'%s'; %s, worker:%s, phase:%s, pattern_offset:%u, "
+                "%s, %s, cur_mode:%s, cur_freq:%s, "
+                "ddr_freq(%s)%s.\n",
+                message,
+                core_id,
+                error->lastcpu,
+                error->vaddr,
+                error->paddr,
+                dimm_string,
+                error->actual,
+                error->reread,
+                error->expected,
+                (error->patternname) ? error->patternname : "None",
+                (error->reread == error->expected) ?
+                    "read error" : "write error",
+                error->worker_name,
+                error->phase,
+                error->pattern_byte_offset,
+                sat_location,
+                dram_coordinates,
+                sat_->dram_frequency_mode(),
+                current_dram_frequency,
+                dram_frequencies,
+                block_history_suffix);
+    }
   }
 
 
-  // Overwrite incorrect data with correct data to prevent
-  // future miscompares when this data is reused.
+  // 같은 손상값이 Copy를 통해 다른 작업 단위로 전파되지 않도록 해당
+  // 64-bit 위치를 expected 값으로 복구합니다. Block history는 작업 단위
+  // 전체를 마지막으로 기록한 주체를 유지하므로 이 word 복구는 기록하지
+  // 않습니다. 한 구간의 여러 mismatch가 같은 이전 writer를 표시하게 됩니다.
   *(error->vaddr) = error->expected;
   os_->Flush(error->vaddr);
+  if (sat_->stop_on_error())
+    sat_->RequestErrorStop();
 }
 
 
 
-// Print error information about a data miscompare.
+// File Worker의 source 또는 readback 대상에서 검출한 memory mismatch를
+// reread하고 상세 주소와 데이터를 출력합니다. `crc_page_`가 유효한 경우에만
+// 파일 readback의 source·destination 위치를 함께 보고합니다.
+// 로그의 read error/write error는 actual·reread·expected 관계로 만든
+// 소프트웨어 분류이며 실제 DRAM read/write 원인을 확정하지 않습니다.
 void FileThread::ProcessError(struct ErrorRecord *error,
                               int priority,
                               const char *message) {
@@ -745,7 +1064,7 @@ void FileThread::ProcessError(struct ErrorRecord *error,
   char current_dram_frequency[32];
   char dram_coordinates[192];
 
-  // Determine if this is a write or read error.
+  // 아키텍처별 Flush() 호출 뒤 같은 가상 주소를 다시 읽습니다.
   os_->Flush(error->vaddr);
   error->reread_dram_frequency = sat_->current_dram_frequency();
   error->reread = *(error->vaddr);
@@ -763,8 +1082,9 @@ void FileThread::ProcessError(struct ErrorRecord *error,
 
   error->vbyteaddr = reinterpret_cast<char*>(error->vaddr) + offset;
 
-  // Find physical address if possible.
-  error->paddr = os_->VirtualToPhysical(error->vbyteaddr);
+  // 로그의 가상 주소와 물리 주소는 같은 64-bit word를 가리킵니다.
+  // 파일 내부의 정확한 mismatch byte는 vbyteaddr로 별도 계산합니다.
+  error->paddr = os_->VirtualToPhysical(error->vaddr);
   FormatDramCoordinates(sat_, error->paddr,
                         dram_coordinates, sizeof(dram_coordinates));
   FormatDramFrequencyValue(error->reread_dram_frequency,
@@ -780,58 +1100,68 @@ void FileThread::ProcessError(struct ErrorRecord *error,
   if (crc_page_ != -1) {
     int miscompare_byteoffset = static_cast<char*>(error->vbyteaddr) -
                                 static_cast<char*>(page_recs_[crc_page_].dst);
-    os_->error_diagnoser_->AddHDDMiscompareError(devicename_,
-                                                 crc_page_,
-                                                 miscompare_byteoffset,
-                                                 page_recs_[crc_page_].src,
-                                                 page_recs_[crc_page_].dst);
+    os_->error_diagnoser_->AddHDDMiscompareError(
+        devicename_, crc_page_, miscompare_byteoffset,
+        page_recs_[crc_page_].src, page_recs_[crc_page_].dst);
   } else {
-    os_->error_diagnoser_->AddMiscompareError(dimm_string,
-                                              reinterpret_cast<uint64>
-                                              (error->vaddr), 1);
+    os_->error_diagnoser_->AddMiscompareError(
+        dimm_string, reinterpret_cast<uint64>(error->vaddr), 1);
   }
 
-  logprintf(priority,
-            "%s: miscompare on %s at %p(0x%llx:%s): read:0x%016llx, "
-            "reread:0x%016llx, expected:0x%016llx. '%s'; %s, %s, "
-            "cur_mode:%s, cur_freq:%s, ddr_freq(%s).\n",
-            message,
-            devicename_.c_str(),
-            error->vaddr,
-            error->paddr,
-            dimm_string,
-            error->actual,
-            error->reread,
-            error->expected,
-            (error->patternname) ? error->patternname : "None",
-            (error->reread == error->expected) ?
-                "read error" : "write error",
-            dram_coordinates,
-            sat_->dram_frequency_mode(),
-            current_dram_frequency,
-            dram_frequencies);
+  if (priority <= sat_->verbosity() &&
+      sat_->ClaimDetailedErrorLog()) {
+    logprintf(priority,
+              "%s: miscompare on %s at %p(0x%llx:%s): read:0x%016llx, "
+              "reread:0x%016llx, expected:0x%016llx. '%s'; %s, %s, "
+              "cur_mode:%s, cur_freq:%s, ddr_freq(%s).\n",
+              message,
+              devicename_.c_str(),
+              error->vaddr,
+              error->paddr,
+              dimm_string,
+              error->actual,
+              error->reread,
+              error->expected,
+              (error->patternname) ? error->patternname : "None",
+              (error->reread == error->expected) ?
+                  "read error" : "write error",
+              dram_coordinates,
+              sat_->dram_frequency_mode(),
+              current_dram_frequency,
+              dram_frequencies);
+  }
 
-  // Overwrite incorrect data with correct data to prevent
-  // future miscompares when this data is reused.
+  // 재사용되는 작업 단위에서 같은 mismatch가 반복 집계되지 않도록
+  // 해당 64-bit 위치에 expected 값을 기록합니다.
   *(error->vaddr) = error->expected;
   os_->Flush(error->vaddr);
+  if (sat_->stop_on_error())
+    sat_->RequestErrorStop();
 }
 
 
-// Do a word by word result check of a region.
-// Print errors on mismatches.
+// Checksum mismatch가 발생한 구간을 64-bit 단위로 상세 비교합니다.
+// 각 오류 record에 Worker 단계, SAT 작업 단위 offset과 주파수 값을 저장합니다.
 int WorkerThread::CheckRegion(void *addr,
                               class Pattern *pattern,
                               uint32 lastcpu,
                               int64 length,
                               int offset,
                               int64 pattern_offset,
-                              int write_dram_frequency) {
+                              int write_dram_frequency,
+                              const char *worker_name,
+                              const char *phase,
+                              uint64 sat_page_offset) {
   uint64 *memblock = static_cast<uint64*>(addr);
   const int kErrorLimit = 128;
   int errors = 0;
   int overflowerrors = 0;  // Count of overflowed errors.
   bool page_error = false;
+  int overflow_start_word = -1;
+  const DiagnosticPhase diagnostic_phase =
+      diagnostic_phase_stats_
+          ? GetDiagnosticPhase(worker_name, phase)
+          : DIAG_PHASE_COUNT;
   string errormessage("Hardware Error");
   struct ErrorRecord
     recorded[kErrorLimit];  // Queued errors for later printing.
@@ -856,17 +1186,26 @@ int WorkerThread::CheckRegion(void *addr,
 
     // If the value is incorrect, save an error record for later printing.
     if (actual != expected) {
+      RecordDiagnosticFirstError(diagnostic_phase);
       if (errors < kErrorLimit) {
         recorded[errors].actual = actual;
         recorded[errors].expected = expected;
         recorded[errors].vaddr = &memblock[i];
         recorded[errors].patternname = pattern->name();
+        recorded[errors].worker_name = worker_name;
+        recorded[errors].phase = phase;
+        recorded[errors].pattern_byte_offset = pattern->byte_offset();
+        recorded[errors].sat_page_offset = sat_page_offset;
+        recorded[errors].offset_in_page = offset + i * wordsize_;
         recorded[errors].lastcpu = lastcpu;
         recorded[errors].write_dram_frequency = write_dram_frequency;
         recorded[errors].read_dram_frequency = read_dram_frequency;
         errors++;
       } else {
         page_error = true;
+        // 앞에서 보관한 128개 다음의 첫 mismatch 위치입니다. Overflow
+        // 상세 비교는 이 위치부터 다시 시작하여 같은 word를 두 번 세지 않습니다.
+        overflow_start_word = i;
         // If we have overflowed the error queue, just print the errors now.
         logprintf(10, "Log: Error record overflow, too many miscompares!\n");
         errormessage = "Page Error";
@@ -903,8 +1242,10 @@ int WorkerThread::CheckRegion(void *addr,
         expected.l32.l = pattern->pattern(index);
         expected.l32.h = pattern->pattern(index + 1);
 
-        possible.l32.l = pattern->pattern(index);
-        possible.l32.h = pattern->pattern(index + 1);
+        // 현재 expected Pattern과 목록의 다른 Pattern을 비교하여 연속된
+        // 대체 Pattern 구간을 찾습니다.
+        possible.l32.l = altpattern->pattern(index);
+        possible.l32.h = altpattern->pattern(index + 1);
 
         if (state == kGood) {
           if (actual == expected.l64) {
@@ -942,10 +1283,8 @@ int WorkerThread::CheckRegion(void *addr,
       if ((state == kGoodAgain) || (state == kBad)) {
         unsigned int blockerrors = badend - badstart + 1;
         errormessage = "Block Error";
-        // It's okay for the 1st entry to be corrected multiple times,
-        // it will simply be reported twice. Once here and once below
-        // when processing the error queue.
-        ProcessError(&recorded[0], 0, errormessage.c_str());
+        // 아래 오류 queue 처리에서 각 mismatch를 한 번씩 출력하고 복구합니다.
+        // 여기서는 대체 Pattern으로 일치한 연속 범위만 요약합니다.
         logprintf(0, "Block Error: (%p) pattern %s instead of %s, "
                   "%d bytes from offset 0x%x to 0x%x\n",
                   &memblock[badstart],
@@ -967,8 +1306,10 @@ int WorkerThread::CheckRegion(void *addr,
   }
 
   if (page_error) {
-    // For each word in the data region.
-    for (int i = 0; i < length / wordsize_; i++) {
+    // 앞에서 보관하지 못한 첫 mismatch부터 나머지 word를 처리합니다.
+    // 0부터 재검사하면 앞의 128개가 오류 수와 로그에 중복 반영됩니다.
+    sat_assert(overflow_start_word >= 0);
+    for (int i = overflow_start_word; i < length / wordsize_; i++) {
       int read_dram_frequency = sat_->current_dram_frequency();
       uint64 actual = memblock[i];
       uint64 expected;
@@ -993,6 +1334,11 @@ int WorkerThread::CheckRegion(void *addr,
         er.expected = expected;
         er.vaddr = &memblock[i];
         er.patternname = pattern->name();
+        er.worker_name = worker_name;
+        er.phase = phase;
+        er.pattern_byte_offset = pattern->byte_offset();
+        er.sat_page_offset = sat_page_offset;
+        er.offset_in_page = offset + i * wordsize_;
         er.lastcpu = lastcpu;
         er.write_dram_frequency = write_dram_frequency;
         er.read_dram_frequency = read_dram_frequency;
@@ -1014,14 +1360,20 @@ float WorkerThread::GetCopiedData() {
   return pages_copied_ * sat_->page_length() / kMegabyte;
 }
 
-// Calculate the CRC of a region.
-// Result check if the CRC mismatches.
-int WorkerThread::CrcCheckPage(struct page_entry *srcpe) {
+// SAT 작업 단위의 완전한 4 KiB 구간은 checksum으로 검사합니다. 남는 구간은
+// CheckRegion()에서 64-bit 단위로 직접 비교합니다.
+int WorkerThread::CrcCheckPage(struct page_entry *srcpe,
+                               const char *worker_name,
+                               const char *phase) {
   const int blocksize = 4096;
   const int blockwords = blocksize / wordsize_;
   int errors = 0;
 
   const AdlerChecksum *expectedcrc = srcpe->pattern->crc();
+  const DiagnosticPhase diagnostic_phase =
+      diagnostic_phase_stats_
+          ? GetDiagnosticPhase(worker_name, phase)
+          : DIAG_PHASE_COUNT;
   uint64 *memblock = static_cast<uint64*>(srcpe->addr);
   int blocks = sat_->page_length() / blocksize;
   for (int currentblock = 0; currentblock < blocks; currentblock++) {
@@ -1034,29 +1386,31 @@ int WorkerThread::CrcCheckPage(struct page_entry *srcpe) {
       CalculateAdlerChecksum(memslice, blocksize, &crc);
     }
 
-    // If the CRC does not match, we'd better look closer.
+    // Checksum이 다르면 64-bit 단위 상세 비교를 수행합니다.
     if (!crc.Equals(*expectedcrc)) {
+      RecordDiagnosticChecksumMismatch(diagnostic_phase);
       logprintf(11, "Log: CrcCheckPage Falling through to slow compare, "
-                "CRC mismatch %s != %s\n",
+                "CRC mismatch %s != %s worker=%s phase=%s\n",
                 crc.ToHexString().c_str(),
-                expectedcrc->ToHexString().c_str());
+                expectedcrc->ToHexString().c_str(), worker_name, phase);
       int errorcount = CheckRegion(memslice,
                                    srcpe->pattern,
                                    srcpe->lastcpu,
                                    blocksize,
                                    currentblock * blocksize, 0,
-                                   srcpe->write_dram_frequency);
+                                   srcpe->write_dram_frequency,
+                                   worker_name, phase, srcpe->offset);
       if (errorcount == 0) {
         logprintf(0, "Log: CrcCheckPage CRC mismatch %s != %s, "
-                     "but no miscompares found.\n",
+                     "but no miscompares found. worker=%s phase=%s\n",
                   crc.ToHexString().c_str(),
-                  expectedcrc->ToHexString().c_str());
+                  expectedcrc->ToHexString().c_str(), worker_name, phase);
       }
       errors += errorcount;
     }
   }
 
-  // For odd length transfers, we should never hit this.
+  // 4 KiB 단위 처리 후 남은 구간은 64-bit 단위로 직접 검사합니다.
   int leftovers = sat_->page_length() % blocksize;
   if (leftovers) {
     uint64 *memslice = memblock + blocks * blockwords;
@@ -1065,13 +1419,16 @@ int WorkerThread::CrcCheckPage(struct page_entry *srcpe) {
                           srcpe->lastcpu,
                           leftovers,
                           blocks * blocksize, 0,
-                          srcpe->write_dram_frequency);
+                          srcpe->write_dram_frequency,
+                          worker_name, phase, srcpe->offset);
   }
   return errors;
 }
 
 
-// Print error information about a data miscompare.
+// Tag mismatch를 reread하고 데이터 주소와 tag 주소 정보를 함께 출력합니다.
+// 로그의 read error/write error는 actual·reread·expected 관계로 만든
+// 소프트웨어 분류이며 실제 DRAM read/write 원인을 확정하지 않습니다.
 void WorkerThread::ProcessTagError(struct ErrorRecord *error,
                                    int priority,
                                    const char *message) {
@@ -1084,13 +1441,13 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
 
   int core_id = sched_getcpu();
 
-  // Determine if this is a write or read error.
+  // 아키텍처별 Flush() 호출 뒤 같은 가상 주소를 다시 읽습니다.
   os_->Flush(error->vaddr);
   error->reread_dram_frequency = sat_->current_dram_frequency();
   error->reread = *(error->vaddr);
   FormatDramFrequencies(error, dram_frequencies, sizeof(dram_frequencies));
 
-  // Distinguish read and write errors.
+  // 첫 read와 reread의 관계를 로그 분류에 사용합니다.
   if (error->actual != error->reread) {
     read_error = true;
   }
@@ -1114,7 +1471,8 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
   os_->FindDimm(error->tagpaddr, tag_dimm_string, sizeof(tag_dimm_string));
 
   // Report parseable error.
-  if (priority < 5) {
+  if (priority < 5 && priority <= sat_->verbosity() &&
+      sat_->ClaimDetailedErrorLog()) {
     logprintf(priority,
               "%s: Tag from %p(0x%llx:%s) (%s) "
               "miscompare on CPU %d(0x%s) at %p(0x%llx:%s): "
@@ -1145,6 +1503,8 @@ void WorkerThread::ProcessTagError(struct ErrorRecord *error,
   // future miscompares when this data is reused.
   *(error->vaddr) = error->expected;
   os_->Flush(error->vaddr);
+  if (sat_->stop_on_error())
+    sat_->RequestErrorStop();
 }
 
 
@@ -1349,21 +1709,30 @@ bool WorkerThread::AdlerAddrCrcC(uint64 *srcmem64,
   return true;
 }
 
-// Copy a block of memory quickly, while keeping a CRC of the data.
-// Result check if the CRC mismatches.
+// Source의 완전한 4 KiB 구간은 checksum을 계산하면서 destination에
+// 복사합니다. 남는 구간은 직접 비교한 뒤 복사합니다. Checksum mismatch 후
+// 상세 비교에서 오류 위치를 찾지 못하면 Tag mode가 아닐 때 복사된 데이터를
+// source에 다시 기록하여 재검사합니다. 오류가 남으면 destination을 expected
+// Pattern으로 다시 채우므로 이 경로에서는 추가 read·write가 발생합니다.
 int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
-                              struct page_entry *srcpe) {
+                              struct page_entry *srcpe,
+                              const char *worker_name,
+                              const char *phase) {
   int errors = 0;
   int destination_write_frequency = sat_->current_dram_frequency();
   const int blocksize = 4096;
   const int blockwords = blocksize / wordsize_;
   int blocks = sat_->page_length() / blocksize;
 
-  // Base addresses for memory copy
+  // Source와 destination의 작업 단위 시작 주소입니다.
   uint64 *targetmembase = static_cast<uint64*>(dstpe->addr);
   uint64 *sourcemembase = static_cast<uint64*>(srcpe->addr);
-  // Remember the expected CRC
+  // Source Pattern의 사전 계산 checksum을 사용합니다.
   const AdlerChecksum *expectedcrc = srcpe->pattern->crc();
+  const DiagnosticPhase diagnostic_phase =
+      diagnostic_phase_stats_
+          ? GetDiagnosticPhase(worker_name, phase)
+          : DIAG_PHASE_COUNT;
 
   for (int currentblock = 0; currentblock < blocks; currentblock++) {
     uint64 *targetmem = targetmembase + currentblock * blockwords;
@@ -1376,26 +1745,29 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
       AdlerMemcpyC(targetmem, sourcemem, blocksize, &crc);
     }
 
-    // Investigate miscompares.
+    // Source checksum이 다르면 64-bit 단위 상세 비교를 수행합니다.
     if (!crc.Equals(*expectedcrc)) {
+      RecordDiagnosticChecksumMismatch(diagnostic_phase);
       logprintf(11, "Log: CrcCopyPage Falling through to slow compare, "
-                "CRC mismatch %s != %s\n", crc.ToHexString().c_str(),
-                expectedcrc->ToHexString().c_str());
+                "CRC mismatch %s != %s worker=%s phase=%s\n",
+                crc.ToHexString().c_str(),
+                expectedcrc->ToHexString().c_str(), worker_name, phase);
       int errorcount = CheckRegion(sourcemem,
                                    srcpe->pattern,
                                    srcpe->lastcpu,
                                    blocksize,
                                    currentblock * blocksize, 0,
-                                   srcpe->write_dram_frequency);
+                                   srcpe->write_dram_frequency,
+                                   worker_name, phase, srcpe->offset);
       if (errorcount == 0) {
         logprintf(0, "Log: CrcCopyPage CRC mismatch %s != %s, "
-                     "but no miscompares found. Retrying with fresh data.\n",
+                     "but no miscompares found. Retrying with fresh data. "
+                     "worker=%s phase=%s\n",
                   crc.ToHexString().c_str(),
-                  expectedcrc->ToHexString().c_str());
+                  expectedcrc->ToHexString().c_str(), worker_name, phase);
         if (!tag_mode_) {
-          // Copy the data originally read from this region back again.
-          // This data should have any corruption read originally while
-          // calculating the CRC.
+          // 첫 checksum 계산에서 destination으로 복사한 데이터를 source에
+          // 다시 기록한 뒤 동일 구간을 한 번 더 비교합니다.
           int repair_write_frequency = sat_->current_dram_frequency();
           memcpy(sourcemem, targetmem, blocksize);
           errorcount = CheckRegion(sourcemem,
@@ -1403,7 +1775,8 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
                                    srcpe->lastcpu,
                                    blocksize,
                                    currentblock * blocksize, 0,
-                                   repair_write_frequency);
+                                   repair_write_frequency,
+                                   worker_name, phase, srcpe->offset);
           if (errorcount == 0) {
             int core_id = sched_getcpu();
             logprintf(0, "Process Error: CPU %d(0x%s) CrcCopyPage "
@@ -1421,6 +1794,11 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
             er.lastcpu = srcpe->lastcpu;
             logprintf(0, "Process Error: lastCPU %d\n", srcpe->lastcpu);
             er.patternname = srcpe->pattern->name();
+            er.worker_name = worker_name;
+            er.phase = phase;
+            er.pattern_byte_offset = srcpe->pattern->byte_offset();
+            er.sat_page_offset = srcpe->offset;
+            er.offset_in_page = currentblock * blocksize;
             ProcessError(&er, 0, "Hardware Error");
             errors += 1;
             errorcount_ ++;
@@ -1431,7 +1809,9 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
     }
   }
 
-  // For odd length transfers, we should never hit this.
+  // 4 KiB 단위 처리 후 남은 구간을 검사하고 복사합니다.
+  // Tag mode에서는 source 가상 주소 tag를 destination에 사용할 수
+  // 없으므로 destination 주소를 기준으로 tag를 다시 생성합니다.
   int leftovers = sat_->page_length() % blocksize;
   if (leftovers) {
     uint64 *targetmem = targetmembase + blocks * blockwords;
@@ -1442,19 +1822,19 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
                           srcpe->lastcpu,
                           leftovers,
                           blocks * blocksize, 0,
-                          srcpe->write_dram_frequency);
-    int leftoverwords = leftovers / wordsize_;
-    for (int i = 0; i < leftoverwords; i++) {
-      targetmem[i] = sourcemem[i];
-    }
+                          srcpe->write_dram_frequency,
+                          worker_name, phase, srcpe->offset);
+    memcpy(targetmem, sourcemem, leftovers);
+    if (tag_mode_)
+      TagAddrC(targetmem, leftovers);
   }
 
-  // Update pattern reference to reflect new contents.
+  // Destination의 데이터 상태와 마지막 write 정보를 갱신합니다.
   dstpe->pattern = srcpe->pattern;
   dstpe->lastcpu = sched_getcpu();
   dstpe->write_dram_frequency = destination_write_frequency;
 
-  // Clean clean clean the errors away.
+  // Source 오류를 검출한 경우 destination 전체를 expected Pattern으로 채웁니다.
   if (errors) {
     // TODO(nsanders): Maybe we should patch rather than fill? Filling may
     // cause bad data to be propogated across the page.
@@ -1465,74 +1845,84 @@ int WorkerThread::CrcCopyPage(struct page_entry *dstpe,
 
 
 
-// Invert a block of memory quickly, traversing downwards.
+// SAT 작업 단위를 높은 주소에서 낮은 주소 방향으로 순회하며 각 32-bit 값을
+// 읽고 반전한 뒤 같은 주소에 저장합니다. 한 cache line마다 FastFlushHint()를
+// 호출하고 반전 pass 시작 시 저장된 마지막 성공 주파수 요청값을 기록합니다.
+// AArch64의 FastFlushHint()는 `dc cvau`로 PoU까지 clean하며 D-cache invalidate나
+// LPDDR 직접 write 완료를 보장하지 않습니다. 실제 처리 범위는
+// --invert-range 설정으로 결정합니다.
 int InvertThread::InvertPageDown(struct page_entry *srcpe) {
   int write_dram_frequency = sat_->current_dram_frequency();
   const int invert_flush_interval = kCacheLineSize / sizeof(unsigned int);
-  const int blocksize = 4096;
-  const int blockwords = blocksize / wordsize_;
-  int blocks = sat_->page_length() / blocksize;
-
-  // Base addresses for memory copy
-  unsigned int* iter = static_cast<unsigned int *>(srcpe->addr) + (blocks * blockwords);
-  unsigned int* rend = static_cast<unsigned int *>(srcpe->addr);
+  const int64 words =
+      sat_->invert_range_bytes() / sizeof(unsigned int);
 
   OsLayer::FastFlushSync();
-  while(iter != rend) {
-    for(int i = 0; i < invert_flush_interval; ++i) {
-      --iter;
-      *iter = ~(*iter);
-    }
-    OsLayer::FastFlushHint(iter);
-  }
+  bool inverted = InvertWordsDown(
+      static_cast<unsigned int *>(srcpe->addr), words,
+      invert_flush_interval, InvertFlushHintAdapter);
   OsLayer::FastFlushSync();
+  sat_assert(inverted);
   srcpe->lastcpu = sched_getcpu();
   srcpe->write_dram_frequency = write_dram_frequency;
   return 0;
 }
 
-// Invert a block of memory, traversing upwards.
+// SAT 작업 단위를 낮은 주소에서 높은 주소 방향으로 순회하며 각 32-bit 값을
+// 읽고 반전한 뒤 같은 주소에 저장합니다. 한 cache line마다 FastFlushHint()를
+// 호출하고 반전 pass 시작 시 저장된 마지막 성공 주파수 요청값을 기록합니다.
+// Full은 `-p` 전체를 처리하고 Legacy는 upstream의 pointer 단위 계산을
+// 보존합니다. AArch64의 FastFlushHint()는 `dc cvau`로 PoU까지 clean하며
+// D-cache invalidate나 LPDDR 직접 write 완료를 보장하지 않습니다.
 int InvertThread::InvertPageUp(struct page_entry *srcpe) {
   int write_dram_frequency = sat_->current_dram_frequency();
   const int invert_flush_interval = kCacheLineSize / sizeof(unsigned int);
-  const int blocksize = 4096;
-  const int blockwords = blocksize / wordsize_;
-  int blocks = sat_->page_length() / blocksize;
-
-  // Base addresses for memory copy
-  unsigned int* iter = static_cast<unsigned int *>(srcpe->addr);
-  unsigned int* end = static_cast<unsigned int *>(srcpe->addr) + (blocks * blockwords);
+  const int64 words =
+      sat_->invert_range_bytes() / sizeof(unsigned int);
 
   OsLayer::FastFlushSync();
-  while(iter != end) {
-    for(int i = 0; i < invert_flush_interval; ++i) {
-      *iter = ~(*iter);
-      ++iter;
-    }
-    OsLayer::FastFlushHint(iter - invert_flush_interval);
-  }
+  bool inverted = InvertWordsUp(
+      static_cast<unsigned int *>(srcpe->addr), words,
+      invert_flush_interval, InvertFlushHintAdapter);
   OsLayer::FastFlushSync();
+  sat_assert(inverted);
 
   srcpe->lastcpu = sched_getcpu();
   srcpe->write_dram_frequency = write_dram_frequency;
   return 0;
 }
 
-// Copy a block of memory quickly, while keeping a CRC of the data.
-// Result check if the CRC mismatches. Warm the CPU while running
+// 한 Invert 반복은 선택 범위를 네 번 읽고 네 번 다시 기록합니다.
+// Legacy 범위에서도 통계가 전체 SAT 작업 단위를 처리한 것으로 과대 계산되지
+// 않도록 실제 선택 범위를 기준으로 MiB를 계산합니다.
+float InvertThread::GetMemoryCopiedData() {
+  return bytes_processed_ / static_cast<float>(kMegabyte);
+}
+
+// Warm copy 경로로 source checksum을 계산하면서 destination에 복사합니다.
+// Checksum mismatch 후 상세 비교에서 오류 위치를 찾지 못하면 Tag mode가
+// 아닐 때 복사된 데이터를 source에 다시 기록하여 재검사합니다. 오류가 남으면
+// destination을 expected Pattern으로 다시 채우므로 이 경로에서는 추가
+// read·write가 발생합니다.
 int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
-                                  struct page_entry *srcpe) {
+                                  struct page_entry *srcpe,
+                                  const char *worker_name,
+                                  const char *phase) {
   int errors = 0;
   int destination_write_frequency = sat_->current_dram_frequency();
   const int blocksize = 4096;
   const int blockwords = blocksize / wordsize_;
   int blocks = sat_->page_length() / blocksize;
 
-  // Base addresses for memory copy
+  // Source와 destination의 작업 단위 시작 주소입니다.
   uint64 *targetmembase = static_cast<uint64*>(dstpe->addr);
   uint64 *sourcemembase = static_cast<uint64*>(srcpe->addr);
-  // Remember the expected CRC
+  // Source Pattern의 사전 계산 checksum을 사용합니다.
   const AdlerChecksum *expectedcrc = srcpe->pattern->crc();
+  const DiagnosticPhase diagnostic_phase =
+      diagnostic_phase_stats_
+          ? GetDiagnosticPhase(worker_name, phase)
+          : DIAG_PHASE_COUNT;
 
   for (int currentblock = 0; currentblock < blocks; currentblock++) {
     uint64 *targetmem = targetmembase + currentblock * blockwords;
@@ -1545,26 +1935,29 @@ int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
       os_->AdlerMemcpyWarm(targetmem, sourcemem, blocksize, &crc);
     }
 
-    // Investigate miscompares.
+    // Source checksum이 다르면 64-bit 단위 상세 비교를 수행합니다.
     if (!crc.Equals(*expectedcrc)) {
+      RecordDiagnosticChecksumMismatch(diagnostic_phase);
       logprintf(11, "Log: CrcWarmCopyPage Falling through to slow compare, "
-                "CRC mismatch %s != %s\n", crc.ToHexString().c_str(),
-                expectedcrc->ToHexString().c_str());
+                "CRC mismatch %s != %s worker=%s phase=%s\n",
+                crc.ToHexString().c_str(),
+                expectedcrc->ToHexString().c_str(), worker_name, phase);
       int errorcount = CheckRegion(sourcemem,
                                    srcpe->pattern,
                                    srcpe->lastcpu,
                                    blocksize,
                                    currentblock * blocksize, 0,
-                                   srcpe->write_dram_frequency);
+                                   srcpe->write_dram_frequency,
+                                   worker_name, phase, srcpe->offset);
       if (errorcount == 0) {
         logprintf(0, "Log: CrcWarmCopyPage CRC mismatch expected: %s != actual: %s, "
-                     "but no miscompares found. Retrying with fresh data.\n",
+                     "but no miscompares found. Retrying with fresh data. "
+                     "worker=%s phase=%s\n",
                   expectedcrc->ToHexString().c_str(),
-                  crc.ToHexString().c_str() );
+                  crc.ToHexString().c_str(), worker_name, phase);
         if (!tag_mode_) {
-          // Copy the data originally read from this region back again.
-          // This data should have any corruption read originally while
-          // calculating the CRC.
+          // 첫 checksum 계산에서 destination으로 복사한 데이터를 source에
+          // 다시 기록한 뒤 동일 구간을 한 번 더 비교합니다.
           int repair_write_frequency = sat_->current_dram_frequency();
           memcpy(sourcemem, targetmem, blocksize);
           errorcount = CheckRegion(sourcemem,
@@ -1572,7 +1965,8 @@ int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
                                    srcpe->lastcpu,
                                    blocksize,
                                    currentblock * blocksize, 0,
-                                   repair_write_frequency);
+                                   repair_write_frequency,
+                                   worker_name, phase, srcpe->offset);
           if (errorcount == 0) {
             int core_id = sched_getcpu();
             logprintf(0, "Process Error: CPU %d(0x%s) CrciWarmCopyPage "
@@ -1589,6 +1983,11 @@ int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
             er.vaddr = sourcemem;
             er.lastcpu = srcpe->lastcpu;
             er.patternname = srcpe->pattern->name();
+            er.worker_name = worker_name;
+            er.phase = phase;
+            er.pattern_byte_offset = srcpe->pattern->byte_offset();
+            er.sat_page_offset = srcpe->offset;
+            er.offset_in_page = currentblock * blocksize;
             ProcessError(&er, 0, "Hardware Error");
             errors ++;
             errorcount_ ++;
@@ -1599,7 +1998,9 @@ int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
     }
   }
 
-  // For odd length transfers, we should never hit this.
+  // 4 KiB 단위 처리 후 남은 구간을 검사하고 복사합니다.
+  // Warm Copy의 Tag mode도 destination 주소를 기준으로 tag를
+  // 다시 생성하여 source 주소 tag가 남지 않도록 처리합니다.
   int leftovers = sat_->page_length() % blocksize;
   if (leftovers) {
     uint64 *targetmem = targetmembase + blocks * blockwords;
@@ -1610,20 +2011,20 @@ int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
                           srcpe->lastcpu,
                           leftovers,
                           blocks * blocksize, 0,
-                          srcpe->write_dram_frequency);
-    int leftoverwords = leftovers / wordsize_;
-    for (int i = 0; i < leftoverwords; i++) {
-      targetmem[i] = sourcemem[i];
-    }
+                          srcpe->write_dram_frequency,
+                          worker_name, phase, srcpe->offset);
+    memcpy(targetmem, sourcemem, leftovers);
+    if (tag_mode_)
+      TagAddrC(targetmem, leftovers);
   }
 
-  // Update pattern reference to reflect new contents.
+  // Destination의 데이터 상태와 마지막 write 정보를 갱신합니다.
   dstpe->pattern = srcpe->pattern;
   dstpe->lastcpu = sched_getcpu();
   dstpe->write_dram_frequency = destination_write_frequency;
 
 
-  // Clean clean clean the errors away.
+  // Source 오류를 검출한 경우 destination 전체를 expected Pattern으로 채웁니다.
   if (errors) {
     // TODO(nsanders): Maybe we should patch rather than fill? Filling may
     // cause bad data to be propogated across the page.
@@ -1634,20 +2035,48 @@ int WorkerThread::CrcWarmCopyPage(struct page_entry *dstpe,
 
 
 
-// Memory check work loop. Execute until done, then exhaust pages.
+// Runtime 검사와 종료 검사는 동일한 checksum 경로를 사용합니다.
+// 옵션 미지정 실행의 Runtime Check Worker는 기존 코드와 같이 STOP 이후
+// Valid queue를 끝까지 검사하여 Empty로 옮깁니다. --skip-final-check 또는
+// 명시적 --final-check-threads 실행에서는 보유 entry를 Valid로 반환하고
+// 별도 종료 정책에 따라 다음 entry 선택을 중지합니다.
 bool CheckThread::Work() {
   struct page_entry pe;
   bool result = true;
   int64 loops = 0;
+  const bool final_check = (check_phase_ == "final_check");
+  const bool legacy_final_check =
+      !final_check && sat_->legacy_final_check_mode();
+  bool draining = final_check;
 
   logprintf(9, "Log: Starting Check thread %d\n", thread_num_);
 
-  // We want to check all the pages, and
-  // stop when there aren't any left.
   while (true) {
+    // --stop_on_errors가 설정되면 Runtime과 종료 검사 모두
+    // 현재 entry 반환 후 새 entry를 가져오지 않습니다.
+    if (sat_->error_stop_requested())
+      break;
+
+    // 분리형 종료 정책만 반복 시작 시 STOP을 확인합니다. 기존 경로는
+    // 원본 코드와 같은 위치인 작업 단위 검사 뒤에서 상태를 확인합니다.
+    bool runtime_running = true;
+    if (!final_check && !legacy_final_check) {
+      runtime_running = IsReadyToRunNoPause();
+      if (!runtime_running)
+        break;
+    }
+
+    // STOP 이후 기존 Runtime Check Worker가 수행하는 drain은 종료 검사
+    // 단계로 집계합니다. STOP 전 시작한 한 작업 단위는 Runtime으로 남습니다.
+    const char *operation_phase =
+        draining ? "final_check" : check_phase_.c_str();
+
     result = result && sat_->GetValid(&pe);
     if (!result) {
-      if (IsReadyToRunNoPause())
+      const bool unexpected_empty =
+          !final_check &&
+          (legacy_final_check ? IsReadyToRunNoPause() : runtime_running);
+      if (unexpected_empty)
         logprintf(0, "Process Error: check_thread failed to pop pages, "
                   "bailing\n");
       else
@@ -1655,15 +2084,28 @@ bool CheckThread::Work() {
       break;
     }
 
-    // Do the result check.
-    CrcCheckPage(&pe);
+    // 선택한 작업 단위의 전체 checksum을 검사합니다.
+    int check_errors =
+        CrcCheckPage(&pe, "check", operation_phase);
+    if (sat_->diag_phase_summary()) {
+      RecordDiagnosticOperation(
+          draining ? DIAG_PHASE_FINAL_CHECK : DIAG_PHASE_RUNTIME_CHECK,
+          sat_->page_length(), 0, check_errors);
+    }
 
-    // Push pages back on the valid queue if we are still going,
-    // throw them out otherwise.
-    if (IsReadyToRunNoPause())
-      result = result && sat_->PutValid(&pe);
-    else
+    // Runtime이 계속되거나 별도 종료 정책을 사용하는 entry는 Valid로
+    // 반환합니다. 기존 종료 drain과 별도 final Worker는 Empty로 옮깁니다.
+    const bool stopped_after_check =
+        !final_check && !IsReadyToRunNoPause();
+    if (final_check ||
+        (legacy_final_check && stopped_after_check &&
+         !sat_->error_stop_requested())) {
       result = result && sat_->PutEmpty(&pe);
+      if (legacy_final_check)
+        draining = true;
+    } else {
+      result = result && sat_->PutValid(&pe);
+    }
     if (!result) {
       logprintf(0, "Process Error: check_thread failed to push pages, "
                 "bailing\n");
@@ -1680,7 +2122,78 @@ bool CheckThread::Work() {
 }
 
 
-// Memory copy work loop. Execute until marked done.
+// Runtime queue 구성 전에 초기 Pattern이 지정된 SAT 작업 단위를 논리 offset
+// 순서로 순회합니다. Queue 상태와 random cursor를 변경하지 않으며 entry
+// metadata 전체를 별도 vector에 보관하지 않습니다.
+bool PostFillCheckThread::Work() {
+  bool result = true;
+  int64 checked_pages = 0;
+  const bool coarse_queue = sat_->coarse_grain_queue();
+
+  logprintf(5,
+            "Log: DIAG phase=post_fill_check_begin pages=%lld thread=%d "
+            "order=%s\n",
+            pages_to_check_, thread_num_,
+            coarse_queue ? "queue_random" : "logical_offset");
+
+  for (int64 i = 0; i < pages_to_check_; ++i) {
+    struct page_entry pe;
+    uint64 page_offset = i * sat_->page_length();
+    bool page_ready = coarse_queue
+        ? sat_->GetValid(&pe)
+        : sat_->GetValidByOffsetForInitialization(page_offset, &pe);
+    if (!page_ready) {
+      logprintf(0,
+                "Process Error: post-fill check could not get page "
+                "%lld/%lld requested_offset=0x%llx\n",
+                i, pages_to_check_, page_offset);
+      result = false;
+      break;
+    }
+    int check_errors =
+        CrcCheckPage(&pe, "post_fill", "full_check");
+    if (sat_->diag_phase_summary()) {
+      RecordDiagnosticOperation(
+          DIAG_PHASE_POST_FILL_CHECK,
+          sat_->page_length(), 0, check_errors);
+    }
+
+    if (coarse_queue) {
+      if (!sat_->HoldInitializationPage(&pe)) {
+        sat_->PutValid(&pe);
+        logprintf(0,
+                  "Process Error: post-fill check could not hold page\n");
+        result = false;
+        break;
+      }
+    } else {
+      sat_->ReleaseInitializationPage(&pe);
+    }
+    checked_pages++;
+
+    if (sat_->error_stop_requested())
+      break;
+  }
+
+  if (coarse_queue && !sat_->RestoreInitializationPages(checked_pages)) {
+    logprintf(0,
+              "Process Error: post-fill check could not restore pages\n");
+    result = false;
+  }
+
+  pages_copied_ = checked_pages;
+  status_ = result;
+  logprintf(result ? 5 : 0,
+            "Log: DIAG phase=post_fill_check_end pages=%lld errors=%lld "
+            "status=%d\n",
+            checked_pages, errorcount_, status_);
+  return result;
+}
+
+
+// Valid 원본과 Empty 대상을 하나씩 가져와 복사합니다. -W를 지정하면 warm
+// checksum 경로가 우선합니다. -W가 없을 때 기본값은 일반 checksum 경로이며
+// -F를 지정하면 memcpy 경로를 사용합니다. 대상은 Valid, 원본은 Empty가 됩니다.
 bool CopyThread::Work() {
   struct page_entry src;
   struct page_entry dst;
@@ -1692,13 +2205,22 @@ bool CopyThread::Work() {
             thread_num_, cpuset_format(&cpu_mask_).c_str(), tag_,
             sat_->warm(), os_->has_vector());
 
-  while (IsReadyToRun()) {
-    // Pop the needed pages.
-    result = result && sat_->GetValid(&src, tag_);
-    result = result && sat_->GetEmpty(&dst, tag_);
-    if (!result) {
+  while (IsReadyToRun() && !sat_->error_stop_requested()) {
+    // Valid source와 Empty destination을 각각 하나씩 확보합니다.
+    if (!sat_->GetValid(&src, tag_)) {
       logprintf(0, "Process Error: copy_thread failed to pop pages, "
                 "bailing\n");
+      result = false;
+      break;
+    }
+    if (!sat_->GetEmpty(&dst, tag_)) {
+      // Destination 획득 실패 시 이미 확보한 source를 Valid 상태로
+      // 반환하여 FineLock의 page lock과 OneLock의 entry를 보존합니다.
+      if (!sat_->PutValid(&src))
+        logprintf(0, "Process Error: copy_thread failed to return source\n");
+      logprintf(0, "Process Error: copy_thread failed to pop pages, "
+                "bailing\n");
+      result = false;
       break;
     }
 
@@ -1711,27 +2233,60 @@ bool CopyThread::Work() {
       }
     }
 
-    // We can use memcpy, or CRC check while we copy.
+    // 옵션에 따라 warm checksum, 기본 checksum 또는 memcpy 경로를 선택합니다.
+    // Copy 전체가 끝난 뒤 destination의 마지막 writer를 갱신합니다.
+    const bool record_history = sat_->diag_block_history();
+    uint64 frequency_epoch_begin =
+        record_history ? sat_->dram_frequency_epoch() : 0;
+    int copy_errors = 0;
     if (sat_->warm()) {
-      CrcWarmCopyPage(&dst, &src);
+      copy_errors =
+          CrcWarmCopyPage(&dst, &src, "copy", "source_check");
     } else if (sat_->strict()) {
-      CrcCopyPage(&dst, &src);
+      copy_errors = CrcCopyPage(&dst, &src, "copy", "source_check");
     } else {
       int destination_write_frequency = sat_->current_dram_frequency();
       memcpy(dst.addr, src.addr, sat_->page_length());
+      // -F Copy에서도 destination 가상 주소를 기준으로
+      // cache-line tag를 재생성하여 source tag 복사를 방지합니다.
+      if (tag_mode_)
+        TagAddrC(static_cast<uint64*>(dst.addr), sat_->page_length());
       dst.pattern = src.pattern;
       dst.lastcpu = sched_getcpu();
       dst.write_dram_frequency = destination_write_frequency;
     }
+    if (record_history) {
+      sat_->RecordBlockWrite(
+          dst.offset,
+          copy_errors ? Sat::BLOCK_WRITER_REPAIR : Sat::BLOCK_WRITER_COPY,
+          thread_num_, sched_getcpu(),
+          frequency_epoch_begin, sat_->dram_frequency_epoch());
+    }
+    if (sat_->diag_phase_summary()) {
+      RecordDiagnosticOperation(
+          DIAG_PHASE_COPY_TRANSFER,
+          sat_->page_length(), sat_->page_length(), copy_errors);
+    }
 
-    result = result && sat_->PutValid(&dst);
-    result = result && sat_->PutEmpty(&src);
+    // destination을 Valid queue에 반환하기 전에 선택형 readback 검사를
+    // 수행합니다. 이 검사는 추가 read와 cache 상태 변화를 발생시킵니다.
+    if (sat_->copy_verify_destination()) {
+      int destination_errors =
+          CrcCheckPage(&dst, "copy", "destination_check");
+      if (sat_->diag_phase_summary()) {
+        RecordDiagnosticOperation(
+            DIAG_PHASE_COPY_DESTINATION_CHECK,
+            sat_->page_length(), 0, destination_errors);
+      }
+    }
 
-    // Copy worker-threads yield themselves at the end of each copy loop,
-    // to avoid threads from preempting each other in the middle of the inner
-    // copy-loop. Cooperations between Copy worker-threads results in less
-    // unnecessary cache thrashing (which happens when context-switching in the
-    // middle of the inner copy-loop).
+    // 첫 반환이 실패해도 두 번째 entry 반환을 시도하여 queue 누락을 막습니다.
+    bool dst_returned = sat_->PutValid(&dst);
+    bool src_returned = sat_->PutEmpty(&src);
+    result = dst_returned && src_returned;
+
+    // 작업 단위 복사가 끝난 지점에서 실행권을 양보합니다. 다른 Copy Worker가
+    // 작업 단위 내부의 연속 복사 구간을 실행할 기회를 확보할 수 있습니다.
     YieldSelf();
 
     if (!result) {
@@ -1749,7 +2304,8 @@ bool CopyThread::Work() {
   return result;
 }
 
-// Memory invert work loop. Execute until marked done.
+// Valid 작업 단위 하나를 선택하여 up·down·down·up 네 번의 범위 반전 저장을
+// 수행합니다. Strict mode에서는 반전 전·후 checksum을 검사합니다.
 bool InvertThread::Work() {
   struct page_entry src;
   bool result = true;
@@ -1757,8 +2313,8 @@ bool InvertThread::Work() {
 
   logprintf(9, "Log: Starting invert thread %d\n", thread_num_);
 
-  while (IsReadyToRun()) {
-    // Pop the needed pages.
+  while (IsReadyToRun() && !sat_->error_stop_requested()) {
+    // 반전할 Valid 작업 단위를 하나 확보합니다.
     result = result && sat_->GetValid(&src);
     if (!result) {
       logprintf(0, "Process Error: invert_thread failed to pop pages, "
@@ -1766,13 +2322,22 @@ bool InvertThread::Work() {
       break;
     }
 
-    if (sat_->strict())
-      CrcCheckPage(&src);
+    // 첫 반전 전에 저장된 Pattern의 checksum을 확인합니다.
+    if (sat_->strict()) {
+      int precheck_errors =
+          CrcCheckPage(&src, "invert", "precheck");
+      if (sat_->diag_phase_summary()) {
+        RecordDiagnosticOperation(
+            DIAG_PHASE_INVERT_PRECHECK,
+            sat_->page_length(), 0, precheck_errors);
+      }
+    }
 
-    // For the same reason CopyThread yields itself (see YieldSelf comment
-    // in CopyThread::Work(), InvertThread yields itself after each invert
-    // operation to improve cooperation between different worker threads
-    // stressing the memory/cache.
+    // 각 범위 반전 저장 뒤에 실행권을 양보하여 다른 Worker의 실행 기회를
+    // 확보합니다. 다음 반전은 같은 작업 단위를 계속 사용합니다.
+    const bool record_history = sat_->diag_block_history();
+    uint64 frequency_epoch_begin =
+        record_history ? sat_->dram_frequency_epoch() : 0;
     InvertPageUp(&src);
     YieldSelf();
     InvertPageDown(&src);
@@ -1781,9 +2346,30 @@ bool InvertThread::Work() {
     YieldSelf();
     InvertPageUp(&src);
     YieldSelf();
+    if (record_history) {
+      sat_->RecordBlockWrite(
+          src.offset, Sat::BLOCK_WRITER_INVERT,
+          thread_num_, sched_getcpu(),
+          frequency_epoch_begin, sat_->dram_frequency_epoch());
+    }
+    if (sat_->diag_phase_summary()) {
+      RecordDiagnosticOperation(
+          DIAG_PHASE_INVERT_RMW,
+          sat_->invert_range_bytes() * 4,
+          sat_->invert_range_bytes() * 4, 0);
+    }
 
-    if (sat_->strict())
-      CrcCheckPage(&src);
+    // up·down·down·up 네 번의 선택 범위 반전 후 checksum을 확인합니다.
+    // Legacy 범위 밖의 데이터는 네 pass 동안 변경되지 않습니다.
+    if (sat_->strict()) {
+      int postcheck_errors =
+          CrcCheckPage(&src, "invert", "postcheck");
+      if (sat_->diag_phase_summary()) {
+        RecordDiagnosticOperation(
+            DIAG_PHASE_INVERT_POSTCHECK,
+            sat_->page_length(), 0, postcheck_errors);
+      }
+    }
 
     result = result && sat_->PutValid(&src);
     if (!result) {
@@ -1795,6 +2381,7 @@ bool InvertThread::Work() {
   }
 
   pages_copied_ = loops * 2;
+  bytes_processed_ = loops * sat_->invert_range_bytes() * 8;
   status_ = result;
   logprintf(9, "Log: Completed %d: Copy thread. Status %d, %d pages copied\n",
             thread_num_, status_, pages_copied_);
@@ -1880,7 +2467,7 @@ bool FileThread::WritePages(int fd) {
 
     // Check data correctness.
     if (strict)
-      CrcCheckPage(&src);
+      CrcCheckPage(&src, "file", "source_check");
 
     SectorTagPage(&src, i);
 
@@ -1961,8 +2548,8 @@ bool FileThread::SectorValidatePage(const struct PageRec &page,
       else if (tag[sec].pass != (pass_ & 0xff))
         offset += 3 * sizeof(uint8);
 
-      // Run sector tag error through diagnoser for logging and reporting.
-      errorcount_ += 1;
+      // 같은 sector mismatch를 하나의 incident로 집계합니다. Diagnoser
+      // 호출은 외부 보고를 수행하며 Worker 오류 수를 별도로 증가시키지 않습니다.
       os_->error_diagnoser_->AddHDDSectorTagError(devicename_, tag[sec].block,
                                                   offset,
                                                   tag[sec].sector,
@@ -1996,21 +2583,19 @@ bool FileThread::SectorValidatePage(const struct PageRec &page,
               ((lastsector + 1) * 512) - 1,
               filename_.c_str());
 
-    // Either exit immediately, or patch the data up and continue.
-    if (sat_->stop_on_error()) {
-      exit(1);
-    } else {
-      // Patch up bad pages.
-      for (int block = (firstsector * 512) / page_length;
-          block <= (lastsector * 512) / page_length;
-          block++) {
-        unsigned int *memblock = static_cast<unsigned int *>(dst->addr);
-        int length = page_length / wordsize_;
-        for (int i = 0; i < length; i++) {
-          memblock[i] = dst->pattern->pattern(i);
-        }
+    // 오류 데이터를 복구한 뒤 공통 종료 요청 경로를 사용합니다. Logger
+    // queue와 다른 Worker가 정상 정리 절차를 완료할 수 있습니다.
+    for (int block = (firstsector * 512) / page_length;
+        block <= (lastsector * 512) / page_length;
+        block++) {
+      unsigned int *memblock = static_cast<unsigned int *>(dst->addr);
+      int length = page_length / wordsize_;
+      for (int i = 0; i < length; i++) {
+        memblock[i] = dst->pattern->pattern(i);
       }
     }
+    if (sat_->stop_on_error())
+      sat_->RequestErrorStop();
   }
   return true;
 }
@@ -2077,7 +2662,7 @@ bool FileThread::GetValidPage(struct page_entry *src) {
   } else {
     src->addr = local_page_;
     src->offset = 0;
-    CrcCopyPage(src, &tmp);
+    CrcCopyPage(src, &tmp, "file", "source_copy_check");
     if (!sat_->PutValid(&tmp))
       return false;
   }
@@ -2122,9 +2707,19 @@ bool FileThread::ReadPages(int fd) {
     page_recs_[i].dst = dst.addr;
 
     // Read from the file into destination page.
+    const bool record_history =
+        page_io_ && sat_->diag_block_history();
+    uint64 read_epoch_begin =
+        record_history ? sat_->dram_frequency_epoch() : 0;
     if (!ReadPageFromFile(fd, &dst)) {
         PutEmptyPage(&dst);
         return false;
+    }
+    if (record_history) {
+      sat_->RecordBlockWrite(
+          dst.offset, Sat::BLOCK_WRITER_FILE,
+          thread_num_, sched_getcpu(),
+          read_epoch_begin, sat_->dram_frequency_epoch());
     }
 
     SectorValidatePage(page_recs_[i], &dst, i);
@@ -2133,7 +2728,7 @@ bool FileThread::ReadPages(int fd) {
     if (strict) {
       // Record page index currently CRC checked.
       crc_page_ = i;
-      int errors = CrcCheckPage(&dst);
+      int errors = CrcCheckPage(&dst, "file", "destination_check");
       if (errors) {
         logprintf(5, "Log: file miscompare at block %d, "
                   "offset %x-%x. File: %s\n",
@@ -2142,7 +2737,8 @@ bool FileThread::ReadPages(int fd) {
         result = false;
       }
       crc_page_ = -1;
-      errorcount_ += errors;
+      // CrcCheckPage()가 상세 비교에서 Worker 오류 수를 직접 증가시킵니다.
+      // 반환값은 이 page의 성공 여부 판정에만 사용합니다.
     }
     if (!PutValidPage(&dst))
       return false;
@@ -2181,7 +2777,8 @@ bool FileThread::Work() {
   }
 
   // Loop until done.
-  while (IsReadyToRun()) {
+  // --stop_on_errors 요청 후에는 새 파일 write/read cycle을 시작하지 않습니다.
+  while (IsReadyToRun() && !sat_->error_stop_requested()) {
     // Do the file write.
     if (!(result = result && WritePages(fd)))
       break;
@@ -2269,7 +2866,8 @@ bool NetworkThread::Connect(int sock) {
   return true;
 }
 
-// Initiate the tcp connection.
+// TCP listener socket에 주소와 port를 bind하고 connection queue를 엽니다.
+// bind 또는 listen 실패는 listener Worker 실패로 반환합니다.
 bool NetworkListenThread::Listen() {
   struct sockaddr_in sa;
 
@@ -2287,36 +2885,58 @@ bool NetworkListenThread::Listen() {
     status_ = false;
     return false;
   }
-  listen(sock_, 3);
+  if (-1 == ::listen(sock_, 3)) {
+    char buf[256];
+    sat_strerror(errno, buf, sizeof(buf));
+    logprintf(0, "Process Error: Cannot listen on socket: %s\n", buf);
+    pages_copied_ = 0;
+    status_ = false;
+    return false;
+  }
   return true;
 }
 
-// Wait for a connection from a network traffic generation thread.
-bool NetworkListenThread::Wait() {
+// Listener socket에 읽기 event가 생길 때까지 최대 5초 대기합니다.
+// 반환값은 연결 준비 1, timeout 0, select 오류 -1입니다.
+int NetworkListenThread::Wait() {
+  for (;;) {
     fd_set rfds;
     struct timeval tv;
-    int retval;
 
-    // Watch sock_ to see when it has input.
+    // select()가 수정하는 fd_set과 timeout을 매 호출 전에 다시 설정합니다.
     FD_ZERO(&rfds);
     FD_SET(sock_, &rfds);
-    // Wait up to five seconds.
     tv.tv_sec = 5;
     tv.tv_usec = 0;
 
-    retval = select(sock_ + 1, &rfds, NULL, NULL, &tv);
+    int retval = select(sock_ + 1, &rfds, NULL, NULL, &tv);
+    if (retval >= 0)
+      return retval > 0 ? 1 : 0;
 
-    return (retval > 0);
+    // Signal로 중단된 경우 실행 상태를 확인하고 안전하게 다시 대기합니다.
+    if (errno == EINTR) {
+      if (!IsReadyToRun())
+        return 0;
+      continue;
+    }
+
+    char buf[256];
+    sat_strerror(errno, buf, sizeof(buf));
+    logprintf(0, "Process Error: Cannot wait on listen socket: %s\n", buf);
+    return -1;
+  }
 }
 
-// Wait for a connection from a network traffic generation thread.
+// 준비된 연결을 accept하고 새 socket descriptor를 반환합니다.
 bool NetworkListenThread::GetConnection(int *pnewsock) {
   struct sockaddr_in sa;
   socklen_t size = sizeof(struct sockaddr_in);
 
   int newsock = accept(sock_, reinterpret_cast<struct sockaddr *>(&sa), &size);
   if (newsock < 0)  {
-    logprintf(0, "Process Error: Did not receive connection\n");
+    char buf[256];
+    sat_strerror(errno, buf, sizeof(buf));
+    logprintf(0, "Process Error: Cannot accept connection: %s\n", buf);
     pages_copied_ = 0;
     status_ = false;
     return false;
@@ -2421,49 +3041,87 @@ bool NetworkThread::Work() {
             thread_num_,
             ipaddr_);
 
+  // 대기 중 종료 요청이 기록되면 연결과 SAT queue 접근을 시작하지 않습니다.
+  if (sat_->error_stop_requested()) {
+    CloseSocket(sock);
+    status_ = true;
+    return true;
+  }
 
   // Connect to a slave thread.
-  if (!Connect(sock))
+  if (!Connect(sock)) {
+    CloseSocket(sock);
     return false;
+  }
 
   // Loop until done.
   bool result = true;
   int strict = sat_->strict();
   int64 loops = 0;
-  while (IsReadyToRun()) {
+  // 현재 전송을 마친 뒤 종료 요청을 확인하고 새 SAT 작업 단위를 받습니다.
+  while (IsReadyToRun() && !sat_->error_stop_requested()) {
     struct page_entry src;
     struct page_entry dst;
-    result = result && sat_->GetValid(&src);
-    result = result && sat_->GetEmpty(&dst);
-    if (!result) {
+    if (!sat_->GetValid(&src)) {
       logprintf(0, "Process Error: net_thread failed to pop pages, "
                 "bailing\n");
+      result = false;
+      break;
+    }
+    if (!sat_->GetEmpty(&dst)) {
+      // 먼저 확보한 source를 원래 상태로 반환하여 queue 누락을 막습니다.
+      sat_->PutValid(&src);
+      logprintf(0, "Process Error: net_thread failed to pop pages, "
+                "bailing\n");
+      result = false;
       break;
     }
 
     // Check data correctness.
     if (strict)
-      CrcCheckPage(&src);
+      CrcCheckPage(&src, "network", "source_check");
 
     // Do the network write.
-    if (!(result = result && SendPage(sock, &src)))
+    if (!SendPage(sock, &src)) {
+      // 전송이 완료되지 않으면 source와 destination의 상태를 유지합니다.
+      sat_->PutValid(&src);
+      sat_->PutEmpty(&dst);
+      result = false;
       break;
+    }
 
     // Update pattern reference to reflect new contents.
     dst.pattern = src.pattern;
     dst.lastcpu = sched_getcpu();
 
     // Do the network read.
-    if (!(result = result && ReceivePage(sock, &dst)))
+    const bool record_history = sat_->diag_block_history();
+    uint64 receive_epoch_begin =
+        record_history ? sat_->dram_frequency_epoch() : 0;
+    if (!ReceivePage(sock, &dst)) {
+      // 부분 수신된 destination은 Empty로 반환하여 expected 대상으로
+      // 사용되지 않도록 처리합니다.
+      sat_->PutValid(&src);
+      sat_->PutEmpty(&dst);
+      result = false;
       break;
+    }
+    if (record_history) {
+      sat_->RecordBlockWrite(
+          dst.offset, Sat::BLOCK_WRITER_NETWORK,
+          thread_num_, sched_getcpu(),
+          receive_epoch_begin, sat_->dram_frequency_epoch());
+    }
 
     // Ensure that the transfer ended up with correct data.
     if (strict)
-      CrcCheckPage(&dst);
+      CrcCheckPage(&dst, "network", "destination_check");
 
     // Return all of our pages to the queue.
-    result = result && sat_->PutValid(&dst);
-    result = result && sat_->PutEmpty(&src);
+    // 첫 반환이 실패해도 두 번째 작업 단위의 반환을 시도합니다.
+    bool dst_returned = sat_->PutValid(&dst);
+    bool src_returned = sat_->PutEmpty(&src);
+    result = dst_returned && src_returned;
     if (!result) {
       logprintf(0, "Process Error: net_thread failed to push pages, "
                 "bailing\n");
@@ -2494,7 +3152,13 @@ bool NetworkListenThread::SpawnSlave(int newsock, int threadid) {
   child_worker->thread.InitThread(threadid, sat_, os_, patternlist_,
                                   &child_worker->status);
   child_worker->status.Initialize();
-  child_worker->thread.SpawnThread();
+  if (!child_worker->thread.SpawnThread()) {
+    child_worker->thread.RemoveUnspawnedWorker();
+    child_worker->status.Destroy();
+    child_worker->thread.CloseOwnedSocket();
+    delete child_worker;
+    return false;
+  }
   child_workers_.push_back(child_worker);
 
   return true;
@@ -2506,10 +3170,17 @@ bool NetworkListenThread::ReapSlaves() {
   // Gather status and reap threads.
   logprintf(12, "Log: Joining all outstanding threads\n");
 
+  // 상대 peer가 연결을 유지해도 child의 blocking recv/send가 반환하도록
+  // 모든 accepted socket을 먼저 shutdown합니다. 실제 close는 child가
+  // 자신의 정리 경로에서 한 번만 수행합니다.
+  for (size_t i = 0; i < child_workers_.size(); i++)
+    child_workers_[i]->thread.ShutdownSocket();
+
   for (size_t i = 0; i < child_workers_.size(); i++) {
     NetworkSlaveThread& child_thread = child_workers_[i]->thread;
     logprintf(12, "Log: Joining slave thread %d\n", i);
     child_thread.JoinThread();
+    child_thread.CloseOwnedSocket();
     if (child_thread.GetStatus() != 1) {
       logprintf(0, "Process Error: Slave Thread %d failed with status %d\n", i,
                 child_thread.GetStatus());
@@ -2524,9 +3195,10 @@ bool NetworkListenThread::ReapSlaves() {
   return result;
 }
 
-// Network listener IO work loop. Execute until marked done.
-// Return false on fatal software error.
+// Network connection을 받아 Slave Worker를 생성하고 종료 시 회수합니다.
+// Slave 생성 또는 회수 실패를 listener Worker 상태에 반영합니다.
 bool NetworkListenThread::Work() {
+  bool result = true;
   logprintf(9, "Log: Starting network listen thread %d\n",
             thread_num_);
 
@@ -2540,25 +3212,41 @@ bool NetworkListenThread::Work() {
 
   // Allows incoming connections to be queued up by socket library.
   int newsock = 0;
-  Listen();
+  if (!Listen()) {
+    CloseSocket(sock_);
+    status_ = false;
+    return false;
+  }
   logprintf(12, "Log: Listen thread waiting for incoming connections\n");
 
   // Wait on incoming connections, and spawn worker threads for them.
   int threadcount = 0;
-  while (IsReadyToRun()) {
+  while (IsReadyToRun() && !sat_->error_stop_requested()) {
     // Poll for connections that we can accept().
-    if (Wait()) {
+    const int wait_result = Wait();
+    if (wait_result < 0) {
+      result = false;
+      break;
+    }
+    if (wait_result > 0) {
       // Accept those connections.
       logprintf(12, "Log: Listen thread found incoming connection\n");
-      if (GetConnection(&newsock)) {
-        SpawnSlave(newsock, threadcount);
-        threadcount++;
+      if (!GetConnection(&newsock)) {
+        result = false;
+        break;
       }
+      if (!SpawnSlave(newsock, threadcount)) {
+        logprintf(0, "Process Error: failed to spawn network slave %d\n",
+                  threadcount);
+        result = false;
+        break;
+      }
+      threadcount++;
     }
   }
 
   // Gather status and join spawned threads.
-  ReapSlaves();
+  result = ReapSlaves() && result;
 
   // Delete the child workers.
   for (ChildVector::iterator it = child_workers_.begin();
@@ -2570,17 +3258,40 @@ bool NetworkListenThread::Work() {
 
   CloseSocket(sock_);
 
-  status_ = true;
+  status_ = result;
   logprintf(9,
             "Log: Completed %d: network listen thread status %d, "
             "%d pages copied\n",
             thread_num_, status_, pages_copied_);
-  return true;
+  return result;
 }
 
 // Set network reflector socket struct.
 void NetworkSlaveThread::SetSock(int sock) {
+  sat_assert(0 == pthread_mutex_lock(&socket_lock_));
   sock_ = sock;
+  sat_assert(0 == pthread_mutex_unlock(&socket_lock_));
+}
+
+// 다른 thread에서 blocking network I/O를 종료할 때 사용합니다.
+// shutdown()은 file descriptor를 닫지 않으므로 child 정리의 close와
+// 중복되지 않습니다.
+void NetworkSlaveThread::ShutdownSocket() {
+  sat_assert(0 == pthread_mutex_lock(&socket_lock_));
+  if (sock_ > 0)
+    shutdown(sock_, SHUT_RDWR);
+  sat_assert(0 == pthread_mutex_unlock(&socket_lock_));
+}
+
+// Child와 listener가 같은 descriptor를 중복 close하거나 재사용된 descriptor에
+// shutdown을 호출하지 않도록 lock 안에서 close와 무효화를 함께 수행합니다.
+void NetworkSlaveThread::CloseOwnedSocket() {
+  sat_assert(0 == pthread_mutex_lock(&socket_lock_));
+  if (sock_ > 0) {
+    CloseSocket(sock_);
+    sock_ = 0;
+  }
+  sat_assert(0 == pthread_mutex_unlock(&socket_lock_));
 }
 
 // Network reflector IO work loop. Execute until marked done.
@@ -2611,6 +3322,7 @@ bool NetworkSlaveThread::Work() {
                  "returned %d (fail)\n",
               result);
     status_ = false;
+    CloseOwnedSocket();
     return false;
   }
 
@@ -2636,7 +3348,8 @@ bool NetworkSlaveThread::Work() {
   status_ = true;
 
   // Clean up.
-  CloseSocket(sock);
+  CloseOwnedSocket();
+  free(local_page);
 
   logprintf(9,
             "Log: Completed %d: network slave thread status %d, "
@@ -2653,7 +3366,7 @@ bool ErrorPollThread::Work() {
   do {
     errorcount_ += os_->ErrorPoll();
     os_->ErrorWait();
-  } while (IsReadyToRun());
+  } while (IsReadyToRun() && !sat_->error_stop_requested());
 
   logprintf(9, "Log: Finished system error poll thread %d: %d errors\n",
             thread_num_, errorcount_);
@@ -2670,7 +3383,7 @@ bool CpuStressThread::Work() {
     // Run ludloff's platform/CPU-specific assembly workload.
     os_->CpuStressWorkload();
     YieldSelf();
-  } while (IsReadyToRun());
+  } while (IsReadyToRun() && !sat_->error_stop_requested());
 
   logprintf(9, "Log: Finished CPU stress thread %d:\n",
             thread_num_);
@@ -2720,7 +3433,8 @@ bool CpuCacheCoherencyThread::Work() {
   time_start = sat_get_time_us();
 
   uint64 total_inc = 0;  // Total increments done by the thread.
-  while (IsReadyToRun()) {
+  // 상세 오류가 종료를 요청하면 cache coherency 반복을 종료합니다.
+  while (IsReadyToRun() && !sat_->error_stop_requested()) {
     for (int i = 0; i < cc_inc_count_; i++) {
       // Choose a datastructure in random and increment the appropriate
       // member in that according to the offset (which is the same as the
@@ -2769,6 +3483,8 @@ bool CpuCacheCoherencyThread::Work() {
       errorcount_++;
       logprintf(0, "Hardware Error: global(%d) and local(%d) do not match\n",
                 cc_global_num, cc_inc_count_);
+      if (sat_->stop_on_error())
+        sat_->RequestErrorStop();
     }
   }
   time_end = sat_get_time_us();
@@ -3027,6 +3743,19 @@ int64 DiskThread::GetTime() {
   return sat_get_time_us();
 }
 
+// 아직 read 검사를 마치지 못한 block을 in-flight queue와 공유 table에서
+// 제거합니다. 종료 요청 후에는 추가 장치 I/O를 수행하지 않습니다.
+bool DiskThread::RemoveInFlightBlocks() {
+  bool result = true;
+  while (!in_flight_sectors_.empty()) {
+    BlockData *block = in_flight_sectors_.front();
+    in_flight_sectors_.pop();
+    if (!block_table_->RemoveBlock(block))
+      result = false;
+  }
+  return result;
+}
+
 // Do randomized reads and (possibly) writes on a device.
 // Return false on fatal SW error, true on SW success,
 // regardless of whether HW failed.
@@ -3063,7 +3792,8 @@ bool DiskThread::DoWork(int fd) {
   //                unplugged is causing the application and kernel to
   //                become unresponsive.
 
-  while (IsReadyToRun()) {
+  // 현재 disk write/read cycle을 마친 뒤 종료 요청을 확인합니다.
+  while (IsReadyToRun() && !sat_->error_stop_requested()) {
     // Write blocks to disk.
     logprintf(16, "Log: Write phase %sfor disk %s (thread %d).\n",
               non_destructive_ ? "(disabled) " : "",
@@ -3083,6 +3813,8 @@ bool DiskThread::DoWork(int fd) {
       block_num++;
 
       BlockData *block = block_table_->GetUnusedBlock(segment);
+      if (block == NULL)
+        continue;
 
       // If an unused sequence of sectors could not be found, skip to the
       // next block to process.  Soon, a new segment will come and new
@@ -3105,6 +3837,7 @@ bool DiskThread::DoWork(int fd) {
       if (!non_destructive_) {
         if (!WriteBlockToDisk(fd, block)) {
           block_table_->RemoveBlock(block);
+          RemoveInFlightBlocks();
           return true;
         }
         blocks_written_++;
@@ -3116,8 +3849,10 @@ bool DiskThread::DoWork(int fd) {
 
       in_flight_sectors_.push(block);
     }
-    if (!os_->FlushPageCache())  // If O_DIRECT worked, this will be a NOP.
+    if (!os_->FlushPageCache()) {  // If O_DIRECT worked, this will be a NOP.
+      RemoveInFlightBlocks();
       return false;
+    }
 
     // Verify blocks on disk.
     logprintf(20, "Log: Read phase for disk %s (thread %d).\n",
@@ -3125,12 +3860,20 @@ bool DiskThread::DoWork(int fd) {
     while (IsReadyToRunNoPause() && !in_flight_sectors_.empty()) {
       BlockData *block = in_flight_sectors_.front();
       in_flight_sectors_.pop();
-      if (!ValidateBlockOnDisk(fd, block))
+      if (!ValidateBlockOnDisk(fd, block)) {
+        block_table_->RemoveBlock(block);
+        RemoveInFlightBlocks();
         return true;
+      }
       block_table_->RemoveBlock(block);
       blocks_read_++;
     }
   }
+
+  // WorkerStatus STOP은 inner read loop도 종료하므로 남은 reference를
+  // 장치 접근 없이 table에서 제거합니다.
+  if (!RemoveInFlightBlocks())
+    return false;
 
   pages_copied_ = blocks_written_ + blocks_read_;
   return true;
@@ -3455,7 +4198,7 @@ RandomDiskThread::~RandomDiskThread() {
 bool RandomDiskThread::DoWork(int fd) {
   logprintf(11, "Log: Random phase for disk %s (thread %d).\n",
             device_name_.c_str(), thread_num_);
-  while (IsReadyToRun()) {
+  while (IsReadyToRun() && !sat_->error_stop_requested()) {
     BlockData *block = block_table_->GetRandomBlock();
     if (block == NULL) {
       logprintf(12, "Log: No block available for device %s (thread %d).\n",
@@ -3507,8 +4250,9 @@ bool MemoryRegionThread::SetRegion(void *region, int64 size) {
   }
 }
 
-// More detailed error printout for hardware errors in memory or MMIO
-// regions.
+// Memory region 또는 MMIO 검사 mismatch의 상세 주소와 데이터를 출력합니다.
+// Check 단계 로그의 read error/write error는 actual·reread·expected 관계로
+// 만든 소프트웨어 분류이며 실제 DRAM read/write 원인을 확정하지 않습니다.
 void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
                                       int priority,
                                       const char *message) {
@@ -3523,10 +4267,7 @@ void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
     char dram_frequencies[128];
     char current_dram_frequency[32];
     char dram_coordinates[192];
-    // A error on the Check Phase means that the memory region tested
-    // has an error. Gathering more information and then reporting
-    // the error.
-    // Determine if this is a write or read error.
+    // Check 단계의 mismatch 주소를 reread하여 상세 로그 필드를 구성합니다.
     os_->Flush(error->vaddr);
     error->reread_dram_frequency = sat_->current_dram_frequency();
     error->reread = *(error->vaddr);
@@ -3544,8 +4285,8 @@ void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
 
     buffer_offset = error->vbyteaddr - region_;
 
-    // Find physical address if possible.
-    error->paddr = os_->VirtualToPhysical(error->vbyteaddr);
+    // 로그의 가상 주소와 물리 주소는 같은 64-bit word를 가리킵니다.
+    error->paddr = os_->VirtualToPhysical(error->vaddr);
     FormatDramCoordinates(sat_, error->paddr,
                           dram_coordinates, sizeof(dram_coordinates));
     FormatDramFrequencyValue(error->reread_dram_frequency,
@@ -3570,6 +4311,8 @@ void MemoryRegionThread::ProcessError(struct ErrorRecord *error,
               sat_->dram_frequency_mode(),
               current_dram_frequency,
               dram_frequencies);
+    if (sat_->stop_on_error())
+      sat_->RequestErrorStop();
   } else {
     logprintf(0, "Process Error: memory region thread raised an "
               "unexpected error.");
@@ -3592,7 +4335,8 @@ bool MemoryRegionThread::Work() {
 
   logprintf(9, "Log: Starting Memory Region thread %d\n", thread_num_);
 
-  while (IsReadyToRun()) {
+  // 한 번 받은 두 작업 단위는 queue에 반환한 뒤 종료 요청을 확인합니다.
+  while (IsReadyToRun() && !sat_->error_stop_requested()) {
     // Getting pages from SAT and queue.
     phase_ = kPhaseNoPhase;
     result = result && sat_->GetValid(&source_pe);
@@ -3619,7 +4363,8 @@ bool MemoryRegionThread::Work() {
 
     // Copying SAT page into memory region.
     phase_ = kPhaseCopy;
-    CrcCopyPage(&memregion_pe, &source_pe);
+    CrcCopyPage(&memregion_pe, &source_pe,
+                "memory_region", "source_copy_check");
     memregion_pe.pattern = source_pe.pattern;
     memregion_pe.lastcpu = sched_getcpu();
 
@@ -3633,7 +4378,7 @@ bool MemoryRegionThread::Work() {
 
     // Checking page content in memory region.
     phase_ = kPhaseCheck;
-    CrcCheckPage(&memregion_pe);
+    CrcCheckPage(&memregion_pe, "memory_region", "destination_check");
 
     phase_ = kPhaseNoPhase;
     // Storing pages on their proper queues.
@@ -3759,7 +4504,7 @@ bool CpuFreqThread::Work() {
   vector<CpuDataType> data[2];
   data[0].resize(num_cpus_);
   data[1].resize(num_cpus_);
-  while (IsReadyToRun(&paused)) {
+  while (IsReadyToRun(&paused) && !sat_->error_stop_requested()) {
     if (paused) {
       // Reset the intervals and restart logic after the pause.
       num_intervals = 0;

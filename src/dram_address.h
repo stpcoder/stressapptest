@@ -8,9 +8,8 @@
 
 #include <stdint.h>
 
-// Physical-to-DRAM address maps are platform profiles. They must be selected
-// explicitly because the bit layout and XOR hashing are memory-controller
-// configuration data rather than an architectural AArch64 property.
+// 물리 주소를 DRAM 좌표로 해석하는 규칙은 memory-controller 설정에
+// 종속됩니다. 사용자가 프로필을 명시한 경우에만 주소 변환을 수행합니다.
 enum DramAddressMapProfile {
   DRAM_ADDRESS_MAP_NONE = 0,
   DRAM_ADDRESS_MAP_LPDDR_V1
@@ -27,12 +26,13 @@ struct DramAddress {
   uint32_t byte_offset;
 };
 
+// 물리 주소에서 지정한 한 bit를 추출합니다.
 inline uint32_t DramAddressBit(uint64_t physical_address, unsigned int bit) {
   return static_cast<uint32_t>((physical_address >> bit) & 1ULL);
 }
 
-// Decode the opt-in lpddr-v1 profile. The profile is rank-0-only because the
-// validation vectors available for this profile contain no rank-1 address.
+// 선택한 lpddr-v1 프로필을 적용합니다. 현재 프로필은 rank 0만 정의하며,
+// 다른 memory-controller 구성에서는 해당 시스템에 맞는 프로필이 필요합니다.
 inline bool DecodeDramAddress(DramAddressMapProfile profile,
                               uint64_t physical_address,
                               DramAddress *address) {

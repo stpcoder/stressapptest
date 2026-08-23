@@ -62,15 +62,15 @@ Write-back은 dirty cache line 교체, 명시적인 cache clean, 다른 CPU의 �
 <sub><em>Write-back: dirty cache line의 최신 데이터를 하위 cache 또는 system memory 방향으로 기록하는 동작입니다.</em></sub>
 <sub><em>Dirty line: CPU store 이후 현재 cache가 하위 계층보다 최신 데이터를 보유한 cache line입니다.</em></sub>
 <sub><em>Eviction: 새로운 line을 배치하기 위해 기존 cache line을 해당 cache level에서 제거하는 동작입니다.</em></sub>
-<sub><em>Clean eviction: 하위 계층과 같은 값을 가진 cache line을 data write 없이 해당 cache level에서 제거하는 동작입니다.</em></sub>
+<sub><em>Clean eviction: 하위 계층 값과 일치하는 cache line을 data write 없이 해당 cache level에서 제거하는 동작입니다.</em></sub>
 
 ## Cache와 DRAM의 데이터가 일치하는 시점
 
-Write-Back memory에서는 dirty cache line이 해당 주소의 최신 데이터를 보유합니다. Write-back이 완료되기 전에는 LPDDR에 이전 값이 남아 있을 수 있습니다. 다른 coherent CPU가 같은 physical address를 읽으면 coherency 회로가 최신 데이터를 보유한 cache를 찾아 데이터를 전달하거나 write-back을 수행합니다.
+Write-Back memory에서는 dirty cache line이 해당 주소의 최신 데이터를 보유합니다. Write-back이 완료되기 전에는 LPDDR에 이전 값이 남아 있을 수 있습니다. 다른 coherent CPU가 같은 물리 주소를 읽으면 coherency 회로가 최신 데이터를 보유한 cache를 찾아 데이터를 전달하거나 write-back을 수행합니다.
 
-Coherency는 같은 영역의 CPU와 장치에 최신 값을 전달합니다. Cache와 LPDDR의 저장값은 clean 또는 write-back 완료 시점에 일치합니다.
+Coherent observer는 coherency를 통해 최신 값을 관찰합니다. 해당 주소의 dirty data가 system memory까지 전달된 뒤 LPDDR 저장값이 최신값과 일치합니다. `dc cvau`의 PoU clean은 LPDDR 반영 완료를 보장하지 않습니다.
 
-<sub><em>Coherency: 여러 CPU 또는 coherent device가 동일한 physical address의 최신 데이터를 일관되게 관찰하도록 관리하는 protocol입니다.</em></sub>
+<sub><em>Coherency: 여러 CPU 또는 coherent device가 동일한 물리 주소의 최신 데이터를 일관되게 관찰하도록 관리하는 protocol입니다.</em></sub>
 <sub><em>Coherent observer: 동일 coherency domain에 참여하여 cache 상태와 최신 데이터를 protocol에 따라 조회하는 CPU 또는 device입니다.</em></sub>
 
 ## CopyThread의 cache 접근
@@ -129,7 +129,7 @@ CPU 명령은 cache, write buffer, interconnect와 memory controller의 queue를
 
 ## `-W` 옵션의 ARM64 복사 방식
 
-현재 분석한 AArch64 `AdlerMemcpyAsm()`은 반복 한 번에 64 B를 처리합니다 (`src/adler32memcpy.cc:402`).
+AArch64 `AdlerMemcpyAsm()`은 반복 한 번에 64 B를 처리합니다. 구현은 `src/adler32memcpy.cc`에서 확인합니다.
 
 > **파일:** `src/adler32memcpy.cc` · **함수:** `AdlerMemcpyAsm()` AArch64 구간 · **기준:** `73b9df2`
 
@@ -173,7 +173,7 @@ add  ... checksum accumulators ...
 
 ## `-F` 옵션의 복사 방식
 
-`-F`는 block 복사 함수로 C library의 `memcpy()`를 선택합니다.
+`-F`는 `-W`를 사용하지 않은 Copy Worker의 block 복사 함수로 C library의 `memcpy()`를 선택합니다. 이 옵션은 전역 strict 검사를 해제하므로 Copy source, Invert 전·후, File·Network source/destination의 checksum도 생략합니다. `-W -F`에서는 Copy만 Warm checksum 경로를 사용합니다.
 
 장점:
 
@@ -183,15 +183,15 @@ add  ... checksum accumulators ...
 
 단점:
 
-- 원본 데이터 오류는 해당 block을 다시 원본으로 사용하거나 마지막 전체 검사를 수행할 때 발견될 수 있습니다.
-- 대상 데이터도 해당 block을 다시 읽거나 마지막 전체 검사를 수행할 때까지 검사가 지연될 수 있습니다.
+- 원본 데이터 오류는 해당 block을 다시 원본으로 사용하거나 종료 시점의 Valid 검사에서 발견될 수 있습니다.
+- 대상 데이터도 해당 block을 다시 읽거나 종료 시점의 Valid 검사를 수행할 때까지 검사가 지연될 수 있습니다.
 - 실제 복사 명령은 Android, bionic, SoC, library version에 따라 달라집니다.
 
 ## `-i` 옵션의 데이터 반전과 cache 처리
 
 `InvertThread`는 32-bit 값을 읽고 모든 bit를 반전한 뒤 같은 위치에 다시 씁니다. 이 동작은 read-modify-write이며 64 B마다 `FastFlushHint()`를 호출합니다.
 
-AArch64의 `FastFlush()`는 다음 순서로 실행됩니다 (`src/os.h:171`).
+AArch64의 `FastFlush()`는 다음 순서로 실행됩니다. 구현은 `src/os.h`의 `FastFlush()`에 있습니다.
 
 ```asm
 dc cvau, address
@@ -205,7 +205,7 @@ isb
 
 - `dc cvau`: data cache를 Point of Unification 방향으로 clean합니다.
 - `ic ivau`: instruction cache의 해당 line을 무효화합니다.
-- 명령 순서는 프로그램 코드를 실행 중에 변경할 때 사용하는 data·instruction cache 동기화 과정과 유사합니다.
+- 이 명령 순서는 수정된 data를 instruction fetch에 반영할 때 사용하는 data·instruction cache 동기화 순서입니다.
 - Data cache clean의 완료 지점은 PoU입니다.
 - `ic ivau`는 instruction cache에 적용됩니다.
 
@@ -217,9 +217,9 @@ isb
 
 ## ARM64에서 오류 데이터를 다시 읽을 때의 제한
 
-오류 처리 코드는 기대값과 실제값이 다르면 cache line을 정리한 뒤 같은 주소를 다시 읽어, 일시적인 읽기 오류와 저장된 데이터 오류를 구분하려고 합니다.
+오류 처리 코드는 기대값과 실제값이 다르면 `OsLayer::Flush()`를 호출한 뒤 같은 주소를 다시 읽습니다. 공통 AArch64 경로에서는 `has_clflush_` 값이 `false`이므로 `Flush()`가 cache 관리 명령을 실행하지 않고 반환합니다.
 
-공통 AArch64 기능 확인 코드는 `has_vector_ = true`, `has_clflush_ = false` 상태를 사용합니다. `OsLayer::Flush()`는 `has_clflush_ == true` 조건에서 `FastFlush()`를 호출합니다 (`src/os.cc:263`).
+공통 AArch64 기능 확인 코드는 `has_vector_ = true`, `has_clflush_ = false` 상태를 사용합니다. `OsLayer::Flush()`는 `has_clflush_ == true` 조건에서 `FastFlush()`를 호출합니다.
 
 공통 ARM64 build의 `has_clflush_` 값은 `false`이며 `Flush()`는 조건 확인 후 반환합니다. Checksum 불일치는 오류 record로 저장됩니다. 첫 번째 값과 reread 값은 현재 cache 상태에서 수행한 두 CPU load의 관찰값으로 해석합니다.
 

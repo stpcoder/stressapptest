@@ -1,10 +1,10 @@
 # 메모리 Worker 종류와 동작
 
-메모리 Worker는 같은 queue에서 block을 가져오지만 서로 다른 작업을 수행합니다. `FillThread`는 초기 데이터를 쓰고, `CopyThread`는 데이터를 읽고 검사하면서 다른 block에 복사하며, `CheckThread`는 기록된 데이터가 기대값과 같은지 검사합니다.
+메모리 Worker는 공용 queue에서 block을 가져와 각 기능을 수행합니다. `FillThread`는 초기 데이터를 쓰고, `CopyThread`는 데이터를 읽고 검사하면서 다른 block에 복사하며, `CheckThread`는 기록된 데이터와 기대값의 일치 여부를 검사합니다.
 
 ## Worker의 공통 동작
 
-모든 Worker는 `WorkerThread`를 상속하며 다음 정보를 관리합니다 (`src/worker.h:204`).
+모든 Worker는 `src/worker.h`의 `WorkerThread`를 상속하며 다음 정보를 관리합니다.
 
 - Worker 번호와 `pthread_t`
 - 실행 가능한 CPU mask
@@ -83,7 +83,7 @@ mem64[i]  = data
 ### 메모리 접근 특징
 
 - 전체 테스트 메모리를 한 번 쓰는 단계입니다.
-- anonymous `mmap()` 영역에 처음 접근하므로 page fault와 physical page 할당이 발생합니다.
+- 아직 물리 페이지가 연결되지 않은 anonymous `mmap()` 주소에서는 page fault와 물리 페이지 할당이 발생합니다.
 - 일반 cacheable 쓰기를 사용하므로 write allocate와 dirty cache line 교체가 발생할 수 있습니다.
 - 실제 LPDDR 쓰기 명령 수는 cache와 DMC 정책에 따라 달라집니다.
 
@@ -147,7 +147,7 @@ CrcWarmCopyPage()
  = vector 명령을 사용한 복사 + checksum 계산
 ```
 
-현재 분석한 ARM64 코드는 `prfm`, `ld1`, `st1`, vector add를 사용하여 한 번에 64 B씩 처리합니다. 일반 cacheable memory 속성이 적용되는 NEON 읽기·쓰기입니다.
+이 저장소의 ARM64 코드는 `prfm`, `ld1`, `st1`, vector add를 사용하여 한 번에 64 B씩 처리합니다. 일반 cacheable memory 속성이 적용되는 NEON 읽기·쓰기입니다.
 
 #### `-F`: libc `memcpy()` 복사
 
@@ -155,13 +155,15 @@ CrcWarmCopyPage()
 libc memcpy(destination, source, 1 MiB)
 ```
 
-복사 중 checksum 계산을 생략합니다. 대상 block에는 원본의 pattern 정보를 전달합니다. 대상 데이터 검사는 이후 이 block을 원본으로 읽거나 마지막 전체 검사를 수행할 때 이루어집니다.
+복사 중 checksum 계산을 생략합니다. 대상 block에는 원본의 pattern 정보를 전달합니다. 대상 데이터 검사는 이후 이 block을 원본으로 읽거나 종료 시점의 Valid 검사를 수행할 때 이루어집니다.
 
 `-W`와 `-F`를 함께 지정하면 첫 번째 조건인 `warm()`이 우선 적용되어 `CrcWarmCopyPage()`가 실행됩니다.
 
+`-F`는 전역 strict 검사도 해제합니다. Copy source, Invert 전·후, File·Network source/destination checksum이 함께 생략됩니다. `--copy-verify-destination`, `--verify-after-fill`과 종료 검사는 계속 실행됩니다.
+
 ### Block 복사 후 CPU 실행권 양보
 
-1 MiB 복사가 끝나면 `sched_yield()`를 호출하여 다른 thread가 실행될 기회를 줍니다. 하나의 block을 처리하는 도중에 thread가 자주 바뀌어 cache 내용이 교체되는 현상을 줄이기 위한 동작입니다.
+1 MiB 복사가 끝나면 `sched_yield()`를 호출하여 다음 block을 선택하기 전에 다른 thread가 실행될 기회를 제공합니다.
 
 ### 처리량 계산
 
@@ -181,22 +183,39 @@ libc memcpy(destination, source, 1 MiB)
 > **파일:** `src/worker.cc` · **함수:** `CheckThread::Work()` · **기준:** `73b9df2`
 
 ```cpp
+const bool final_check = (check_phase_ == "final_check");
+const bool legacy_final_check =
+    !final_check && sat_->legacy_final_check_mode();
+bool draining = final_check;
+
 while (true) {
+  if (sat_->error_stop_requested())
+    break;
+
+  if (!final_check && !legacy_final_check &&
+      !IsReadyToRunNoPause())
+    break;
+
   result = result && sat_->GetValid(&pe);
   if (!result)
     break;
 
-  CrcCheckPage(&pe);
+  CrcCheckPage(&pe, "check",
+               draining ? "final_check" : "runtime_check");
 
-  if (IsReadyToRunNoPause())
-    result = result && sat_->PutValid(&pe);
-  else
+  if (final_check ||
+      (legacy_final_check && !IsReadyToRunNoPause() &&
+       !sat_->error_stop_requested())) {
     result = result && sat_->PutEmpty(&pe);
+    draining = true;
+  } else {
+    result = result && sat_->PutValid(&pe);
+  }
   loops++;
 }
 ```
 
-**코드 설명:** 설정한 시험 시간이 남아 있으면 검사한 block을 다시 valid 상태로 반환하여 이후에도 사용할 수 있게 합니다. 마지막 전체 검사에서는 완료한 block을 empty 상태로 바꾸며 valid block이 없어질 때까지 검사합니다.
+**코드 설명:** Runtime 검사에서는 완료한 작업 단위를 Valid 상태로 반환합니다. 옵션 미지정 실행은 정지 요청 이후 기존 종료 drain을 수행하여 완료 항목을 Empty로 이동합니다. `--final-check-threads`를 명시하면 Runtime Check가 보유 항목을 Valid로 반환하고 별도 종료 Check가 남은 항목을 처리합니다. `--skip-final-check`와 `--stop_on_errors`는 보유 항목을 Valid로 반환하고 종료 drain을 생략합니다.
 
 ### 실행 중 검사 Worker
 
@@ -208,16 +227,16 @@ GetValid(block)
  → 실행 중이면 PutValid
 ```
 
-테스트 데이터는 읽기만 합니다. 다만 queue의 mutex, 처리 횟수, 로그, block 상태 정보에는 쓰기가 발생합니다.
+정상 일치 경로는 테스트 데이터를 읽고 checksum을 계산합니다. Mismatch 상세 처리에서는 해당 64-bit 위치에 expected 값을 기록합니다. Queue의 mutex, 처리 횟수, 로그와 block 상태 정보에도 쓰기가 발생합니다.
 
-### 종료 후 전체 검사
+### 종료 시점의 Valid 검사
 
 본 시험의 Worker가 모두 끝나면 8개의 `CheckThread`가 남은 valid block을 검사합니다. 검사한 block을 empty 상태로 바꾸면서 모든 valid block을 처리합니다.
 
 ### 메모리 접근 특징
 
 - 원본 데이터를 읽고 checksum을 계산합니다.
-- 대상 데이터 쓰기는 없습니다.
+- 정상 일치 경로에는 대상 데이터 쓰기가 없습니다. Mismatch 상세 처리에는 expected 복구 write가 있습니다.
 - 검사 범위가 cache보다 크면 cache refill과 LPDDR 읽기가 발생합니다.
 - 실제 DMC 읽기량은 prefetch와 SLC hit 비율에 따라 달라집니다.
 
@@ -244,11 +263,18 @@ if (sat_->strict())
   CrcCheckPage(&src);
 ```
 
-**코드 설명:** 낮은 주소에서 높은 주소 방향과 반대 방향으로 bit 반전을 각각 두 번 수행합니다. 전체 block을 네 번 처리하면 데이터는 원래 pattern으로 돌아옵니다. 기본 검사 방식에서는 반전 작업 전후에 checksum도 확인합니다.
+**코드 설명:** 낮은 주소에서 높은 주소 방향과 반대 방향으로 선택 범위를 각각 두 번 처리합니다. 같은 word를 네 번 반전하므로 처리된 범위의 데이터는 원래 Pattern으로 돌아옵니다. 기본 검사 방식에서는 반전 작업 전후에 SAT 작업 단위 전체의 checksum을 확인합니다.
 
 ### 옵션
 
-`-i N`으로 개수를 지정합니다. 기본값 0은 Invert Worker 비활성 상태입니다.
+`-i N`으로 개수를 지정합니다. 기본값 0은 Invert Worker 비활성 상태입니다. `--invert-range legacy|full`로 각 pass의 처리 범위를 선택합니다.
+
+| 범위 | 1 MiB SAT 작업 단위의 pass당 처리량 | 용도 |
+|---|---:|---|
+| `legacy` | 512 KiB | 기존 공개 코드와 같은 workload 유지 |
+| `full` | 1 MiB | SAT 작업 단위 전체 반전 |
+
+`-p 1024`와 `-p 2048`의 `legacy` 범위는 0 B입니다. 해당 크기에서 Invert read-modify-write를 실행하려면 `--invert-range full`을 지정합니다.
 
 ### 한 block의 처리 순서
 
@@ -267,7 +293,7 @@ yield
 
 마지막에 checksum을 다시 검사합니다.
 
-각 word를 네 번 반전하므로 마지막 데이터는 원래 pattern으로 돌아옵니다.
+선택 범위의 각 word를 네 번 반전하므로 마지막 데이터는 원래 Pattern으로 돌아옵니다.
 
 ### 메모리 접근 특징
 
@@ -281,7 +307,7 @@ yield
 
 ### 처리량 계산 시 주의점
 
-프로그램은 `InvertThread` 처리량을 `GetCopiedData() × 4`로 계산합니다. 실제 DMC byte에는 네 번의 read-modify-write, 작업 전후 checksum과 cache 동작이 반영됩니다. 두 값은 서로 다른 측정 기준을 사용합니다.
+프로그램은 선택 범위의 네 번 read와 네 번 write를 논리 처리 byte로 계산합니다. Strict mode의 작업 전·후 checksum read는 이 값에 포함하지 않습니다. 실제 DMC byte는 cache 상태, prefetch, write-back과 공유 cache hit에 따라 결정됩니다.
 
 ## MemoryRegionThread
 
@@ -322,11 +348,11 @@ SAT valid 원본
 
 | Worker 또는 실행 방식 | 테스트 데이터 읽기 | 테스트 데이터 쓰기 | 즉시 checksum 검사 | 주요 목적 |
 |---|---:|---:|---:|---|
-| FillThread | write allocate에 따라 발생 | 큼 | 없음 | 초기 pattern 기록과 physical page 할당 |
+| FillThread | write allocate에 따라 발생 | 큼 | 없음 | 초기 Pattern 기록과 미할당 물리 페이지 준비 |
 | CopyThread 기본 | 큼 | 큼 | 원본 | 읽기·쓰기 부하와 데이터 검사 |
 | CopyThread `-W` | 큼 | 큼 | 원본 | SIMD 연산과 메모리 부하 |
 | CopyThread `-F` | 큼 | 큼 | 없음 | 높은 메모리 복사 처리량 |
-| CheckThread | 큼 | 없음 | 원본 | 읽기 중심 데이터 검사 |
+| CheckThread | 큼 | 정상 경로 없음, mismatch 복구 write 있음 | 원본 | 읽기 중심 데이터 검사 |
 | InvertThread | 네 번의 RMW | 네 번의 RMW | 작업 전·후 | 양방향 read-modify-write |
 
-표의 “없음”은 테스트 데이터 영역에 해당 접근이 없다는 의미입니다. Queue와 Worker의 상태 정보에 대한 쓰기는 별도로 발생합니다.
+표의 “없음”은 정상 실행에서 테스트 데이터 영역에 해당 접근이 없다는 의미입니다. Mismatch 복구 write와 Queue·Worker 상태 정보 write는 각 항목의 설명에 따라 발생합니다.

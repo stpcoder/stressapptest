@@ -18,21 +18,21 @@ static bool page_is_empty(struct page_entry *pe) {
 }
 ```
 
-**코드 설명:** 이 설명서의 `SAT block`, `cache line`, `valid`, `empty`는 위 코드에 직접 대응합니다. Linux page, physical address와 LPDDR row는 운영체제 및 hardware가 관리하는 주소 단위입니다.
+**코드 설명:** 이 설명서의 `SAT block`, `cache line`, `valid`, `empty`는 위 코드에 직접 대응합니다. Linux page, 물리 주소와 LPDDR row는 운영체제 및 hardware가 관리하는 주소 단위입니다.
 
 ## 주소와 메모리
 
-### Virtual address, VA
+### 가상 주소, VA
 
-프로그램의 pointer에 저장되는 주소입니다. MMU가 physical address로 변환합니다.
+프로그램의 pointer에 저장되는 주소입니다. MMU가 물리 주소로 변환합니다.
 
-### Physical address, PA
+### 물리 주소, PA
 
-<sub><em>Physical address, PA: CPU/NoC가 system memory 또는 MMIO를 식별하는 주소입니다. LPDDR row/column 좌표는 DMC address mapping을 추가로 적용하여 계산합니다.</em></sub>
+<sub><em>물리 주소, PA: CPU/NoC가 system memory 또는 MMIO를 식별하는 주소입니다. LPDDR row/column 좌표는 DMC address mapping을 추가로 적용하여 계산합니다.</em></sub>
 
 ### PFN
 
-Physical Frame Number의 약어이며 physical page의 번호입니다.
+Physical Frame Number의 약어이며 물리 페이지의 번호입니다.
 
 ```text
 PA = PFN × PAGE_SIZE + page offset
@@ -40,11 +40,11 @@ PA = PFN × PAGE_SIZE + page offset
 
 ### IOVA
 
-DMA 장치가 사용하는 I/O virtual address입니다. SMMU 또는 IOMMU가 system physical address로 변환할 수 있습니다.
+DMA 장치가 사용하는 I/O 가상 주소입니다. SMMU 또는 IOMMU가 시스템 물리 주소로 변환할 수 있습니다.
 
 ### MMU
 
-Memory Management Unit의 약어입니다. Virtual address를 physical address로 변환하고 접근 권한과 메모리 속성을 적용합니다.
+Memory Management Unit의 약어입니다. 가상 주소를 물리 주소로 변환하고 접근 권한과 메모리 속성을 적용합니다.
 
 ### TLB
 
@@ -52,7 +52,7 @@ Translation Lookaside Buffer의 약어입니다. 최근에 사용한 VA→PA 변
 
 ### First touch
 
-Anonymous virtual page를 처음 읽거나 쓰는 동작입니다. 이때 kernel이 연결할 physical page를 할당합니다.
+Anonymous 가상 페이지를 처음 읽거나 쓰는 동작입니다. 아직 연결된 물리 페이지가 없으면 kernel이 이 시점에 물리 페이지를 할당합니다.
 
 ## Stressapptest가 사용하는 메모리 단위
 
@@ -62,7 +62,7 @@ Stressapptest의 queue가 상태를 관리하는 메모리 구역입니다. 소�
 
 ### Linux page
 
-Kernel과 MMU가 virtual address와 physical address의 연결을 관리하는 단위입니다. AArch64에서는 4·16·64 KiB 등을 사용할 수 있습니다.
+Kernel과 MMU가 가상 주소와 물리 주소의 연결을 관리하는 단위입니다. AArch64에서는 4·16·64 KiB 등을 사용할 수 있습니다.
 
 ### Cache line
 
@@ -80,7 +80,7 @@ Kernel과 MMU가 virtual address와 physical address의 연결을 관리하는 �
 
 ### Cache miss/refill
 
-요청한 데이터가 현재 cache에 없어서 L2, SLC, DRAM과 같은 하위 계층에서 cache line을 가져오는 동작입니다.
+요청한 데이터가 현재 cache에 없어서 L2, SLC, DRAM 등의 하위 계층에서 cache line을 가져오는 동작입니다.
 
 ### Write-Back
 
@@ -96,7 +96,7 @@ CPU store를 cache와 하위 메모리 계층 방향으로 함께 전달하는 �
 
 ### Clean line
 
-현재 cache 계층의 값이 하위 coherency 지점과 같은 cache line입니다. 다른 cache 계층에는 같은 주소의 dirty line이 존재할 수 있습니다.
+현재 cache 계층의 값이 하위 coherency 지점과 일치하는 cache line입니다. 다른 cache 계층에는 동일 주소의 dirty line이 존재할 수 있습니다.
 
 ### Eviction
 
@@ -116,7 +116,7 @@ CPU store를 cache와 하위 메모리 계층 방향으로 함께 전달하는 �
 
 ### Coherency
 
-여러 CPU와 coherent 장치가 같은 physical address의 최신값을 일관되게 읽도록 관리하는 규칙과 protocol입니다.
+여러 CPU와 coherent 장치가 같은 물리 주소의 최신값을 일관되게 읽도록 관리하는 규칙과 protocol입니다.
 
 ### Memory ordering/consistency
 
@@ -124,7 +124,7 @@ CPU store를 cache와 하위 메모리 계층 방향으로 함께 전달하는 �
 
 ### Snoop
 
-다른 cache가 특정 physical address의 데이터 또는 쓰기 권한을 보유하는지 확인하고, 필요한 경우 cache 상태를 바꾸는 coherency 요청입니다.
+다른 cache가 특정 물리 주소의 데이터 또는 쓰기 권한을 보유하는지 확인하고, 필요한 경우 cache 상태를 바꾸는 coherency 요청입니다.
 
 ### PoC
 
@@ -158,7 +158,7 @@ Network-on-Chip의 약어입니다. CPU, GPU, NPU, UFS, DMC를 연결하는 SoC 
 
 ### Channel
 
-독립적으로 메모리 요청을 처리할 수 있는 interface 경로입니다. Physical address를 여러 channel에 나누는 방식은 SoC마다 다릅니다.
+독립적으로 메모리 요청을 처리할 수 있는 interface 경로입니다. 물리 주소를 여러 channel에 나누는 방식은 대상 시스템마다 다릅니다.
 
 ### Rank
 
@@ -177,7 +177,7 @@ Bank 내부의 cell 위치를 나타내는 주소입니다. Row를 활성화하�
 - Row hit: 접근할 row가 이미 활성화되어 있습니다.
 - Row miss 또는 conflict: 현재 row를 닫고 다른 row를 활성화해야 합니다.
 
-Stressapptest가 분산해서 선택하는 단위는 1 MiB virtual block입니다. 실제 row는 VA→PA 변환과 DMC의 주소 배치 규칙으로 결정됩니다.
+Stressapptest가 분산해서 선택하는 단위는 1 MiB 가상 주소 block입니다. 실제 row는 VA→PA 변환과 DMC의 주소 배치 규칙으로 결정됩니다.
 
 ### DQ/CA
 
@@ -198,7 +198,7 @@ SAT pattern word가 실제 DQ pin에 전달되기까지 cache 처리, DMC data s
 
 ### Empty block
 
-새 데이터를 쓸 대상으로 사용할 수 있는 SAT block입니다. 할당된 virtual address와 연결된 physical page는 유지되고 `pattern` 정보만 null로 설정됩니다.
+새 데이터를 쓸 대상으로 사용할 수 있는 SAT block입니다. 할당된 가상 주소와 연결된 물리 페이지는 유지되고 `pattern` 정보만 null로 설정됩니다.
 
 ### Strict mode
 
@@ -224,7 +224,7 @@ Read-Modify-Write의 약어입니다. 기존값을 읽고 연산한 뒤 같은 �
 
 ### Anonymous mmap
 
-파일 연결 없이 프로세스의 virtual memory를 확보하는 Linux API입니다. Stressapptest가 일반 메모리를 할당할 때 사용하는 방식입니다.
+파일 연결 없이 프로세스의 가상 메모리를 확보하는 Linux API입니다. Stressapptest가 일반 메모리를 할당할 때 사용하는 방식입니다.
 
 ### Page cache
 

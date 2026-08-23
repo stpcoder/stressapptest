@@ -1,98 +1,131 @@
-# StressAppTest 설명
+# 실행 원리와 읽기 순서
 
-이 문서는 Android ARM64 기기에서 stressapptest가 메모리에 어떤 부하를 만들고 데이터 오류를 어떻게 찾는지 소스 코드 기준으로 설명합니다. 다음 네 가지를 중심으로 확인합니다.
+이 매뉴얼은 Android ARM64 환경에서 stressapptest가 시험 메모리를 준비하고, Worker를 실행하고, 데이터 오류를 검사하는 순서를 설명합니다.
 
 [Android ARM64 최신 실행 파일 다운로드](https://github.com/stpcoder/stressapptest/releases/latest/download/stressapptest-android-arm64)
 
-이 fork에서 추가한 pattern 선택 기능의 빠른 실행법은 [저장소 README](https://github.com/stpcoder/stressapptest#readme)에서 확인할 수 있습니다.
+## 기준 실행 명령
 
-- 테스트할 메모리를 어떻게 준비하고 block으로 나누는가
-- 각 Worker가 어느 시점에 메모리를 읽고 쓰는가
-- cache가 켜진 상태에서 LPDDR 접근량이 어떻게 증가하는가
-- 읽은 데이터가 맞는지 언제, 어떤 방법으로 검사하는가
+다음 명령을 기준으로 전체 동작을 확인합니다.
 
-## 핵심 동작
+```bash
+adb shell '/data/local/tmp/stressapptest -M 1024 -s 600 -P OneZero256 -m 4 -i 4 -c 0 --printsec 10'
+```
 
-- 기본 설정에서는 온라인 상태의 논리 CPU 수만큼 `CopyThread`를 만듭니다.
-- 테스트 메모리는 기본 1 MiB SAT block으로 나뉩니다.
-- Worker는 공용 queue에서 block을 가져오며, 한 block 안의 주소는 앞에서부터 순서대로 처리합니다.
-- 기본 복사 과정은 원본 block 읽기, checksum 계산, 대상 block 쓰기를 함께 수행합니다.
-- 큰 메모리 영역을 여러 core가 반복해서 처리하면 cache miss와 write-back이 증가합니다.
-- 대상 block에 쓴 데이터는 그 block이 다음 복사의 원본으로 선택되거나 마지막 전체 검사를 수행할 때 확인합니다.
+| 옵션 | 설정 내용 |
+|---|---|
+| `-M 1024` | 1,024 MiB 시험 메모리 할당 |
+| `-s 600` | Runtime Worker를 600초 동안 실행 |
+| `-P OneZero256` | 모든 초기 SAT 작업 단위에 OneZero256 Pattern 배정 |
+| `-m 4` | Copy Worker 4개 실행 |
+| `-i 4` | Invert Worker 4개 실행 |
+| `-c 0` | Runtime Check Worker를 생성하지 않음 |
+| `--printsec 10` | 진행 상태를 10초 간격으로 출력 |
 
-<sub><em>Queue: SAT block 상태와 mutex를 관리하여 Worker마다 배타적인 block 소유권을 제공하는 구조입니다.</em></sub>
-<sub><em>Checksum: 읽은 데이터에서 계산한 값을 기대값과 비교하여 데이터가 바뀌었는지 확인하는 값입니다.</em></sub>
+`-s`는 Runtime Worker 실행 시간에 적용됩니다. 초기 Fill과 종료 시점의 Valid 검사는 이 시간의 앞뒤에서 실행됩니다.
+
+## 기준 명령의 실행 순서
+
+```text
+1,024 MiB 메모리 할당
+  → Pattern과 기대 checksum 생성
+  → Fill Worker 8개가 전체 영역에 OneZero256 기록
+  → SAT 작업 단위를 Valid·Empty 상태로 구성
+  → Copy Worker 4개와 Invert Worker 4개를 600초 동안 실행
+  → Runtime Worker 종료
+  → Check Worker 8개가 종료 시점의 Valid 작업 단위를 검사
+  → 결과 출력과 메모리 해제
+```
+
+기본 SAT 작업 단위는 1 MiB이므로 `-M 1024`는 1,024개의 작업 단위를 만듭니다. 초기 Fill은 1,024 MiB 전체를 기록합니다. 기본 fine-lock queue는 Runtime 시작 전에 408개를 Empty, 616개를 Valid 상태로 설정합니다. Empty 전환은 Pattern 상태를 해제하며 메모리 할당과 기록된 byte는 유지됩니다.
+
+<sub><em>Valid: 기대 Pattern 정보를 보유하여 읽기 원본과 검사 대상으로 사용할 수 있는 상태입니다.</em></sub>
+<sub><em>Empty: Copy Worker가 새 데이터를 기록할 대상으로 사용할 수 있는 상태입니다.</em></sub>
+
+## OneZero256 데이터 구성
+
+OneZero256은 다음 64 byte 배열을 반복합니다.
+
+```text
+offset  0–31 : 0x00 32 byte
+offset 32–63 : 0xFF 32 byte
+```
+
+`FillPage()`는 한 번의 store로 64-bit(8 byte)를 기록합니다. `0x00` 8 byte를 네 번, `0xFF` 8 byte를 네 번 기록하여 64 byte 배열을 구성합니다. 이 배열을 1 MiB 작업 단위 전체에 반복합니다.
+
+## Worker 종류와 동작
+
+### Copy Worker 4개
+
+각 Copy Worker는 다음 순서를 반복합니다.
+
+```text
+Valid 원본 선택
+  → Empty 대상 선택
+  → 원본 read와 checksum 계산
+  → 대상 write
+  → 대상을 Valid로 변경
+  → 기존 원본을 Empty로 변경
+```
+
+기본 Copy 검사는 원본을 읽으면서 계산한 checksum을 확인합니다. `--copy-verify-destination`은 대상 기록 직후 readback 검사를 추가합니다.
+
+### Invert Worker 4개
+
+각 Invert Worker는 Valid 작업 단위 하나를 선택하여 다음 순서로 처리합니다.
+
+```text
+반전 전 checksum 검사
+  → 낮은 주소에서 높은 주소 방향으로 선택 범위 bit 반전 후 저장
+  → 높은 주소에서 낮은 주소 방향으로 선택 범위 bit 반전 후 저장
+  → 높은 주소에서 낮은 주소 방향으로 선택 범위 bit 반전 후 저장
+  → 낮은 주소에서 높은 주소 방향으로 선택 범위 bit 반전 후 저장
+  → 반전 후 checksum 검사
+```
+
+선택 범위의 각 위치를 네 번 반전하므로 마지막 데이터는 시작 Pattern으로 복원됩니다. 기본 `legacy` 범위는 기존 공개 코드의 동작을 유지하며, `--invert-range full`은 SAT 작업 단위 전체를 처리합니다. 각 반전은 같은 주소를 읽고, CPU에서 bitwise NOT을 계산하고, 같은 주소에 저장하는 read-modify-write 작업입니다.
+
+### 종료 시점 Check Worker
+
+기본 동작에서 Runtime Check Worker는 종료 요청 이후 Valid queue를 끝까지 검사합니다. 남은 항목은 Fill Worker 수와 같은 수의 보조 Check Worker가 검사합니다. `--final-check-threads N`을 명시하면 Runtime Check Worker가 종료 drain을 수행하지 않고 N개의 별도 Worker가 검사를 담당합니다. `--skip-final-check`는 종료 검사를 생략합니다.
+
+## 오류 검사와 로그 출력
+
+Worker가 계산한 checksum과 기대 checksum이 다르면 다음 처리를 수행합니다.
+
+```text
+4 KiB 구간 checksum mismatch
+  → 64-bit 단위로 실제값과 기대값 비교
+  → mismatch 주소를 다시 읽음
+  → read·reread·expected와 검출 단계를 로그에 기록
+  → 해당 64-bit 값을 expected로 복구
+```
+
+`worker`와 `phase`는 오류를 처음 검출한 소프트웨어 위치를 표시합니다. `sat_block`, `sat_offset`, `block_offset`은 시험 영역 내부의 논리적 위치를 표시합니다. 물리 주소와 DRAM 좌표는 실행 권한과 선택한 주소 변환 프로필에 따라 출력됩니다.
+
+## Cache와 LPDDR 접근
+
+Android ARM64 실행 경로는 일반 cacheable load와 store를 사용합니다. CPU는 가상 주소로 명령을 실행하며 MMU가 물리 주소 변환을 수행합니다. Cache miss는 하위 cache 또는 메모리 계층의 read 요청을 만들고, 수정된 cache line의 write-back은 하위 계층의 write 요청을 만듭니다.
+
+`-M 1024 -m 4 -i 4`는 cache 용량보다 큰 영역을 8개 Runtime Worker가 반복 처리합니다. 이 접근은 cache refill, dirty line 교체와 interconnect 전송을 발생시킬 수 있습니다. 실제 memory-controller 요청량은 DMC 계측값으로 확인합니다.
+
+Copy Worker 4개와 Invert Worker 4개는 DRAM die에 고정되지 않습니다. 각 Worker는 queue에서 잠긴 1 MiB 작업 단위를 선택합니다. 물리 페이지 배치와 channel·rank·bank 선택은 kernel의 page allocation과 memory-controller 주소 해석에 따라 결정됩니다.
+
+오류 처리의 reread는 현재 cache 상태에서 같은 가상 주소를 한 번 더 CPU load합니다. 해당 load의 DRAM 도달 여부는 PMU 또는 memory-controller 계측값으로 확인합니다.
+
+<sub><em>Write-back: 수정된 cache line을 하위 cache 또는 메모리 계층으로 전달하는 동작입니다.</em></sub>
+<sub><em>Readback: write가 끝난 영역을 다시 읽어 기대 데이터와 비교하는 검사입니다.</em></sub>
 
 ## 권장 읽기 순서
 
-처음 읽을 때는 다음 여섯 장을 먼저 보면 전체 흐름을 이해할 수 있습니다.
-
-1. [stressapptest의 작동 원리](01-overview.md)
-2. [실행 순서 한눈에 보기](02-execution-flow.md)
+1. [실행 순서 한눈에 보기](02-execution-flow.md)
+2. [메모리 Worker 종류와 동작](07-memory-workers.md)
 3. [메모리를 복사하고 오류를 찾는 과정](09-copy-and-verification.md)
 4. [Cache에서 LPDDR까지 데이터가 이동하는 과정](04-cache-and-arm64.md)
-5. [목적별 테스트 명령](12-test-recipes.md)
-6. [오류 검사와 로그 처리 과정](17-logging-and-dram-frequency.md)
+5. [단계별 오류 검출과 옵션 영향 분석](18-stage-debugging-and-option-risk.md)
 
-세부 구현을 찾을 때는 [소스 코드 찾아보기](15-source-map.md), 어려운 용어는 [용어 설명](16-glossary.md)을 사용합니다.
+전체 옵션은 [명령행 옵션 정리](10-all-options.md), 소스 위치는 [소스 코드 찾아보기](15-source-map.md), 기술 용어는 [용어 설명](16-glossary.md)에서 확인할 수 있습니다.
 
-## 전체 작동 단계
+## 안전 확인
 
-```text
-메모리 할당
-  → 1 MiB block으로 분할
-  → pattern 기록
-  → Worker 실행
-  → 원본 읽기와 checksum 계산
-  → 대상에 쓰기
-  → block을 queue에 반환
-  → 다음 선택 때 다시 읽어 오류 검사
-```
-
-Worker가 처리하는 메모리 영역이 cache보다 크면 cache miss가 늘어납니다. 수정된 cache line이 밀려날 때 write-back이 발생하며, 이 동작이 반복되면 LPDDR 읽기·쓰기 요청이 증가합니다.
-
-## 문서에서 구분하는 메모리 단위
-
-- `SAT block`: stressapptest가 관리하는 메모리 묶음이며 기본 크기는 1 MiB입니다.
-- `Linux page`: MMU가 주소를 변환하는 단위이며 기기 설정에 따라 4/16/64 KiB 등을 사용합니다.
-- `cache line`: cache가 데이터를 채우고 내보내는 단위이며 코드에서는 64 B를 사용합니다.
-- `physical address`: 주소 변환 후 CPU와 NoC가 사용하는 시스템 주소입니다.
-- `DRAM 좌표`: DMC가 physical address를 해석하여 선택하는 channel, rank, bank, row, column입니다.
-- 코드 위치는 현재 기준 commit의 `파일:줄`로 적습니다.
-- “일반적으로”라고 적은 microarchitecture 동작은 ARM architecture가 허용하는 대표 동작입니다. Target SoC의 상세 동작은 제조사 문서와 PMU로 확인합니다.
-
-## 소스 코드 예제 읽는 방법
-
-각 장의 핵심 설명에는 실제 저장소에서 발췌한 코드가 포함됩니다. 코드 블록 바로 위에는 다음 정보를 표시합니다.
-
-| 표기 | 의미 |
-|---|---|
-| **파일** | 구현이 존재하는 저장소 내부 경로 |
-| **함수/구간** | 분석을 시작할 함수 또는 상수 정의 위치 |
-| **기준** | [upstream commit `73b9df2`](https://github.com/stressapptest/stressapptest/tree/73b9df227e89cd52b09852056843610722b7b7ae) |
-
-코드 블록에는 설명에 필요한 부분만 넣었습니다. `...`는 중간 코드가 생략되었다는 뜻입니다. 코드 아래의 **코드 설명**에서 해당 코드가 실제로 수행하는 일을 정리합니다.
-
-> **소스 기준 예시**
-> **파일:** `src/main.cc` · **함수:** `main()` · **기준:** `73b9df2`
-
-```cpp
-if (!sat->ParseArgs(argc, argv)) {
-  sat->bad_status();
-} else if (!sat->Initialize()) {
-  sat->bad_status();
-} else if (!sat->Run()) {
-  sat->bad_status();
-}
-sat->PrintResults();
-```
-
-**코드 설명:** 실행 옵션 확인, 자원 초기화, 부하 실행 순서로 진행됩니다. 어느 단계에서 실패하더라도 결과 출력과 자원 정리 단계가 이어집니다.
-
-주요 기술 용어는 각 장의 최초 사용 위치에 다음 형식으로 정의합니다.
-
-<sub><em>용어: 해당 장에서 적용하는 기술적 의미와 범위입니다.</em></sub>
-
-## 안전 경고
-
-Stressapptest의 부하는 Android foreground/service, LMKD, thermal governor, DVFS, UFS와 다른 subsystem에 영향을 줍니다. 첫 시험은 작은 `-M`과 `-s`로 시작합니다. `-d --destructive`는 데이터 삭제가 허용된 시험용 block device에만 사용합니다.
+첫 실행은 작은 `-M`과 `-s`로 시작하여 Android 시스템 프로세스용 메모리를 확보합니다. Raw block device에 쓰는 `-d --destructive`는 데이터 삭제가 허용된 시험 장치에서만 사용합니다.

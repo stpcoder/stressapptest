@@ -41,11 +41,12 @@ jobs:
       - name: Build Linux smoke-test executable
         shell: bash
         run: |
-          CXXFLAGS="-std=gnu++11 -O2 -DNDEBUG -DCHECKOPTS" \
+          CXXFLAGS="-std=gnu++11 -O2 -DNDEBUG -DCHECKOPTS \
+            -DSTRESSAPPTEST_ENABLE_TEST_HOOKS" \
             ./configure --disable-default-optimizations
           make -j"$(nproc)"
 
-      - name: Verify physical-to-DRAM address profile
+      - name: Verify standalone diagnostic algorithms
         shell: bash
         run: |
           set -euo pipefail
@@ -54,11 +55,16 @@ jobs:
             -o "${RUNNER_TEMP}/dram_address_test"
           "${RUNNER_TEMP}/dram_address_test"
 
+          g++ -std=gnu++11 -Wall -Wextra -Werror -Isrc \
+            src/invert_workload_test.cc \
+            -o "${RUNNER_TEMP}/invert_workload_test"
+          "${RUNNER_TEMP}/invert_workload_test"
+
       - name: Verify pattern sequence and DDR frequency options
         shell: bash
         run: |
           set -euo pipefail
-          ddr_node="${RUNNER_TEMP}/aoss_send_message"
+          ddr_node="${RUNNER_TEMP}/ddr_control_node"
           : > "${ddr_node}"
 
           ./src/stressapptest \
@@ -82,12 +88,244 @@ jobs:
             -M 64 -m 1 -i 0 -s 1 -A --no_errors -v 5 \
             -P OneZero256 \
             --ddr-step 1 \
-            --ddr-node "${RUNNER_TEMP}/unused-aoss-node" \
+            --ddr-node "${RUNNER_TEMP}/unused-ddr-node" \
             | tee "${RUNNER_TEMP}/named-pattern.log"
 
           grep -q "Pattern sequence\[0\] id=27 name=OneZero256" \
             "${RUNNER_TEMP}/named-pattern.log"
-          test ! -e "${RUNNER_TEMP}/unused-aoss-node"
+          test ! -e "${RUNNER_TEMP}/unused-ddr-node"
+
+      - name: Verify stage diagnostic options
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ./src/stressapptest \
+            -M 16 -m 1 -i 1 -c 0 -s 1 -A --no_errors -v 5 \
+            -P OneZero256,FiveA256 \
+            --pattern-byte-offset 32 \
+            --fill-preset zero \
+            --prefault-pages \
+            --fill-threads 2 \
+            --fill-direction down \
+            --fill-verify-every 4 \
+            --fill-yield-bytes 4096 \
+            --verify-after-fill \
+            --post-fill-delay 0 \
+            --runtime-start-delay 0 \
+            --copy-verify-destination \
+            --invert-range full \
+            --diag-vm-stats \
+            --diag-block-history \
+            --diag-phase-summary \
+            --error-log-limit 10 \
+            --final-check-threads 2 \
+            --stop_on_errors \
+            --dram-map lpddr-v1 \
+            | tee "${RUNNER_TEMP}/stage-options.log"
+
+          grep -q "DIAG phase=prefault_begin" \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG phase=preset_fill_begin" \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG phase=initial_fill_begin" \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG phase=post_fill_check_begin" \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG fill_preset=zero pattern_offset=32" \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG invert_range=full" \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG_VM phase=allocation" \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG block_history=enabled" \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG_SUMMARY phase=initial_fill" \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG_CONFIG .*final_mode=separate final_threads=2" \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG_CONFIG_OPTIONS .*fill_preset=zero .*prefault=1 " \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG_CONFIG_OPTIONS .*verify_after_fill=1 .*copy_verify_destination=1 " \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG_SUMMARY phase=copy/transfer" \
+            "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG_SUMMARY phase=invert/rmw" \
+            "${RUNNER_TEMP}/stage-options.log"
+
+          # 종료 검사 옵션을 생략한 실행은 기존 Runtime Check의 STOP 이후
+          # Valid queue drain과 Fill Worker 수의 보조 검사 Worker를 유지합니다.
+          ./src/stressapptest \
+            -M 16 -m 0 -i 0 -c 1 -s 1 -A --no_errors -v 5 \
+            -P OneZero256 --diag-phase-summary \
+            | tee "${RUNNER_TEMP}/legacy-final-check.log"
+          grep -q "DIAG_CONFIG .*final_mode=legacy_drain final_threads=8" \
+            "${RUNNER_TEMP}/legacy-final-check.log"
+          grep -q "DIAG_SUMMARY phase=check/final_check blocks=9" \
+            "${RUNNER_TEMP}/legacy-final-check.log"
+          grep -q "Status: PASS" \
+            "${RUNNER_TEMP}/legacy-final-check.log"
+
+          # 명시형 종료 정책은 Runtime Check가 보유 entry를 Valid로 반환하고
+          # 별도 Worker가 Valid 10개를 모두 검사합니다.
+          ./src/stressapptest \
+            -M 16 -m 0 -i 0 -c 1 -s 1 -A --no_errors -v 5 \
+            -P OneZero256 --diag-phase-summary \
+            --final-check-threads 2 \
+            | tee "${RUNNER_TEMP}/separate-final-check.log"
+          grep -q "DIAG_CONFIG .*final_mode=separate final_threads=2" \
+            "${RUNNER_TEMP}/separate-final-check.log"
+          grep -q "DIAG_SUMMARY phase=check/final_check blocks=10" \
+            "${RUNNER_TEMP}/separate-final-check.log"
+          grep -q "Status: PASS" \
+            "${RUNNER_TEMP}/separate-final-check.log"
+
+          # 옵션을 생략한 Invert 범위가 기존 공개 코드의 legacy 계산을
+          # 유지하는지 작은 SAT 작업 단위에서 확인합니다.
+          ./src/stressapptest \
+            -M 16 -p 1024 -m 0 -i 1 -c 0 -s 1 \
+            -A --no_errors -v 5 -P OneZero256 \
+            --diag-phase-summary --skip-final-check \
+            | tee "${RUNNER_TEMP}/invert-default-range.log"
+          grep -q "DIAG invert_range=legacy range_bytes_per_pass=0" \
+            "${RUNNER_TEMP}/invert-default-range.log"
+          grep -q "phase=invert/rmw.*read_bytes=0 write_bytes=0" \
+            "${RUNNER_TEMP}/invert-default-range.log"
+
+          # OneLock queue에서도 post-fill 검사와 종료 통계가 안전하게
+          # 완료되는지 확인합니다.
+          ./src/stressapptest \
+            -M 16 -m 1 -i 0 -c 0 -s 1 -A --no_errors -v 5 \
+            -P OneZero256 --coarse_grain_lock --verify-after-fill \
+            --skip-final-check \
+            | tee "${RUNNER_TEMP}/coarse-queue.log"
+          grep -q "Status: PASS" "${RUNNER_TEMP}/coarse-queue.log"
+
+          # initial Fill 직후 256개 word를 변형하여 overflow 상세 비교가
+          # 각 word를 한 번씩 집계하고 로그 예산과 복구를 유지하는지 봅니다.
+          if ./src/stressapptest \
+            -M 16 -m 0 -i 0 -c 0 -s 1 -A --no_errors -v 5 \
+            -P OneZero256 --verify-after-fill \
+            --diag-phase-summary --diag-block-history --error-log-limit 1 \
+            --test-corrupt-after-fill-words 256 \
+            | tee "${RUNNER_TEMP}/memory-error-injection.log"; then
+            echo "Injected memory mismatch must return a failing result" >&2
+            exit 1
+          fi
+          grep -q "TEST_INJECTION phase=post_initial_fill" \
+            "${RUNNER_TEMP}/memory-error-injection.log"
+          grep -q "post_fill_check_end pages=16 errors=256 status=1" \
+            "${RUNNER_TEMP}/memory-error-injection.log"
+          grep -q "phase=post_fill/full_check.*word_mismatches=256" \
+            "${RUNNER_TEMP}/memory-error-injection.log"
+          grep -q "phase=post_fill/full_check.*first_error_epoch=" \
+            "${RUNNER_TEMP}/memory-error-injection.log"
+          grep -q "phase=check/final_check blocks=10" \
+            "${RUNNER_TEMP}/memory-error-injection.log"
+          grep -q "block_history(last_writer:initial_fill" \
+            "${RUNNER_TEMP}/memory-error-injection.log"
+          grep -q "DIAG_ERROR_LOG limit=1 detailed=1 suppressed=29" \
+            "${RUNNER_TEMP}/memory-error-injection.log"
+          grep -q "Stats: Found 256 hardware incidents" \
+            "${RUNNER_TEMP}/memory-error-injection.log"
+
+          ./src/stressapptest \
+            -M 16 -m 0 -i 0 -c 1 -s 1 -A --no_errors -v 5 \
+            -P OneZero256 --diag-phase-summary --diag-vm-stats \
+            --skip-final-check \
+            | tee "${RUNNER_TEMP}/skip-final.log"
+          grep -q "DIAG phase=final_check_skipped" \
+            "${RUNNER_TEMP}/skip-final.log"
+          grep -q "DIAG_VM phase=final_check_skipped" \
+            "${RUNNER_TEMP}/skip-final.log"
+          if grep -q "DIAG_SUMMARY phase=check/final_check" \
+            "${RUNNER_TEMP}/skip-final.log"; then
+            echo "Skip mode must not run the final-check phase" >&2
+            exit 1
+          fi
+
+          # 4 KiB보다 작은 SAT 작업 단위에서 Copy destination tag를
+          # destination 가상 주소로 다시 생성하는지 확인합니다.
+          ./src/stressapptest \
+            -M 16 -p 1024 -m 1 -i 0 -c 0 -s 1 \
+            -A --no_errors -v 5 -P OneZero256 --tag_mode \
+            --copy-verify-destination --skip-final-check \
+            | tee "${RUNNER_TEMP}/tag-copy-1024.log"
+          grep -q "Status: PASS" "${RUNNER_TEMP}/tag-copy-1024.log"
+          if grep -q "Hardware Error" "${RUNNER_TEMP}/tag-copy-1024.log"; then
+            echo "Tag copy produced a false memory error" >&2
+            exit 1
+          fi
+
+          ./src/stressapptest \
+            -M 16 -p 2048 -m 1 -i 0 -c 0 -s 1 \
+            -A --no_errors -v 5 -P OneZero256 -W --tag_mode \
+            --copy-verify-destination --skip-final-check \
+            | tee "${RUNNER_TEMP}/tag-warm-copy-2048.log"
+          grep -q "Status: PASS" "${RUNNER_TEMP}/tag-warm-copy-2048.log"
+          if grep -q "Hardware Error" \
+            "${RUNNER_TEMP}/tag-warm-copy-2048.log"; then
+            echo "Warm tag copy produced a false memory error" >&2
+            exit 1
+          fi
+
+          ./src/stressapptest \
+            -M 16 -p 1024 -m 1 -i 0 -c 0 -s 1 \
+            -A --no_errors -v 5 -P OneZero256 -F --tag_mode \
+            --copy-verify-destination --skip-final-check \
+            | tee "${RUNNER_TEMP}/tag-memcpy-1024.log"
+          grep -q "Status: PASS" "${RUNNER_TEMP}/tag-memcpy-1024.log"
+          if grep -q "Hardware Error" \
+            "${RUNNER_TEMP}/tag-memcpy-1024.log"; then
+            echo "Memcpy tag copy produced a false memory error" >&2
+            exit 1
+          fi
+
+          if ./src/stressapptest -M 16 -s 1 -A \
+            --pattern-byte-offset 2; then
+            echo "Unaligned pattern offset must be rejected" >&2
+            exit 1
+          fi
+          if ./src/stressapptest -M 16 -s 1 -A \
+            --fill-yield-bytes 63; then
+            echo "Unaligned Fill yield interval must be rejected" >&2
+            exit 1
+          fi
+          if ./src/stressapptest -M 16 -s 1 -A \
+            --fill-threads 257; then
+            echo "Excessive Fill worker count must be rejected" >&2
+            exit 1
+          fi
+          if ./src/stressapptest -M 16 -s 1 -A --printsec 0; then
+            echo "Zero print interval must be rejected" >&2
+            exit 1
+          fi
+          if ./src/stressapptest -M 16 -s 1 -A --pause_delay 0; then
+            echo "Zero pause interval must be rejected" >&2
+            exit 1
+          fi
+          if ./src/stressapptest -M 16 -s 1 -A --printsec 1junk; then
+            echo "Malformed print interval must be rejected" >&2
+            exit 1
+          fi
+          if ./src/stressapptest -M 16 -s 1 -A \
+            --pause_delay 4294967297; then
+            echo "Overflowing pause interval must be rejected" >&2
+            exit 1
+          fi
+
+          # Cache coherency mismatch도 공통 종료 요청을 사용하고 종료 검사를
+          # 생략하는지 결정적인 error injection으로 확인합니다.
+          if ./src/stressapptest \
+            -M 16 -m 0 -i 0 -c 0 -s 10 -A --no_errors -v 5 \
+            -P OneZero256 --cc_test --force_errors --stop_on_errors \
+            | tee "${RUNNER_TEMP}/stop-on-errors.log"; then
+            echo "Injected mismatch must return a failing result" >&2
+            exit 1
+          fi
+          grep -q "reason=stop_on_errors" \
+            "${RUNNER_TEMP}/stop-on-errors.log"
+          grep -q "Status: FAIL" "${RUNNER_TEMP}/stop-on-errors.log"
 
       - name: Install pinned Android NDK
         shell: bash
@@ -119,6 +357,11 @@ jobs:
           grep -q "Machine:.*AArch64" "${RUNNER_TEMP}/elf-header.txt"
           if grep -q "libc++_shared.so" "${RUNNER_TEMP}/elf-dynamic.txt"; then
             echo "The release must not depend on libc++_shared.so" >&2
+            exit 1
+          fi
+          if strings "${binary}" | \
+            grep -q -- "--test-corrupt-after-fill-words"; then
+            echo "The release must not contain CI-only error injection" >&2
             exit 1
           fi
 

@@ -704,19 +704,28 @@ void OsLayer::FreeTestMem() {
 void *OsLayer::PrepareTestMem(uint64 offset, uint64 length) {
   sat_assert((offset + length) <= testmemsize_);
   if (dynamic_mapped_shmem_) {
+    // mmap() file offset은 운영체제 page 크기에 정렬되어야 합니다.
+    // SAT 작업 단위가 page보다 작은 경우 앞쪽 차이를 포함하여
+    // 매핑하고 요청한 SAT 작업 단위의 시작 pointer를 반환합니다.
+    const long os_page_size_value = sysconf(_SC_PAGESIZE);
+    sat_assert(os_page_size_value > 0);
+    const uint64 os_page_size = static_cast<uint64>(os_page_size_value);
+    const uint64 mapping_offset = offset - (offset % os_page_size);
+    const uint64 mapping_delta = offset - mapping_offset;
+    const uint64 mapping_length = length + mapping_delta;
     // TODO(nsanders): Check if we can support MAP_NONBLOCK,
     // and evaluate performance hit from not using it.
-    void * mapping = mmap(NULL, length, PROT_READ | PROT_WRITE,
+    void * mapping = mmap(NULL, mapping_length, PROT_READ | PROT_WRITE,
                      MAP_SHARED | MAP_NORESERVE | MAP_LOCKED | MAP_POPULATE,
-                     shmid_, offset);
+                     shmid_, mapping_offset);
     if (mapping == MAP_FAILED) {
       string errtxt = ErrorString(errno);
       logprintf(0, "Process Error: PrepareTestMem mmap(%llx, %llx) failed. "
                    "error: %s.\n",
-                offset, length, errtxt.c_str());
+                mapping_offset, mapping_length, errtxt.c_str());
       sat_assert(0);
     }
-    return mapping;
+    return reinterpret_cast<char*>(mapping) + mapping_delta;
   }
 
   return reinterpret_cast<void*>(reinterpret_cast<char*>(testmem_) + offset);
@@ -725,12 +734,18 @@ void *OsLayer::PrepareTestMem(uint64 offset, uint64 length) {
 // Release the test memory resources, if any.
 void OsLayer::ReleaseTestMem(void *addr, uint64 offset, uint64 length) {
   if (dynamic_mapped_shmem_) {
-    int retval = munmap(addr, length);
+    const long os_page_size_value = sysconf(_SC_PAGESIZE);
+    sat_assert(os_page_size_value > 0);
+    const uint64 os_page_size = static_cast<uint64>(os_page_size_value);
+    const uint64 mapping_delta = offset % os_page_size;
+    void *mapping = reinterpret_cast<char*>(addr) - mapping_delta;
+    const uint64 mapping_length = length + mapping_delta;
+    int retval = munmap(mapping, mapping_length);
     if (retval == -1) {
       string errtxt = ErrorString(errno);
       logprintf(0, "Process Error: ReleaseTestMem munmap(%p, %llx) failed. "
                    "error: %s.\n",
-                addr, length, errtxt.c_str());
+                mapping, mapping_length, errtxt.c_str());
       sat_assert(0);
     }
   }

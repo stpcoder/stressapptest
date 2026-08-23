@@ -27,7 +27,7 @@ main()
      ├─ OsLayer
      │   ├─ 메모리 할당
      │   ├─ CPU/affinity 정보
-     │   ├─ virtual address→physical address 진단
+     │   ├─ 가상 주소→물리 주소 진단
      │   ├─ cache 관리 명령
      │   └─ SoC 오류 확인
      ├─ PatternList
@@ -40,7 +40,7 @@ main()
      └─ WorkerThread를 상속한 Worker 종류
 ```
 
-`main()`은 `옵션 확인 → 초기화 → 실행 → 결과 출력 → 자원 정리` 순서로 동작합니다 (`src/main.cc:20`).
+`src/main.cc`의 `main()`은 `옵션 확인 → 초기화 → 실행 → 결과 출력 → 자원 정리` 순서로 동작합니다.
 
 ## 프로그램 실행 순서
 
@@ -91,9 +91,9 @@ empty block ──FillThread──→ valid block
               읽기 + checksum + 쓰기
 ```
 
-CopyThread는 queue에서 읽을 원본 block과 쓸 대상 block을 하나씩 가져옵니다. 복사가 끝나면 block 상태는 다음과 같이 바뀝니다.
+CopyThread는 queue에서 읽을 원본 block과 쓸 대상 block을 하나씩 가져옵니다. 복사가 끝나면 block 상태를 다음 순서로 변경합니다.
 
-- 대상 block은 원본과 같은 pattern 정보를 가진 valid block이 됩니다.
+- 대상 block은 원본과 동일한 pattern 정보를 가진 valid block이 됩니다.
 - 복사가 끝난 원본 block은 다음 쓰기에 사용할 수 있는 empty block이 됩니다.
 
 이 과정을 반복하면 같은 데이터 pattern이 테스트 메모리 안에서 계속 다른 block으로 이동합니다.
@@ -120,13 +120,13 @@ CopyThread는 queue에서 읽을 원본 block과 쓸 대상 block을 하나씩 �
 | block 상태 설정 | 전체 block 중 약 2/5를 empty, 약 3/5를 valid로 설정 |
 | 설정 시간 동안 실행 | 온라인 상태의 논리 CPU 수만큼 CopyThread 생성 |
 | 오류 상태 확인 | ErrorPollThread 1개 생성. Generic ARM에서는 항상 오류 0개 반환 |
-| 마지막 전체 검사 | CheckThread 8개가 남은 valid block 검사 |
+| 종료 시점 Valid 검사 | 기본 Runtime Check 종료 drain과 Fill Worker 수의 보조 CheckThread가 남은 valid block 검사 |
 
-초기 데이터 쓰기는 `-s` 구간 전에, 마지막 전체 검사는 `-s` 구간 후에 실행됩니다. 전체 실행 시간은 세 구간의 합입니다.
+초기 데이터 쓰기는 `-s` 구간 전에, 종료 시점 Valid 검사는 `-s` 구간 후에 실행됩니다. 전체 실행 시간은 세 구간의 합입니다.
 
 ## CPU 수와 Worker 배치
 
-`OsLayer::Initialize()`는 `_SC_NPROCESSORS_ONLN`으로 온라인 상태의 논리 CPU 수를 확인하고 `-m`의 기본값으로 사용합니다 (`src/os.cc:108`, `src/sat.cc:148`).
+`OsLayer::Initialize()`는 `_SC_NPROCESSORS_ONLN`으로 온라인 상태의 논리 CPU 수를 확인합니다. `-m`을 생략하면 `Sat::CheckEnvironment()`가 이 값을 Copy Worker 수로 사용합니다.
 
 CopyThread 수와 CpuStressThread 수의 합이 사용 가능한 CPU 수 이하이면 각 Worker를 특정 CPU에 고정합니다. Worker 수가 더 많으면 CPU 고정을 생략하고 Android/Linux scheduler가 여러 Worker를 번갈아 실행합니다.
 
@@ -143,7 +143,7 @@ Worker 하나가 CPU 하나에서 계속 실행되는지는 온라인 CPU 수, �
 
 | 부하를 키우는 조건 | 메모리 계층에서 발생하는 변화 |
 |---|---|
-| cache보다 큰 테스트 메모리 | 이전 cache line이 밀려나는 횟수 증가 |
+| cache보다 큰 테스트 메모리 | cache line eviction 횟수 증가 |
 | 여러 CopyThread 동시 실행 | CPU cluster와 NoC에 여러 메모리 요청이 동시에 발생 |
 | 1 MiB 단위의 임의 block 선택 | 같은 block을 짧은 시간 안에 다시 사용할 가능성 감소 |
 | block 내부 순차 접근 | Hardware prefetch와 연속 burst 요청 증가 |
