@@ -172,10 +172,11 @@ string FormatSm8975Lp6Rows(uint64_t physical_address,
 }
 
 void RewriteSm8975Lp6FailLine(string *line) {
-  if (line == NULL)
-    return;
-  if (line->find("Hardware Error:") == string::npos ||
-      line->find("miscompare") == string::npos)
+  // Different stressapptest paths can label the same parseable memory
+  // mismatch as Hardware Error, Page Error, or a tag-related error.  The
+  // mapping contract depends on the physical address and read/expected values,
+  // not on that severity prefix, so gate only on a parseable miscompare row.
+  if (line == NULL || line->find("miscompare") == string::npos)
     return;
 
   uint64_t physical_address = 0;
