@@ -3,9 +3,9 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-
+//
 //      http://www.apache.org/licenses/LICENSE-2.0
-
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -88,6 +88,16 @@ class Logger {
     log_timestamps_ = log_ts_enabled;
   }
 
+  // Enable the QC SM8975 LPDDR6 fail-line formatter.  This is configured once
+  // from main.cc before worker threads start.
+  void SetSm8975Lp6Mapping(bool enabled) {
+    sm8975_lp6_mapping_ = enabled;
+  }
+
+  bool sm8975_lp6_mapping() const {
+    return sm8975_lp6_mapping_;
+  }
+
   // Logs a line, with a vprintf(3)-like interface.  This will block on writing
   // the line to stdout/disk iff the dedicated logging thread is not running.
   // This will block on adding the line to the queue if doing so would exceed
@@ -134,6 +144,7 @@ class Logger {
   int log_fd_;
   bool thread_running_;
   bool log_timestamps_;
+  bool sm8975_lp6_mapping_;
   vector<string*> queued_lines_;
   // This doubles as a mutex for log_fd_ when the logging thread is not running.
   pthread_mutex_t queued_lines_mutex_;
