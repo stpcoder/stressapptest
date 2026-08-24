@@ -19,6 +19,16 @@ adb shell chmod 0755 /data/local/tmp/stressapptest
 adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 ```
 
+QC SM8975 LPDDR6 장비에서 fail physical address를 `stpcoder/lpddr6-packet-mapper`와 같은 규칙으로 해석하려면 다음 옵션을 추가합니다.
+
+```bash
+adb shell '/data/local/tmp/stressapptest \
+  -M 512 -s 60 -m 4 -v 8 \
+  --dram-map sm8975-lp6'
+```
+
+과거 `--dram-map lpddr-v1`은 QC SM8975 LPDDR6 routing과 다른 주소 식을 사용했으므로 제거했습니다. 해당 이름을 직접 지정하면 실행을 거부합니다.
+
 ## 추가된 기능
 
 | 기능 | 옵션 | 설명 |
@@ -47,7 +57,7 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 | DRAM 주파수 고정·순환 | `--ddr-freq <값\|목록\|all>` | 한 값을 유지하거나 여러 값을 입력 순서대로 순환 |
 | DRAM 주파수 변경 간격 | `--ddr-step <초>` | 여러 주파수를 사용할 때 변경 간격을 지정하며 기본값은 3초 |
 | DRAM 제어 경로 | `--ddr-node <경로>` | 대상 시스템이 제공하는 주파수 제어용 kernel interface 경로 지정 |
-| DRAM 주소 해석 | `--dram-map lpddr-v1` | 오류의 시스템 물리 주소를 선택형 프로필로 해석 |
+| SM8975 LPDDR6 fail mapping | `--dram-map sm8975-lp6` | PA normalization 후 CH/CS/SC/BK/ROW/MAT/COL을 계산하고 expected/read mismatch를 DQ/BL/HEX까지 매핑 |
 
 ## 선택 가능한 옵션 전체 정리
 
@@ -107,13 +117,35 @@ adb shell '/data/local/tmp/stressapptest -M 512 -s 60 -m 4 -v 8'
 
 현재 구현은 `--ddr-node` 경로에 `{class:ddr, res:fixed, val:<값>}` 형식의 한 줄을 기록합니다. 숫자만 받는 sysfs 파일과는 호환되지 않습니다. `<값>`의 단위와 허용 범위는 대상 interface 규격을 따릅니다.
 
-### DRAM 주소 변환 프로필
+### SM8975 LPDDR6 주소·패킷 매핑
 
 | 옵션 | 기본값 | 설명 |
 |---|---:|---|
-| `--dram-map lpddr-v1` | `none` | 오류에서 확인한 시스템 물리 주소에 `lpddr-v1` 주소 변환 프로필을 적용합니다. |
+| `--dram-map sm8975-lp6` | `none` | QC SM8975 PA를 `lpddr6-packet-mapper`와 같은 규칙으로 CH/CS/SC/BK/ROW/MAT/COL 및 DQ/BL/HEX까지 해석합니다. |
 
-주소 변환 결과는 대상 시스템의 memory-controller 설정과 memory topology를 기준으로 확인합니다. 물리 주소는 `/proc/self/pagemap`의 PFN 읽기가 허용된 실행 환경에서 확인할 수 있습니다.
+계산 흐름은 다음과 같습니다.
+
+```text
+system PA
+  → 0x80000000 / 0x800000000 QC base 제거
+  → 36-bit normalized address
+  → CH / CS / SC / BK / ROW / MAT / COL
+
+expected 64-bit + read 64-bit + PA
+  → lower/upper 32-bit mapper row 분리
+  → WR XOR RD mismatch bit
+  → 32-byte LPDDR6 normal packet assignment
+  → ordered DQ / BL pair
+  → pair별 HEX
+```
+
+DQ와 BL은 서로 독립적인 set가 아닙니다. 같은 index의 `DQ[i]`, `BL[i]`, `HEX[i]`가 하나의 mismatch bit를 나타냅니다. 별도의 검증된 BG 식은 사용하지 않습니다.
+
+상세 계산식, MAT 범위, LPDDR6 12 DQ × 24 BL packet 구조와 HEX table은 [`docs/19-sm8975-lp6-mapping.md`](docs/19-sm8975-lp6-mapping.md)에 정리했습니다.
+
+`--dram-map lpddr-v1`은 제거된 옵션입니다. QC SM8975와 일치하지 않는 과거 empirical mapping으로 돌아가지 않도록 직접 지정 시 실행이 실패합니다.
+
+주소 변환에는 실제 system physical address가 필요합니다. `/proc/self/pagemap`의 PFN 읽기가 허용되지 않으면 mapping block은 물리 위치를 확정할 수 없습니다.
 
 ### 로그와 오류 처리
 
@@ -345,6 +377,8 @@ GitHub Actions 화면에서 `Build Android ARM64 release` workflow를 수동 실
 
 기존 소스 구조와 worker, queue, cache, physical mapping 설명은 [StressAppTest 설명 사이트](https://stpcoder.github.io/stressapptest/)에서 확인할 수 있습니다.
 
+SM8975 LPDDR6 fail mapping의 정확한 식과 packet mapping은 [`docs/19-sm8975-lp6-mapping.md`](docs/19-sm8975-lp6-mapping.md)를 참고합니다.
+
 License: Apache License 2.0
 
 ---
@@ -379,6 +413,7 @@ License: Apache License 2.0
 6. [목적에 따른 테스트 명령](docs/12-test-recipes.md)
 7. [부하와 오류를 측정하는 방법](docs/13-measurement.md)
 8. [오류 검사와 로그 처리 과정](docs/17-logging-and-dram-frequency.md)
+9. [SM8975 LPDDR6 주소·패킷 매핑](docs/19-sm8975-lp6-mapping.md)
 
 사이트 메뉴는 [`mkdocs.yml`](mkdocs.yml), 본문 style은 [`docs/stylesheets/extra.css`](docs/stylesheets/extra.css)에서 관리합니다.
 
@@ -428,7 +463,7 @@ stressapptest -M 512 -s 60 -m 4 -C 4
 - 원본 README: <https://github.com/stressapptest/stressapptest/blob/73b9df227e89cd52b09852056843610722b7b7ae/README.md>
 - License: Apache License 2.0. 기존 `COPYING`과 `NOTICE`를 유지합니다.
 
-물리 주소를 LPDDR channel, rank, bank, row와 column으로 변환하거나 DMC counter를 해석할 때는 대상 시스템의 memory-controller 자료를 함께 사용합니다.
+QC SM8975에서 물리 주소와 fail bit를 LPDDR 내부 위치로 해석할 때는 `--dram-map sm8975-lp6`을 사용합니다. 이 경로는 `lpddr6-packet-mapper`와 같은 PA normalization, topology 식, LPDDR6 normal packet DQ/BL assignment와 HEX table을 사용합니다.
 
 ## 단계별 진단 명령
 
