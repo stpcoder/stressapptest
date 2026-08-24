@@ -281,7 +281,7 @@ Logger::Logger()
 }
 
 Logger::~Logger() {
-  LOGGER_ASSERT(0 == pthread_mutex_destroy(&queued_lines_mutex_, NULL));
+  LOGGER_ASSERT(0 == pthread_mutex_destroy(&queued_lines_mutex_));
   LOGGER_ASSERT(0 == pthread_cond_destroy(&queued_lines_cond_));
   LOGGER_ASSERT(0 == pthread_cond_destroy(&full_queue_cond_));
 }
