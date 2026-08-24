@@ -4,8 +4,8 @@
 // you may not use this file except in compliance with the License.
 //
 // Qualcomm SM8975 LPDDR6 address/packet mapping shared by the fail logger.
-// The equations and packet ordering intentionally mirror
-// stpcoder/lpddr6-packet-mapper (sm8975_decode.py + engine.py).
+// The equations, 32-bit fail-row split, and packet ordering intentionally
+// mirror stpcoder/lpddr6-packet-mapper (sm8975_decode.py + engine.py).
 
 #ifndef STRESSAPPTEST_SM8975_MAPPING_H_
 #define STRESSAPPTEST_SM8975_MAPPING_H_
@@ -34,8 +34,9 @@ inline uint32_t Sm8975AddressBit(uint64_t value, unsigned int bit) {
   return static_cast<uint32_t>((value >> bit) & 1ULL);
 }
 
-// Keep the exact base-removal contract used by lpddr6-packet-mapper.
-// The normalized controller address is always limited to 36 bits.
+// Exact base-removal contract from lpddr6-packet-mapper. Both 8-digit and
+// 9+-digit QC address windows are converted into the same 36-bit controller
+// address space before topology equations are evaluated.
 inline uint64_t NormalizeSm8975Address(uint64_t raw_address) {
   uint64_t decoded;
   if (raw_address < 0x100000000ULL)
@@ -127,8 +128,8 @@ inline bool DecodeSm8975Address(uint64_t raw_address,
   return true;
 }
 
-// Visible HEX region table from the QC bench mapper.  Missing positions are
-// deliberately -1 because those DQ/BL cells are non-data holes in normal mode.
+// Visible HEX region table from the QC bench mapper. Missing positions are -1
+// because those DQ/BL cells are non-data holes in LPDDR6 normal packet mode.
 inline int Sm8975HexRegion(uint32_t dq, uint32_t bl) {
   static const int kHexTable[6][6] = {
     {0, 1, 2, 3, 4, 5},
@@ -143,9 +144,8 @@ inline int Sm8975HexRegion(uint32_t dq, uint32_t bl) {
   return kHexTable[bl / 4][dq / 2];
 }
 
-// Map one LPDDR6 normal-mode user-data bit to its exact DQ/BL pair.  The loop
-// mirrors engine.py's assignment order instead of using a separately-derived
-// shortcut, so the fixed-low holes stay identical to the report generator.
+// Map one LPDDR6 normal-mode user-data bit to its exact DQ/BL pair. The loop
+// is deliberately the same order as engine.py's build_lpddr6_assignment().
 inline bool Sm8975DataBitToCoordinate(unsigned int data_bit,
                                       uint32_t *dq_out,
                                       uint32_t *bl_out,
@@ -176,10 +176,46 @@ inline bool Sm8975DataBitToCoordinate(unsigned int data_bit,
   return false;
 }
 
-// stressapptest reports a 64-bit failed word.  lpddr6-packet-mapper first
-// aligns that physical address to the containing 64-bit word, splits it into
-// two 32-bit words, then maps each WR/RD mismatch bit according to its position
-// in the containing 32-byte LPDDR6 packet.  Preserve that order exactly.
+// Map one 32-bit mapper row. lpddr6-packet-mapper intentionally splits a
+// stressapptest 64-bit fail into lower/upper 32-bit rows before topology and
+// DQ/BL calculation, so keeping this primitive avoids losing a boundary case
+// where the upper word enters the next 32-byte packet or COL region.
+inline void MapSm8975MismatchWord32(uint64_t address,
+                                    uint32_t expected,
+                                    uint32_t actual,
+                                    Sm8975MismatchMapping *mapping) {
+  if (mapping == 0)
+    return;
+  mapping->count = 0;
+  if (expected == actual)
+    return;
+
+  const uint64_t packet_base = address - (address % 32ULL);
+  const unsigned int word_index =
+      static_cast<unsigned int>((address - packet_base) / 4ULL);
+
+  for (unsigned int bit = 0; bit < 32; ++bit) {
+    if (((expected >> bit) & 1U) == ((actual >> bit) & 1U))
+      continue;
+    const unsigned int data_bit = word_index * 32 + bit;
+    uint32_t dq = 0;
+    uint32_t bl = 0;
+    int hex = -1;
+    if (!Sm8975DataBitToCoordinate(data_bit, &dq, &bl, &hex))
+      continue;
+    const unsigned int index = mapping->count;
+    if (index >= 64)
+      return;
+    mapping->dq[index] = dq;
+    mapping->bl[index] = bl;
+    mapping->hex[index] = hex;
+    mapping->count = index + 1;
+  }
+}
+
+// Convenience aggregate used by standalone tests and callers that only need
+// the ordered pair stream. The logger itself emits one SM8975 block per failed
+// 32-bit mapper row to preserve packet-mapper semantics exactly.
 inline void MapSm8975MismatchBits(uint64_t physical_address,
                                   uint64_t expected,
                                   uint64_t actual,
@@ -198,27 +234,16 @@ inline void MapSm8975MismatchBits(uint64_t physical_address,
     if (expected_word == actual_word)
       continue;
 
-    const uint64_t address = word_base + half * 4;
-    const uint64_t packet_base = address - (address % 32ULL);
-    const unsigned int word_index =
-        static_cast<unsigned int>((address - packet_base) / 4ULL);
-
-    for (unsigned int bit = 0; bit < 32; ++bit) {
-      if (((expected_word >> bit) & 1U) == ((actual_word >> bit) & 1U))
-        continue;
-      const unsigned int data_bit = word_index * 32 + bit;
-      uint32_t dq = 0;
-      uint32_t bl = 0;
-      int hex = -1;
-      if (!Sm8975DataBitToCoordinate(data_bit, &dq, &bl, &hex))
-        continue;
-      const unsigned int index = mapping->count;
-      if (index >= 64)
+    Sm8975MismatchMapping half_mapping = {};
+    MapSm8975MismatchWord32(word_base + half * 4ULL,
+                            expected_word, actual_word, &half_mapping);
+    for (unsigned int i = 0; i < half_mapping.count; ++i) {
+      if (mapping->count >= 64)
         return;
-      mapping->dq[index] = dq;
-      mapping->bl[index] = bl;
-      mapping->hex[index] = hex;
-      mapping->count = index + 1;
+      const unsigned int out = mapping->count++;
+      mapping->dq[out] = half_mapping.dq[i];
+      mapping->bl[out] = half_mapping.bl[i];
+      mapping->hex[out] = half_mapping.hex[i];
     }
   }
 }
