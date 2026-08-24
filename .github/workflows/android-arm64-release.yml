@@ -144,7 +144,7 @@ jobs:
             "${RUNNER_TEMP}/stage-options.log"
           grep -q "DIAG_CONFIG .*final_mode=separate final_threads=2" \
             "${RUNNER_TEMP}/stage-options.log"
-          grep -q "DIAG_CONFIG .*dram_map=sm8975-lp6" \
+          grep -q "DIAG_CONFIG_OPTIONS .*dram_map=sm8975-lp6" \
             "${RUNNER_TEMP}/stage-options.log"
           grep -q "DIAG_CONFIG_OPTIONS .*fill_preset=zero .*prefault=1 " \
             "${RUNNER_TEMP}/stage-options.log"
