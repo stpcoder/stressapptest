@@ -6,45 +6,85 @@
 #include <stdio.h>
 
 #include "dram_address.h"
+#include "sm8975_mapping.h"
 
-struct TestVector {
-  uint64_t physical_address;
-  DramAddress expected;
-};
+static bool CheckTopology(uint64_t raw,
+                          uint64_t normalized,
+                          uint32_t channel,
+                          uint32_t cs,
+                          uint32_t sc,
+                          uint32_t bk,
+                          uint32_t row,
+                          int mat,
+                          uint32_t col) {
+  Sm8975Topology actual = {};
+  if (!DecodeSm8975Address(raw, &actual))
+    return false;
+  return actual.normalized_address == normalized &&
+      actual.channel == channel &&
+      actual.chip_select == cs &&
+      actual.subchannel == sc &&
+      actual.bank == bk &&
+      actual.row == row &&
+      actual.mat == mat &&
+      actual.column == col;
+}
 
 int main() {
-  // 실제 장치 로그를 사용하지 않고 0 주소와 단일 bit 입력으로 각 필드의
-  // 기본 추출 경로를 검사합니다. 모든 값은 단위 시험용 합성 입력입니다.
-  const TestVector vectors[] = {
-    {0x00000000ULL, {0, 0, 0, 1, 0, 0, 0, 0}},
-    {0x00000100ULL, {1, 0, 0, 1, 0, 0, 0, 0}},
-    {0x00000400ULL, {0, 0, 1, 1, 0, 0, 0, 0}},
-    {0x00000800ULL, {0, 0, 0, 0, 0, 0, 0, 0}},
-    {0x00008000ULL, {0, 0, 0, 3, 0, 0, 0, 0}},
-    {0x00010000ULL, {0, 0, 0, 1, 1, 0, 0, 0}},
-    {0x00020000ULL, {0, 0, 0, 1, 2, 0, 0, 0}},
-    {0x00040000ULL, {0, 0, 0, 1, 0, 1, 0, 0}},
-    {0x00001000ULL, {0, 0, 0, 1, 0, 0, 8, 0}},
-    {0x00000020ULL, {0, 0, 0, 1, 0, 0, 1, 0}},
-    {0x0000001fULL, {0, 0, 0, 1, 0, 0, 0, 0x1f}},
-    {0xffffffffULL, {3, 0, 1, 1, 2, 0x3fff, 0x3f, 0x1f}},
-  };
+  // Base removal must treat the 8-digit and 9+-digit QC windows identically.
+  if (!CheckTopology(0x80000000ULL, 0x000000000ULL,
+                     0, 0, 0, 0, 0x0000, 0, 0x00) ||
+      !CheckTopology(0x80000020ULL, 0x000000020ULL,
+                     0, 0, 0, 0, 0x0000, 0, 0x01) ||
+      !CheckTopology(0x800000000ULL, 0x000000000ULL,
+                     0, 0, 0, 0, 0x0000, 0, 0x00) ||
+      !CheckTopology(0x800000020ULL, 0x000000020ULL,
+                     0, 0, 0, 0, 0x0000, 0, 0x01)) {
+    fprintf(stderr, "SM8975 base-removal/topology vector failed\n");
+    return 1;
+  }
 
-  for (size_t i = 0; i < sizeof(vectors) / sizeof(vectors[0]); ++i) {
-    DramAddress actual = {};
-    if (!DecodeDramAddress(DRAM_ADDRESS_MAP_LPDDR_V1,
-                           vectors[i].physical_address, &actual) ||
-        actual.channel != vectors[i].expected.channel ||
-        actual.rank != vectors[i].expected.rank ||
-        actual.subchannel != vectors[i].expected.subchannel ||
-        actual.bank_group != vectors[i].expected.bank_group ||
-        actual.bank != vectors[i].expected.bank ||
-        actual.row != vectors[i].expected.row ||
-        actual.column != vectors[i].expected.column ||
-        actual.byte_offset != vectors[i].expected.byte_offset) {
-      fprintf(stderr, "DRAM address vector %zu failed\n", i);
-      return 1;
-    }
+  // Cross-check the representative address previously used in this fork.
+  // Under the QC SM8975 LP6 equations it is CS1/BK15/COL0x3D; the removed
+  // lpddr-v1 profile produced a different topology and must not be restored.
+  if (!CheckTopology(0x90A5EDC3CULL, 0x10A5EDC3CULL,
+                     0, 1, 1, 15, 0x4297, 12, 0x3D)) {
+    fprintf(stderr, "SM8975 representative topology vector failed\n");
+    return 1;
+  }
+
+  DramAddress address = {};
+  if (!DecodeDramAddress(DRAM_ADDRESS_MAP_SM8975_LP6,
+                         0x90A5EDC3CULL, &address) ||
+      address.channel != 0 ||
+      address.rank != 1 ||
+      address.subchannel != 1 ||
+      address.bank != 15 ||
+      address.row != 0x4297 ||
+      address.column != 0x3D) {
+    fprintf(stderr, "DramAddress SM8975 adapter failed\n");
+    return 1;
+  }
+
+  // Match lpddr6-packet-mapper's exact ordered mismatch pairs for data bits
+  // 5, 6 and 11: (DQ1,BL1), (DQ1,BL2), (DQ2,BL3), HEX 0,0,1.
+  Sm8975MismatchMapping mismatch = {};
+  const uint64_t expected = (1ULL << 5) | (1ULL << 6) | (1ULL << 11);
+  MapSm8975MismatchBits(0x80000000ULL, expected, 0, &mismatch);
+  if (mismatch.count != 3 ||
+      mismatch.dq[0] != 1 || mismatch.bl[0] != 1 || mismatch.hex[0] != 0 ||
+      mismatch.dq[1] != 1 || mismatch.bl[1] != 2 || mismatch.hex[1] != 0 ||
+      mismatch.dq[2] != 2 || mismatch.bl[2] != 3 || mismatch.hex[2] != 1) {
+    fprintf(stderr, "SM8975 DQ/BL/HEX packet vector failed\n");
+    return 1;
+  }
+
+  if (Sm8975MatForRow(0x55F) != 0 ||
+      Sm8975MatForRow(0x560) != 1 ||
+      Sm8975MatForRow(0x7FFF) != 23 ||
+      Sm8975MatForRow(0x8000) != -1) {
+    fprintf(stderr, "SM8975 MAT boundary vector failed\n");
+    return 1;
   }
 
   return 0;

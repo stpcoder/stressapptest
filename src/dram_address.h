@@ -8,67 +8,57 @@
 
 #include <stdint.h>
 
-// 물리 주소를 DRAM 좌표로 해석하는 규칙은 memory-controller 설정에
-// 종속됩니다. 사용자가 프로필을 명시한 경우에만 주소 변환을 수행합니다.
+#include "sm8975_mapping.h"
+
+// Physical-address decoding is target-specific.  The old empirical lpddr-v1
+// equations were removed because they do not describe the QC SM8975 LPDDR6
+// routing used by this repository's target.  sm8975-lp6 is the only supported
+// non-none user-facing mapping profile.
 enum DramAddressMapProfile {
   DRAM_ADDRESS_MAP_NONE = 0,
-  DRAM_ADDRESS_MAP_LPDDR_V1
+  DRAM_ADDRESS_MAP_SM8975_LP6 = 1,
+
+  // sat.cc still uses this internal identifier while parsing its historical
+  // spelling. main.cc never exposes that spelling: it translates the public
+  // sm8975-lp6 name before ParseArgs() and rejects lpddr-v1 explicitly.
+  // This alias contains no legacy mapping logic.
+  DRAM_ADDRESS_MAP_LPDDR_V1 = DRAM_ADDRESS_MAP_SM8975_LP6
 };
 
 struct DramAddress {
   uint32_t channel;
-  uint32_t rank;
+  uint32_t rank;        // SM8975 chip-select (CS).
   uint32_t subchannel;
-  uint32_t bank_group;
-  uint32_t bank;
+  uint32_t bank_group;  // Not independently decoded for SM8975 LP6.
+  uint32_t bank;        // SM8975 4-bit BK value.
   uint32_t row;
   uint32_t column;
   uint32_t byte_offset;
 };
 
-// 물리 주소에서 지정한 한 bit를 추출합니다.
-inline uint32_t DramAddressBit(uint64_t physical_address, unsigned int bit) {
-  return static_cast<uint32_t>((physical_address >> bit) & 1ULL);
-}
-
-// 선택한 lpddr-v1 프로필을 적용합니다. 현재 프로필은 rank 0만 정의하며,
-// 다른 memory-controller 구성에서는 해당 시스템에 맞는 프로필이 필요합니다.
+// Decode one system physical address with the exact equations used by
+// stpcoder/lpddr6-packet-mapper.  MAT and DQ/BL/HEX are reported separately by
+// the fail-log formatter because MAT is derived from ROW and DQ/BL/HEX also
+// require expected/read mismatch information.
 inline bool DecodeDramAddress(DramAddressMapProfile profile,
                               uint64_t physical_address,
                               DramAddress *address) {
-  if (profile != DRAM_ADDRESS_MAP_LPDDR_V1 || address == 0)
+  if (profile != DRAM_ADDRESS_MAP_SM8975_LP6 || address == 0)
     return false;
 
-  address->channel = static_cast<uint32_t>((physical_address >> 8) & 0x3);
-  address->rank = 0;
-  address->subchannel = DramAddressBit(physical_address, 10);
+  Sm8975Topology topology = {};
+  if (!DecodeSm8975Address(physical_address, &topology))
+    return false;
 
-  const uint32_t bg0 = 1U ^ DramAddressBit(physical_address, 11) ^
-      DramAddressBit(physical_address, 20) ^
-      DramAddressBit(physical_address, 29) ^
-      DramAddressBit(physical_address, 30);
-  const uint32_t bg1 = DramAddressBit(physical_address, 15) ^
-      DramAddressBit(physical_address, 19) ^
-      DramAddressBit(physical_address, 21) ^
-      DramAddressBit(physical_address, 24);
-  address->bank_group = bg0 | (bg1 << 1);
-
-  const uint32_t bank0 = DramAddressBit(physical_address, 16) ^
-      DramAddressBit(physical_address, 21) ^
-      DramAddressBit(physical_address, 23) ^
-      DramAddressBit(physical_address, 30);
-  const uint32_t bank1 = DramAddressBit(physical_address, 17) ^
-      DramAddressBit(physical_address, 19) ^
-      DramAddressBit(physical_address, 23) ^
-      DramAddressBit(physical_address, 27) ^
-      DramAddressBit(physical_address, 30);
-  address->bank = bank0 | (bank1 << 1);
-
-  address->row = static_cast<uint32_t>((physical_address >> 18) & 0xffff);
-  address->column =
-      (static_cast<uint32_t>((physical_address >> 12) & 0x7) << 3) |
-      static_cast<uint32_t>((physical_address >> 5) & 0x7);
-  address->byte_offset = static_cast<uint32_t>(physical_address & 0x1f);
+  address->channel = topology.channel;
+  address->rank = topology.chip_select;
+  address->subchannel = topology.subchannel;
+  address->bank_group = 0;
+  address->bank = topology.bank;
+  address->row = topology.row;
+  address->column = topology.column;
+  address->byte_offset =
+      static_cast<uint32_t>(topology.normalized_address & 0x1FULL);
   return true;
 }
 

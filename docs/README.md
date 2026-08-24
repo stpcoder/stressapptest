@@ -101,7 +101,45 @@ Worker가 계산한 checksum과 기대 checksum이 다르면 다음 처리를 �
   → 해당 64-bit 값을 expected로 복구
 ```
 
-`worker`와 `phase`는 오류를 처음 검출한 소프트웨어 위치를 표시합니다. `sat_block`, `sat_offset`, `block_offset`은 시험 영역 내부의 논리적 위치를 표시합니다. 물리 주소와 DRAM 좌표는 실행 권한과 선택한 주소 변환 프로필에 따라 출력됩니다.
+`worker`와 `phase`는 오류를 처음 검출한 소프트웨어 위치를 표시합니다. `sat_block`, `sat_offset`, `block_offset`은 시험 영역 내부의 논리적 위치를 표시합니다. 물리 주소는 실행 권한에 따라 출력됩니다.
+
+## QC SM8975 LPDDR6 fail mapping
+
+QC SM8975 LPDDR6 장비에서 fail physical address를 DRAM 위치까지 해석하려면 다음 옵션을 추가합니다.
+
+```bash
+--dram-map sm8975-lp6
+```
+
+과거 `--dram-map lpddr-v1`은 QC SM8975의 실제 mapping과 다른 식을 사용했으므로 제거했습니다. 해당 이름을 직접 지정하면 실행을 거부합니다.
+
+`sm8975-lp6`은 `stpcoder/lpddr6-packet-mapper`와 같은 계산 흐름을 사용합니다.
+
+```text
+system PA
+  → QC base removal / 36-bit normalization
+  → CH / CS / SC / BK / ROW / MAT / COL
+
+PA + expected + read
+  → 64-bit fail을 32-bit mapper row로 분리
+  → mismatch bit
+  → LPDDR6 32-byte normal packet assignment
+  → ordered DQ / BL pair
+  → HEX
+```
+
+따라서 fail log에는 단순 topology뿐 아니라 다음 mapping block이 추가됩니다.
+
+```text
+map:sm8975-lp6,lp6:[
+ {addr:0x...,norm:0x...,ch:0x...,cs:0x...,sc:0x...,bk:0x...,
+  row:0x...,mat:...,col:0x...,dq:[...],bl:[...],hex:[...]}
+]
+```
+
+DQ와 BL은 독립적으로 dedupe하지 않습니다. 같은 index의 `DQ[i]`, `BL[i]`, `HEX[i]`가 한 mismatch bit의 정확한 pair/region을 나타냅니다.
+
+계산식, MAT 범위, 32-bit split 이유, DQ/BL packet assignment와 HEX table은 [SM8975 LPDDR6 주소·패킷 매핑](19-sm8975-lp6-mapping.md)에 정리했습니다.
 
 ## Cache와 LPDDR 접근
 
@@ -122,7 +160,8 @@ Copy Worker 4개와 Invert Worker 4개는 DRAM die에 고정되지 않습니다.
 2. [메모리 Worker 종류와 동작](07-memory-workers.md)
 3. [메모리를 복사하고 오류를 찾는 과정](09-copy-and-verification.md)
 4. [Cache에서 LPDDR까지 데이터가 이동하는 과정](04-cache-and-arm64.md)
-5. [단계별 오류 검출과 옵션 영향 분석](18-stage-debugging-and-option-risk.md)
+5. [SM8975 LPDDR6 주소·패킷 매핑](19-sm8975-lp6-mapping.md)
+6. [단계별 오류 검출과 옵션 영향 분석](18-stage-debugging-and-option-risk.md)
 
 전체 옵션은 [명령행 옵션 정리](10-all-options.md), 소스 위치는 [소스 코드 찾아보기](15-source-map.md), 기술 용어는 [용어 설명](16-glossary.md)에서 확인할 수 있습니다.
 
