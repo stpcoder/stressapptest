@@ -62,7 +62,7 @@ ARG_IVALUE("-c", check_threads_);
 | `--ddr-freq <value\|list\|all>` | 제어 안 함 | 첫 값을 초기 Fill 전과 Runtime 직전에 요청. 여러 값의 순환은 Runtime에서 시작 |
 | `--ddr-step <seconds>` | 3 | 여러 주파수를 사용할 때 변경 간격 지정 |
 | `--ddr-node <path>` | Build 기본 경로 | 대상 시스템의 주파수 제어용 kernel interface 경로 지정 |
-| `--dram-map lpddr-v1` | `none` | 오류의 시스템 물리 주소에 선택형 주소 변환 프로필 적용 |
+| `--dram-map sm8975-lp6` | `none` | QC SM8975 PA와 fail data를 CH/CS/SC/BK/ROW/MAT/COL/DQ/BL/HEX로 해석 |
 
 `DIAG_CONFIG`, `DIAG_CONFIG_OPTIONS`, `DIAG_SUMMARY`, `DIAG_VM`과 `DIAG_ERROR_LOG` 요약은 `-v 5` 이상에서 출력됩니다. 기본 verbosity는 8입니다.
 
@@ -73,10 +73,10 @@ Pattern별 독립 비교는 프로세스마다 `-P` 항목 하나를 지정합�
 ```bash
 stressapptest -M 1024 -m 4 -i 4 -s 600 \
   -P OneZero256,FiveA256 \
-  --dram-map lpddr-v1
+  --dram-map sm8975-lp6
 ```
 
-주소 변환 결과는 대상 시스템의 memory-controller 설정과 memory topology를 기준으로 확인합니다. 오류 로그에서 시스템 물리 주소를 해석할 때 선택한 프로필을 적용합니다.
+`sm8975-lp6`은 `stpcoder/lpddr6-packet-mapper`와 같은 QC SM8975 PA normalization, topology 식, LPDDR6 normal packet DQ/BL assignment와 HEX table을 사용합니다. 과거 `--dram-map lpddr-v1`은 QC SM8975와 다른 empirical 식을 사용했으므로 제거했으며 직접 지정하면 실행이 실패합니다.
 
 ## 메모리 크기와 실행 시간
 
@@ -144,6 +144,28 @@ stressapptest -M 1024 -m 4 -i 4 -s 600 \
 현재 구현은 `--ddr-node` 경로에 `{class:ddr, res:fixed, val:<값>}` 형식의 한 줄을 기록합니다. 숫자만 받는 sysfs 파일에는 사용할 수 없습니다. `<값>`의 단위와 허용 범위는 대상 interface 규격을 따릅니다.
 
 <sub><em>시스템 계측값: kernel trace, debug interface 또는 hardware counter에서 확인한 실제 동작 상태입니다.</em></sub>
+
+### SM8975 LPDDR6 fail mapping
+
+`--dram-map sm8975-lp6`은 시스템 물리 주소와 stressapptest의 `expected/read`를 다음 순서로 처리합니다.
+
+```text
+system PA
+  → QC address-window base 제거
+  → 36-bit normalized address
+  → CH / CS / SC / BK / ROW / MAT / COL
+
+expected/read 64-bit
+  → lower/upper 32-bit mapper row
+  → mismatch bit
+  → LPDDR6 32-byte normal packet 위치
+  → ordered DQ/BL pair
+  → HEX
+```
+
+`reread`는 오류의 두 번째 관찰값이며 DQ/BL 계산에는 사용하지 않습니다. DQ와 BL은 독립적으로 중복 제거하지 않으며 같은 index의 `DQ[i]`, `BL[i]`, `HEX[i]`가 한 mismatch bit의 물리 pair와 region을 나타냅니다.
+
+세부 식과 MAT/HEX table은 [SM8975 LPDDR6 주소·패킷 매핑](19-sm8975-lp6-mapping.md)을 참고합니다.
 
 ### `--reserve_memory` 사용 형식
 
