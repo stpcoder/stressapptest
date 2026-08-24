@@ -20,6 +20,7 @@ CFILES += logger.cc
 
 HFILES = os.h
 HFILES += dram_address.h
+HFILES += sm8975_mapping.h
 HFILES += pattern.h
 HFILES += queue.h
 HFILES += sat.h
