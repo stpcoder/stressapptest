@@ -26,7 +26,7 @@ concurrency:
 
 env:
   ANDROID_API: "30"
-  ANDROID_NDK_VERSION: "27.2.12479018"
+  ANDROID_NK_VERSION: "27.2.12479018"
   RELEASE_BINARY: stressapptest-android-arm64
 
 jobs:
@@ -121,7 +121,7 @@ jobs:
             --error-log-limit 10 \
             --final-check-threads 2 \
             --stop_on_errors \
-            --dram-map lpddr-v1 \
+            --dram-map sm8975-lp6 \
             | tee "${RUNNER_TEMP}/stage-options.log"
 
           grep -q "DIAG phase=prefault_begin" \
@@ -144,6 +144,8 @@ jobs:
             "${RUNNER_TEMP}/stage-options.log"
           grep -q "DIAG_CONFIG .*final_mode=separate final_threads=2" \
             "${RUNNER_TEMP}/stage-options.log"
+          grep -q "DIAG_CONFIG .*dram_map=sm8975-lp6" \
+            "${RUNNER_TEMP}/stage-options.log"
           grep -q "DIAG_CONFIG_OPTIONS .*fill_preset=zero .*prefault=1 " \
             "${RUNNER_TEMP}/stage-options.log"
           grep -q "DIAG_CONFIG_OPTIONS .*verify_after_fill=1 .*copy_verify_destination=1 " \
@@ -152,6 +154,16 @@ jobs:
             "${RUNNER_TEMP}/stage-options.log"
           grep -q "DIAG_SUMMARY phase=invert/rmw" \
             "${RUNNER_TEMP}/stage-options.log"
+
+          # The removed empirical map must not remain user-accessible.
+          if ./src/stressapptest -M 16 -s 1 -A \
+            --dram-map lpddr-v1 \
+            >"${RUNNER_TEMP}/removed-dram-map.log" 2>&1; then
+            echo "Removed lpddr-v1 map must be rejected" >&2
+            exit 1
+          fi
+          grep -q "lpddr-v1 was removed" \
+            "${RUNNER_TEMP}/removed-dram-map.log"
 
           # 종료 검사 옵션을 생략한 실행은 기존 Runtime Check의 STOP 이후
           # Valid queue drain과 Fill Worker 수의 보조 검사 Worker를 유지합니다.
@@ -207,6 +219,7 @@ jobs:
             -M 16 -m 0 -i 0 -c 0 -s 1 -A --no_errors -v 5 \
             -P OneZero256 --verify-after-fill \
             --diag-phase-summary --diag-block-history --error-log-limit 1 \
+            --dram-map sm8975-lp6 \
             --test-corrupt-after-fill-words 256 \
             | tee "${RUNNER_TEMP}/memory-error-injection.log"; then
             echo "Injected memory mismatch must return a failing result" >&2
@@ -223,6 +236,8 @@ jobs:
           grep -q "phase=check/final_check blocks=10" \
             "${RUNNER_TEMP}/memory-error-injection.log"
           grep -q "block_history(last_writer:initial_fill" \
+            "${RUNNER_TEMP}/memory-error-injection.log"
+          grep -q "map:sm8975-lp6,lp6:" \
             "${RUNNER_TEMP}/memory-error-injection.log"
           grep -q "DIAG_ERROR_LOG limit=1 detailed=1 suppressed=29" \
             "${RUNNER_TEMP}/memory-error-injection.log"
