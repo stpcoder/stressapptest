@@ -14,10 +14,40 @@
 
 // sat.cc : a stress test for stressful testing
 
+#include <string.h>
+
+#include "dram_address.h"
 #include "sattypes.h"
 #include "sat.h"
 
+// ParseArgs()의 기존 공개 계약은 건드리지 않으면서 qc-sm8975를 추가합니다.
+// main에서 새 이름을 legacy lpddr-v1 spelling으로 바꾸고 별도 flag로 실제
+// decoder를 선택합니다. 기존 --dram-map lpddr-v1 동작은 그대로 유지됩니다.
+bool g_qc_sm8975_dram_map_requested = false;
+
+static void PrepareDramMapCompatibilityArgs(int argc, char **argv) {
+  static char kLegacyProfileName[] = "lpddr-v1";
+  g_qc_sm8975_dram_map_requested = false;
+
+  for (int i = 1; i + 1 < argc; ++i) {
+    if (strcmp(argv[i], "--dram-map") != 0)
+      continue;
+
+    if (strcmp(argv[i + 1], "qc-sm8975") == 0) {
+      g_qc_sm8975_dram_map_requested = true;
+      argv[i + 1] = kLegacyProfileName;
+    } else {
+      // 여러 번 지정된 경우 ParseArgs와 동일하게 마지막 --dram-map이
+      // 실질적인 설정이 되도록 flag도 마지막 값을 따릅니다.
+      g_qc_sm8975_dram_map_requested = false;
+    }
+    ++i;
+  }
+}
+
 int main(int argc, char **argv) {
+  PrepareDramMapCompatibilityArgs(argc, argv);
+
   Sat *sat = SatFactory();
   if (sat == NULL) {
     logprintf(0, "Process Error: failed to allocate Sat object\n");
