@@ -3,9 +3,9 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
-
+//
 //      http://www.apache.org/licenses/LICENSE-2.0
-
+//
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -14,39 +14,54 @@
 
 // sat.cc : a stress test for stressful testing
 
+#include <stdio.h>
 #include <string.h>
 
-#include "dram_address.h"
+#include "logger.h"
 #include "sattypes.h"
 #include "sat.h"
 
-// ParseArgs()의 기존 공개 계약은 건드리지 않으면서 qc-sm8975를 추가합니다.
-// main에서 새 이름을 legacy lpddr-v1 spelling으로 바꾸고 별도 flag로 실제
-// decoder를 선택합니다. 기존 --dram-map lpddr-v1 동작은 그대로 유지됩니다.
-bool g_qc_sm8975_dram_map_requested = false;
-
-static void PrepareDramMapCompatibilityArgs(int argc, char **argv) {
-  static char kLegacyProfileName[] = "lpddr-v1";
-  g_qc_sm8975_dram_map_requested = false;
+// sat.cc historically recognizes the internal spelling "lpddr-v1".  The old
+// mapping equations behind that name have been removed from dram_address.h.
+// Until the large legacy argument parser is renamed, translate the only public
+// profile name (sm8975-lp6) to that internal token before ParseArgs().
+//
+// Direct use of lpddr-v1 is rejected so there is no user-visible path back to
+// the removed empirical mapping.
+static bool PrepareDramMapArgs(int argc, char **argv) {
+  static char kInternalProfileName[] = "lpddr-v1";
+  bool sm8975_lp6_enabled = false;
 
   for (int i = 1; i + 1 < argc; ++i) {
     if (strcmp(argv[i], "--dram-map") != 0)
       continue;
 
-    if (strcmp(argv[i + 1], "qc-sm8975") == 0) {
-      g_qc_sm8975_dram_map_requested = true;
-      argv[i + 1] = kLegacyProfileName;
+    if (strcmp(argv[i + 1], "lpddr-v1") == 0) {
+      fprintf(stderr,
+              "Process Error: --dram-map lpddr-v1 was removed because its "
+              "address equations do not match QC SM8975 LPDDR6. Use "
+              "--dram-map sm8975-lp6.\n");
+      return false;
+    }
+
+    if (strcmp(argv[i + 1], "sm8975-lp6") == 0) {
+      argv[i + 1] = kInternalProfileName;
+      sm8975_lp6_enabled = true;
     } else {
-      // 여러 번 지정된 경우 ParseArgs와 동일하게 마지막 --dram-map이
-      // 실질적인 설정이 되도록 flag도 마지막 값을 따릅니다.
-      g_qc_sm8975_dram_map_requested = false;
+      // ParseArgs uses the last occurrence. Keep the logger gate aligned with
+      // that behavior for --dram-map none or an invalid later value.
+      sm8975_lp6_enabled = false;
     }
     ++i;
   }
+
+  Logger::GlobalLogger()->SetSm8975Lp6Mapping(sm8975_lp6_enabled);
+  return true;
 }
 
 int main(int argc, char **argv) {
-  PrepareDramMapCompatibilityArgs(argc, argv);
+  if (!PrepareDramMapArgs(argc, argv))
+    return 1;
 
   Sat *sat = SatFactory();
   if (sat == NULL) {
